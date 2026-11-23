@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "margincue": {
+      "type": "stdio",
+      "command": "/bin/sh",
+      "args": ["-c", "exec ./bin/margincue serve"],
+      "cwd": ".",
+      "env_vars": ["XDG_STATE_HOME", "MARGINCUE_CODEX_STATE_DIR"]
+    }
+  }
+}

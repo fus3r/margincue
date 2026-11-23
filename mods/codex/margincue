@@ -1,0 +1,83 @@
+#!/bin/sh
+set -eu
+
+plugin=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+crate="$plugin/../../crates/margincue-codex"
+binary="$plugin/bin/margincue"
+
+build() {
+    cargo_path=$(command -v cargo || true)
+    if [ -z "$cargo_path" ] && [ -x /opt/homebrew/opt/rustup/bin/cargo ]; then
+        cargo_path=/opt/homebrew/opt/rustup/bin/cargo
+    fi
+    if [ -z "$cargo_path" ]; then
+        printf '%s\n' 'Building MarginCue requires the Rust toolchain.' >&2
+        exit 1
+    fi
+    "$cargo_path" build --release --locked --manifest-path "$crate/Cargo.toml" --target-dir "$crate/target"
+    mkdir -p "$plugin/bin"
+    install -m 755 "$crate/target/release/margincue-codex" "$binary"
+}
+
+case "${1:-}" in
+    install)
+        [ -x "$binary" ] || build
+        codex -c features.memories=false plugin marketplace add "$plugin"
+        codex -c features.memories=false plugin add margincue@margincue-local
+        printf '%s\n' 'Start a new Codex session and trust the MarginCue hooks when prompted.'
+        "$binary" status
+        ;;
+    remove)
+        codex -c features.memories=false plugin remove margincue@margincue-local
+        codex -c features.memories=false plugin marketplace remove margincue-local
+        ;;
+    update)
+        # Rebuild and refresh the installed copy in place. hooks/hooks.json is unchanged, so
+        # Codex keeps trusting the hooks. A running session keeps the copy it started with.
+        build
+        cache="${CODEX_HOME:-$HOME/.codex}/plugins/cache/margincue-local/margincue"
+        found=0
+        for installed in "$cache"/*/; do
+            [ -d "$installed/bin" ] || continue
+            cp "$binary" "$installed/bin/margincue.new"
+            mv -f "$installed/bin/margincue.new" "$installed/bin/margincue"
+            cp "$plugin/margincue" "$installed/margincue.new"
+            mv -f "$installed/margincue.new" "$installed/margincue"
+            found=1
+        done
+        if [ "$found" -eq 0 ]; then
+            printf '%s\n' 'MarginCue is not installed. Run margincue install.' >&2
+            exit 1
+        fi
+        printf '%s\n' 'Updated. New Codex sessions use the new version.'
+        ;;
+    run)
+        shift
+        # Forms need an approval policy that lets MCP servers ask; this one allows only that.
+        # Without the daemon the hook inherits MARGINCUE_MODE and asks for the form directly.
+        export MARGINCUE_MODE=form
+        exec codex --no-daemon -c 'approval_policy={granular={mcp_elicitations=true,sandbox_approval=false,rules=false,request_permissions=false,skill_approval=false}}' "$@"
+        ;;
+    picker)
+        # Codex's own question picker outside plan mode. Codex's agent may then also use it on its own.
+        case "${2:-}" in
+            on) codex -c features.memories=false features enable default_mode_request_user_input ;;
+            off) codex -c features.memories=false features disable default_mode_request_user_input ;;
+            *) printf '%s\n' 'Usage: margincue picker on|off' >&2; exit 2 ;;
+        esac
+        ;;
+    build)
+        build
+        ;;
+    on|off|status|timeout)
+        if [ ! -x "$binary" ]; then
+            printf '%s\n' 'Run margincue install or margincue build first.' >&2
+            exit 1
+        fi
+        exec "$binary" "$@"
+        ;;
+    *)
+        printf '%s\n' 'Usage: margincue install|update|remove|run|picker on|off|build|on|off|status|timeout SECONDS' >&2
+        exit 2
+        ;;
+esac

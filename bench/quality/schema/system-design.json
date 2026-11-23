@@ -1,0 +1,760 @@
+{
+  "profile": "system-design",
+  "frames": [
+    {
+      "id": "serve_mutable_view",
+      "when": "Change what an interactive reader sees when showing mutable data, including freshness after updates or a view while the source is unavailable. Reading historical logs or editing labels alone is outside this frame.",
+      "slots": [
+        {
+          "id": "freshness_window",
+          "type": "enum",
+          "field": "Maximum staleness or authoritative read requirement for the display.",
+          "options": [
+            {
+              "value": "current_read",
+              "plain": "the latest confirmed value",
+              "expert": "synchronous origin reads"
+            },
+            {
+              "value": "bounded_cache",
+              "plain": "values up to 30 seconds old",
+              "expert": "a 30-second bounded cache"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "essential",
+          "rigor": "build",
+          "guard": false,
+          "cost": 3,
+          "statement": {
+            "plain": "People see {}",
+            "expert": "Interactive reads use {}"
+          },
+          "catalog_when": "Change a display of mutable information where an authoritative read on each view and a short bounded cache are feasible. Faster access is useful and the newest value can matter, but the user has not set a freshness requirement.",
+          "catalog_settled": "The surface contract, draft, or explicit delegation fixes tolerable staleness. Historical, immutable and read-only analysis tasks do not raise it.",
+          "why": "A cache can make repeated reads faster, while people who just made a change may still see the old value.",
+          "source": "[Azure Cache-Aside, lifetime and consistency](https://learn.microsoft.com/en-us/azure/architecture/patterns/cache-aside#problems-and-considerations)",
+          "opens": [],
+          "anchor_terms": [
+            "fresh",
+            "current",
+            "latest",
+            "cache",
+            "seconds",
+            "stale",
+            "quota",
+            "lecture",
+            "secondes"
+          ],
+          "tests": [
+            {
+              "draft": "Make the seat-count panel load faster after changes. We can serve from the bookings table or a 30-second cache and the panel is informational.",
+              "slot": "freshness_window",
+              "value": null
+            },
+            {
+              "draft": "Make the seat-count panel load faster after changes. We can serve from the bookings table or a 30-second cache and the panel is informational. The count must reflect a confirmed booking immediately.",
+              "slot": "freshness_window",
+              "value": "current_read",
+              "evidence": "The count must reflect a confirmed booking immediately."
+            }
+          ]
+        },
+        {
+          "id": "live_degradation",
+          "type": "enum",
+          "field": "Read-only display behavior during source failure.",
+          "options": [
+            {
+              "value": "readonly_snapshot",
+              "plain": "the last saved view, read-only",
+              "expert": "a labeled read-only snapshot"
+            },
+            {
+              "value": "unavailable_notice",
+              "plain": "an unavailable notice",
+              "expert": "an unavailable response"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "essential",
+          "rigor": "build",
+          "guard": false,
+          "cost": 4,
+          "statement": {
+            "plain": "During the outage, people see {}",
+            "expert": "The read path falls back to {}"
+          },
+          "catalog_when": "An interactive view depends on a service that may be unavailable. Serving a labeled read-only last result is safe and available, and showing an unavailable notice is also acceptable. The user owns availability versus freshness during the outage.",
+          "catalog_settled": "The fallback policy or draft fixes cached results or an error. If stale inputs would violate the user’s requirements, they are not a feasible fallback.",
+          "why": "A reduced view preserves access but may present out-of-date information. An unavailable notice avoids that ambiguity.",
+          "source": "[Google SRE, Addressing Cascading Failures, Enter Degraded Modes](https://sre.google/sre-book/addressing-cascading-failures/#enter-degraded-modes)",
+          "opens": [],
+          "anchor_terms": [
+            "outage",
+            "unavailable",
+            "offline",
+            "snapshot",
+            "read-only",
+            "indisponible",
+            "répond",
+            "lecture seule"
+          ],
+          "tests": [
+            {
+              "draft": "When the room directory is offline, the assignments screen still has its last labeled snapshot. Decide how the view should behave for room coordinators.",
+              "slot": "live_degradation",
+              "value": null
+            },
+            {
+              "draft": "When the room directory is offline, the assignments screen still has its last labeled snapshot. Decide how the view should behave for room coordinators. Serve the last snapshot read-only with its timestamp.",
+              "slot": "live_degradation",
+              "value": "readonly_snapshot",
+              "evidence": "Serve the last snapshot read-only with its timestamp."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "design_submission",
+      "when": "Define the response or recovery for a user-triggered operation that is queued or can commit before the caller receives an acknowledgement. Inspecting existing latency or read-only requests is outside this frame.",
+      "slots": [
+        {
+          "id": "submission_confirmation",
+          "type": "enum",
+          "field": "What the first successful submission receipt confirms.",
+          "options": [
+            {
+              "value": "on_enqueue",
+              "plain": "as soon as work queues",
+              "expert": "after durable enqueue"
+            },
+            {
+              "value": "on_completion",
+              "plain": "once the work finishes",
+              "expert": "after the worker commits"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "essential",
+          "rigor": "build",
+          "guard": false,
+          "cost": 4,
+          "statement": {
+            "plain": "The user gets a receipt {}",
+            "expert": "The submit call succeeds {}"
+          },
+          "catalog_when": "Add a user-facing submission that enters a durable queue, where acknowledging queueing and waiting for completion are both practical. The draft leaves what the first receipt promises open.",
+          "catalog_settled": "The interaction design or API contract specifies acknowledgment on acceptance or completion. A task to inspect a queue or report finished work does not reopen the receipt.",
+          "why": "A fast receipt can confirm acceptance without telling the user the requested work is done.",
+          "source": "[Azure Queue-Based Load Leveling, response and durability](https://learn.microsoft.com/en-us/azure/architecture/patterns/queue-based-load-leveling#problems-and-considerations)",
+          "opens": [
+            "retry_after_unknown"
+          ],
+          "anchor_terms": [
+            "receipt",
+            "confirmation",
+            "accept",
+            "enqueue",
+            "submit",
+            "commit",
+            "accepté",
+            "message",
+            "terminé"
+          ],
+          "tests": [
+            {
+              "draft": "Move poster PDF generation to the existing durable queue. It takes a few seconds and the submit screen can show either a queued receipt or a completed one.",
+              "slot": "submission_confirmation",
+              "value": null
+            },
+            {
+              "draft": "Move poster PDF generation to the existing durable queue. It takes a few seconds and the submit screen can show either a queued receipt or a completed one. Show acceptance as soon as the durable enqueue succeeds.",
+              "slot": "submission_confirmation",
+              "value": "on_enqueue",
+              "evidence": "Show acceptance as soon as the durable enqueue succeeds."
+            }
+          ]
+        },
+        {
+          "id": "retry_after_unknown",
+          "type": "enum",
+          "field": "Recovery for a timed-out side effect whose outcome is unknown.",
+          "options": [
+            {
+              "value": "automatic_keyed_retry",
+              "plain": "retries while shown as pending",
+              "expert": "retries with the same idempotency key"
+            },
+            {
+              "value": "status_before_retry",
+              "plain": "waits for a status check",
+              "expert": "operation lookup before user retry"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "essential",
+          "rigor": "build",
+          "guard": false,
+          "cost": 5,
+          "statement": {
+            "plain": "After a timeout, the request {}",
+            "expert": "Timeout recovery uses {}"
+          },
+          "catalog_when": "A user-triggered side effect can succeed even if its acknowledgment times out. The service supports same-key retries and an outcome lookup, and both continuing automatically and asking the user to review status are feasible.",
+          "catalog_settled": "The draft, existing retry contract, or explicit delegation fixes timeout behavior. A read or a confirmed rejection has no uncertain side effect.",
+          "why": "A lost response can leave the result unknown. Blind retries can repeat the side effect, while waiting for review increases friction.",
+          "source": "[AWS Builders' Library, Making retries safe with idempotent APIs, late-arriving requests](https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/)",
+          "opens": [],
+          "anchor_terms": [
+            "retry",
+            "timeout",
+            "status",
+            "acknowledgment",
+            "request id",
+            "idempotency",
+            "relancer",
+            "réponse",
+            "statut"
+          ],
+          "tests": [
+            {
+              "draft": "Add timeout handling to the badge-issue button. The issuer may already have printed the badge. It supports an idempotency key and a status check.",
+              "slot": "retry_after_unknown",
+              "value": null
+            },
+            {
+              "draft": "Add timeout handling to the badge-issue button. The issuer may already have printed the badge. It supports an idempotency key and a status check. Keep it pending and retry with the same key automatically.",
+              "slot": "retry_after_unknown",
+              "value": "automatic_keyed_retry",
+              "evidence": "Keep it pending and retry with the same key automatically."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "roll_out_change",
+      "when": "Specify the production rollout of a new feature or release, including the first exposed audience or how existing work survives replacing workers. An inactive flag or a past deployment report is outside this frame.",
+      "slots": [
+        {
+          "id": "deploy_inflight",
+          "type": "enum",
+          "field": "What happens to active work at a planned worker replacement.",
+          "options": [
+            {
+              "value": "drain_active",
+              "plain": "finish before we switch",
+              "expert": "bounded drain before exit"
+            },
+            {
+              "value": "requeue_active",
+              "plain": "are put back to run again",
+              "expert": "safe requeue on termination"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "standard",
+          "rigor": "build",
+          "guard": false,
+          "cost": 3,
+          "statement": {
+            "plain": "At restart, current jobs {}",
+            "expert": "Graceful shutdown uses {}"
+          },
+          "catalog_when": "A planned restart or rollout can interrupt active work. Jobs can finish within an allowed drain window or can safely be returned and retried. The owner has not chosen whether deployment waits for current users' work.",
+          "catalog_settled": "The release policy, shutdown contract, or task fixes the handling of active jobs. A stateless change without active work does not raise it.",
+          "why": "Draining delays the restart, while requeueing can restart progress and delay completion for users.",
+          "source": "[Twelve-Factor IX, Disposability, graceful worker shutdown](https://12factor.net/disposability)",
+          "opens": [],
+          "anchor_terms": [
+            "in-flight",
+            "active",
+            "restart",
+            "shutdown",
+            "drain",
+            "requeue",
+            "route",
+            "redémarrage",
+            "tâches"
+          ],
+          "tests": [
+            {
+              "draft": "Make preview workers restart for the new image. We can drain the in-flight renders in a few minutes or safely requeue them, and release timing is flexible.",
+              "slot": "deploy_inflight",
+              "value": null
+            },
+            {
+              "draft": "Make preview workers restart for the new image. We can drain the in-flight renders in a few minutes or safely requeue them, and release timing is flexible. Wait for active renders to finish before replacing the worker.",
+              "slot": "deploy_inflight",
+              "value": "drain_active",
+              "evidence": "Wait for active renders to finish before replacing the worker."
+            }
+          ]
+        },
+        {
+          "id": "release_audience",
+          "type": "enum",
+          "field": "Who first receives the live release or flag.",
+          "options": [
+            {
+              "value": "pilot_users",
+              "plain": "a small pilot group",
+              "expert": "a canary cohort"
+            },
+            {
+              "value": "all_eligible",
+              "plain": "all eligible users",
+              "expert": "all eligible traffic"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "standard",
+          "rigor": "build",
+          "guard": false,
+          "cost": 3,
+          "statement": {
+            "plain": "The change reaches {} first",
+            "expert": "Initial rollout targets {}"
+          },
+          "catalog_when": "Plan the first production exposure of a change when a small pilot cohort and exposure to everyone eligible are both feasible. Outcomes can differ before the full rollout and the user owns the release policy.",
+          "catalog_settled": "A rollout brief, existing flag policy, user instruction, or explicit delegation fixes the initial audience. Implementing an inactive flag does not expose the feature.",
+          "why": "A pilot limits the number of people affected by an unexpected problem, while an immediate rollout gives everyone the change sooner.",
+          "source": "[Google SRE Workbook, Canarying Releases, definition and rationale](https://sre.google/workbook/canarying-releases/#what-is-canarying)",
+          "opens": [
+            "service_indicator"
+          ],
+          "anchor_terms": [
+            "audience",
+            "flag",
+            "canary",
+            "rollout",
+            "pilot",
+            "exposure",
+            "public",
+            "pilotes",
+            "périmètre"
+          ],
+          "tests": [
+            {
+              "draft": "Plan activation of the new map editor. Flags can target a pilot or everyone with editor access, and neither group has been promised a launch date.",
+              "slot": "release_audience",
+              "value": null
+            },
+            {
+              "draft": "Plan activation of the new map editor. Flags can target a pilot or everyone with editor access, and neither group has been promised a launch date. Start with the volunteer pilot group this Friday.",
+              "slot": "release_audience",
+              "value": "pilot_users",
+              "evidence": "Start with the volunteer pilot group this Friday."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recover_live_state",
+      "when": "Restore a live service and select its reopened state after loss. A practice restore on an isolated copy is outside this frame.",
+      "slots": [
+        {
+          "id": "restore_point",
+          "type": "enum",
+          "field": "Recovery point and when the actual live service can reopen.",
+          "options": [
+            {
+              "value": "replay_newer",
+              "plain": "the newest recoverable work",
+              "expert": "backup plus log replay"
+            },
+            {
+              "value": "last_snapshot",
+              "plain": "the last backup, sooner",
+              "expert": "last snapshot only"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "standard",
+          "rigor": "study",
+          "guard": true,
+          "cost": 5,
+          "statement": {
+            "plain": "Service returns with {}",
+            "expert": "Recovery uses {}"
+          },
+          "catalog_when": "Plan an actual recovery and cutover where both the last backup and additional recoverable writes are available. Replaying those writes preserves more work but delays opening the service. Selecting an older recovery point risks leaving out user work.",
+          "catalog_settled": "The approved recovery objectives, incident decision, or user instruction fixes which data must survive and when to reopen. A restore drill on a copy does not set a live recovery point.",
+          "why": "Opening from an older point can mask or lose work the user already completed. Replaying newer work can cost downtime.",
+          "source": "[AWS Well-Architected REL13-BP01, recovery objectives for downtime and data loss](https://docs.aws.amazon.com/wellarchitected/latest/reliability-pillar/rel_planning_for_recovery_objective_defined_recovery.html)",
+          "opens": [],
+          "anchor_terms": [
+            "restore",
+            "replay",
+            "backup",
+            "logs",
+            "reopen",
+            "snapshot",
+            "sauvegarde",
+            "reprise",
+            "journal",
+            "ouvrir"
+          ],
+          "tests": [
+            {
+              "draft": "Recover the registrations board. The midnight snapshot can go live in minutes and verified write logs get us nearly to the failure if we spend longer replaying.",
+              "slot": "restore_point",
+              "value": null
+            },
+            {
+              "draft": "Recover the registrations board. The midnight snapshot can go live in minutes and verified write logs get us nearly to the failure if we spend longer replaying. Do not reopen until verified writes have been replayed.",
+              "slot": "restore_point",
+              "value": "replay_newer",
+              "evidence": "Do not reopen until verified writes have been replayed."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "prioritize_backlog",
+      "when": "Choose whose requests take shared capacity during overload. Observing queue stats or changing capacity without changing who is served is outside this frame.",
+      "slots": [
+        {
+          "id": "overload_priority",
+          "type": "enum",
+          "field": "Priority between live and background requests in shared constrained capacity.",
+          "options": [
+            {
+              "value": "interactive_first",
+              "plain": "people waiting live",
+              "expert": "interactive class priority"
+            },
+            {
+              "value": "oldest_first",
+              "plain": "whoever queued earliest",
+              "expert": "FIFO across classes"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "standard",
+          "rigor": "build",
+          "guard": false,
+          "cost": 4,
+          "statement": {
+            "plain": "When busy, we serve {} first",
+            "expert": "Overload scheduling uses {}"
+          },
+          "catalog_when": "Interactive and background requests compete for scarce service capacity during a known overload. Live priority and serving oldest requests first are both feasible. Users will experience different delays and the owner has not set priority.",
+          "catalog_settled": "The draft, criticality, or service policy orders the classes. A request to tune capacity without choosing who waits leaves the existing order in place.",
+          "why": "Prioritizing interactive requests can keep a screen responsive while older asynchronous work waits longer.",
+          "source": "[Google SRE, Handling Overload, Criticality](https://sre.google/sre-book/handling-overload/#criticality); [Azure Priority Queue](https://learn.microsoft.com/en-us/azure/architecture/patterns/priority-queue)",
+          "opens": [],
+          "anchor_terms": [
+            "priority",
+            "interactive",
+            "oldest",
+            "peak",
+            "backlog",
+            "FIFO",
+            "priorité",
+            "direct",
+            "lots",
+            "ordonnancement"
+          ],
+          "tests": [
+            {
+              "draft": "At peak we get one print slot at a time for the live kiosk and the overnight batches. Both share a waiting list today. Set the priority for peak times.",
+              "slot": "overload_priority",
+              "value": null
+            },
+            {
+              "draft": "At peak we get one print slot at a time for the live kiosk and the overnight batches. Both share a waiting list today. Set the priority for peak times. Give the live kiosk first access whenever requests are waiting.",
+              "slot": "overload_priority",
+              "value": "interactive_first",
+              "evidence": "Give the live kiosk first access whenever requests are waiting."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "test_release",
+      "when": "Set what a prelaunch trial proves when the staging service and a cheaper stand-in behave differently. Comparing previously completed timings is outside this frame.",
+      "slots": [
+        {
+          "id": "staging_parity",
+          "type": "enum",
+          "field": "Level of backing-service fidelity required for the release trial.",
+          "options": [
+            {
+              "value": "production_class",
+              "plain": "the same kind of service",
+              "expert": "production-class backing services"
+            },
+            {
+              "value": "emulator",
+              "plain": "a cheaper stand-in",
+              "expert": "a lower-fidelity emulator"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "research",
+          "rigor": "study",
+          "guard": false,
+          "cost": 2,
+          "statement": {
+            "plain": "The trial uses {}",
+            "expert": "Prelaunch testing uses {}"
+          },
+          "catalog_when": "Choose how to run a prelaunch trial with an available production-class backing service and a cheaper stand-in. Service differences could change what a pass proves, and both trial scopes are supported and useful.",
+          "catalog_settled": "The acceptance plan fixes environmental parity or limits the trial to a mock workflow. Selecting it was delegated or there is no production-like test environment available.",
+          "why": "A cheaper trial may validate the workflow while missing service incompatibilities that affect real users after launch.",
+          "source": "[Twelve-Factor X, Dev/prod parity, backing services](https://12factor.net/dev-prod-parity)",
+          "opens": [],
+          "anchor_terms": [
+            "staging",
+            "emulator",
+            "trial",
+            "production",
+            "mock",
+            "émulateur",
+            "fidélité",
+            "essai"
+          ],
+          "tests": [
+            {
+              "draft": "Trial the booking lock before rollout. We can run the real kind of database in a test account or use our cheap emulator, which handles locking differently. Either trial is feasible for this milestone.",
+              "slot": "staging_parity",
+              "value": null
+            },
+            {
+              "draft": "Trial the booking lock before rollout. We can run the real kind of database in a test account or use our cheap emulator, which handles locking differently. Either trial is feasible for this milestone. The release check must use the production database engine in staging.",
+              "slot": "staging_parity",
+              "value": "production_class",
+              "evidence": "The release check must use the production database engine in staging."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "migrate_state_format",
+      "when": "Plan a live stateful format change that the old reader cannot read and specify the way back. Converting a copied sample or replaying an old drill is outside this frame.",
+      "slots": [
+        {
+          "id": "cutover_rollback",
+          "type": "enum",
+          "field": "Rollback method after writing an incompatible new format.",
+          "options": [
+            {
+              "value": "compatibility_window",
+              "plain": "a period with both formats",
+              "expert": "a tested compatibility window"
+            },
+            {
+              "value": "offline_restore",
+              "plain": "a backup restore with downtime",
+              "expert": "offline backup restore"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "research",
+          "rigor": "study",
+          "guard": true,
+          "cost": 5,
+          "statement": {
+            "plain": "After the switch, going back uses {}",
+            "expert": "Rollback relies on {}"
+          },
+          "catalog_when": "Change a stateful format or store so the old release cannot directly read new writes. A tested compatibility window and a separate offline backup-based recovery path are both viable. The owner has not chosen how much rollback access or downtime to accept.",
+          "catalog_settled": "The migration plan fixes compatibility, backup recovery and what happens to writes after cutover. A rename on a disposable copy has no live rollback risk.",
+          "why": "Removing old-format compatibility can make rollback slower or leave out post-cutover writes. Preserving it costs migration complexity.",
+          "source": "[AWS Builders' Library, Ensuring rollback safety, Two-phase deployment technique](https://builder.aws.com/content/3F04j2yRAAMBuPSPs50xwXZqg01/ensuring-rollback-safety-during-deployments)",
+          "opens": [
+            "restore_point"
+          ],
+          "anchor_terms": [
+            "rollback",
+            "cutover",
+            "go back",
+            "compatibility",
+            "format",
+            "backup",
+            "retour",
+            "bascul",
+            "arrière"
+          ],
+          "tests": [
+            {
+              "draft": "Switch the sheets store to the new format, which the old app cannot read. We can keep a tested compatibility window or recover from a backup with downtime. Either fits the change calendar.",
+              "slot": "cutover_rollback",
+              "value": null
+            },
+            {
+              "draft": "Switch the sheets store to the new format, which the old app cannot read. We can keep a tested compatibility window or recover from a backup with downtime. Either fits the change calendar. Old and new app versions must keep reading and writing for one release.",
+              "slot": "cutover_rollback",
+              "value": "compatibility_window",
+              "evidence": "Old and new app versions must keep reading and writing for one release."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "define_service_target",
+      "when": "Set the primary user-facing service indicator for an operational objective. Charting or diagnosing an existing objective alone is outside this frame.",
+      "slots": [
+        {
+          "id": "service_indicator",
+          "type": "enum",
+          "field": "Primary measure of a user-visible service objective.",
+          "options": [
+            {
+              "value": "request_success",
+              "plain": "requests that succeed",
+              "expert": "request success ratio"
+            },
+            {
+              "value": "latency_attainment",
+              "plain": "requests that finish quickly",
+              "expert": "latency threshold attainment"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "research",
+          "rigor": "study",
+          "guard": false,
+          "cost": 3,
+          "statement": {
+            "plain": "The service target tracks {}",
+            "expert": "The primary SLI is {}"
+          },
+          "catalog_when": "Set one primary measure for an operational objective. User-visible request success and completion within a time limit are separately observable, are useful for different risks, and neither is fixed by the service contract.",
+          "catalog_settled": "The agreed SLO, incident goal, or acceptance check fixes the primary measure. Dashboard work on an existing SLI does not choose another one.",
+          "why": "A request can succeed and still be too slow. The selected measure changes which regressions count against the objective.",
+          "source": "[Google SRE, Service Level Objectives, Indicators](https://sre.google/sre-book/service-level-objectives/#indicators)",
+          "opens": [],
+          "anchor_terms": [
+            "objective",
+            "target",
+            "success",
+            "latency",
+            "indicator",
+            "SLI",
+            "objectif",
+            "indicateur",
+            "latence"
+          ],
+          "tests": [
+            {
+              "draft": "Set one primary service target for the comments endpoint. Some requests succeed after a long wait while others fail fast. Both failure and slowness are measured.",
+              "slot": "service_indicator",
+              "value": null
+            },
+            {
+              "draft": "Set one primary service target for the comments endpoint. Some requests succeed after a long wait while others fail fast. Both failure and slowness are measured. Use the fraction that finish within 300 ms as primary.",
+              "slot": "service_indicator",
+              "value": "latency_attainment",
+              "evidence": "Use the fraction that finish within 300 ms as primary."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "specify_event_order",
+      "when": "Define what order a shared stream or replay guarantees across independent records. Reading a stored sequence or editing a label alone is outside this frame.",
+      "slots": [
+        {
+          "id": "event_ordering",
+          "type": "enum",
+          "field": "Ordering guarantee for independent records in a shared stream.",
+          "options": [
+            {
+              "value": "per_entity_order",
+              "plain": "in order per record",
+              "expert": "per-entity ordering"
+            },
+            {
+              "value": "global_order",
+              "plain": "in one order across records",
+              "expert": "one global order"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "research",
+          "rigor": "build",
+          "guard": false,
+          "cost": 3,
+          "statement": {
+            "plain": "Updates appear {}",
+            "expert": "Delivery guarantees {}"
+          },
+          "catalog_when": "Several independent records send events to a shared view or downstream consumer. Per-record order and a single overall order are feasible, but differ in the observable sequence and throughput. Neither guarantee is implicit in an existing contract.",
+          "catalog_settled": "The consuming workflow, queue contract, or draft says whether cross-record order matters. A batch report or unrelated change that preserves current order leaves it settled.",
+          "why": "Independent groups can be processed in parallel, while a single sequence makes a cross-record timeline reproducible at a coordination cost.",
+          "source": "[Azure Sequential Convoy, context and problem](https://learn.microsoft.com/en-us/azure/architecture/patterns/sequential-convoy#context-and-problem)",
+          "opens": [],
+          "anchor_terms": [
+            "order",
+            "ordering",
+            "sequence",
+            "replay",
+            "chronology",
+            "ordre",
+            "chronologie",
+            "événements"
+          ],
+          "tests": [
+            {
+              "draft": "Build an updates stream for independent workshop benches. The panel can show a single replayable sequence for supervisors or just preserve the order of each bench's messages.",
+              "slot": "event_ordering",
+              "value": null
+            },
+            {
+              "draft": "Build an updates stream for independent workshop benches. The panel can show a single replayable sequence for supervisors or just preserve the order of each bench's messages. Only event order within each bench is required.",
+              "slot": "event_ordering",
+              "value": "per_entity_order",
+              "evidence": "Only event order within each bench is required."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

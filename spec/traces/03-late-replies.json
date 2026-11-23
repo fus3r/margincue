@@ -1,0 +1,153 @@
+{
+  "name": "late replies and the in-flight limit",
+  "description": "At most two reviews in flight: a third cancels the oldest, whose reply is then ignored. A reply for an older text is mapped onto the current one by anchor; a cue whose anchor is gone from the current text is dropped.",
+  "assets": "fixtures/assets.json",
+  "steps": [
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      }
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1000,
+        "text": "Clean up old reports automatically. Then add a button.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 1,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nClean up old reports automatically. Then add a button.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "phase": "reviewing"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1400,
+        "text": "Clean up stale reports automatically. Then add a button.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 2,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nClean up stale reports automatically. Then add a button.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Clean up stale reports automatically. Then add a button."
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1800,
+        "text": "Clean up stale reports weekly. Then add a button.",
+        "origin": "paste"
+      },
+      "note": "third review cancels the first",
+      "expect": [
+        {
+          "type": "cancel",
+          "req": 1
+        },
+        {
+          "type": "request",
+          "req": 3,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nClean up stale reports weekly. Then add a button.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Clean up stale reports weekly. Then add a button."
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 2000,
+        "req": 1,
+        "text": "Clean up\nClean up | Cleanup means {} | archiving them | deleting them permanently",
+        "done": true
+      },
+      "note": "cancelled: ignored",
+      "expect": []
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 2100,
+        "req": 2,
+        "text": "Clean up ; stale\nClean up | Cleanup means {} | archiving them | deleting them permanently\nold | A report is old after {} | 90 days | 30 days",
+        "done": true
+      },
+      "note": "late: 'Clean up' maps, 'old' is not in the current text and is dropped",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "reviewing",
+            "latencyMs": 700,
+            "cues": [
+              {
+                "id": "c1",
+                "start": 0,
+                "end": 8,
+                "anchor": "Clean up",
+                "stale": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 2500,
+        "req": 3,
+        "text": "Clean up\nClean up | Cleanup means {} | archiving them | deleting them permanently",
+        "done": true
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "idle",
+            "latencyMs": 700,
+            "cues": [
+              {
+                "id": "c1",
+                "stale": false
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

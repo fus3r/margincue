@@ -1,0 +1,277 @@
+{
+  "name": "typing: idle gap, sentence boundary, rate limit, late then fresh reply",
+  "description": "Word-sized edits. A pause past idleMs fires a review; a typed period fires at once unless the last review was under minGapMs ago, in which case it waits for the gap. The older reply lands first and is shown stale; the fresh one keeps the cue's id.",
+  "assets": "fixtures/assets.json",
+  "steps": [
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "enabled": true,
+            "profile": "general",
+            "phase": "idle",
+            "text": "",
+            "cues": [],
+            "focus": null,
+            "latencyMs": null,
+            "decisions": [],
+            "note": null
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1000,
+        "text": "Add",
+        "origin": "type",
+        "edit": {
+          "start": 0,
+          "end": 0,
+          "text": "Add"
+        }
+      },
+      "note": "too short: no timer",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "text": "Add",
+            "phase": "idle"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1100,
+        "text": "Add an export",
+        "origin": "type",
+        "edit": {
+          "start": 3,
+          "end": 3,
+          "text": " an export"
+        }
+      },
+      "note": "reviewable: idle timer",
+      "expect": [
+        {
+          "type": "timer",
+          "at": 1380
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Add an export"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1200,
+        "text": "Add an export button",
+        "origin": "type",
+        "edit": {
+          "start": 13,
+          "end": 13,
+          "text": " button"
+        }
+      },
+      "note": "each edit pushes the idle timer",
+      "expect": [
+        {
+          "type": "timer",
+          "at": 1480
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Add an export button"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "timer",
+        "now": 1480
+      },
+      "note": "idle gap: review",
+      "expect": [
+        {
+          "type": "request",
+          "req": 1,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nAdd an export button\n>>>",
+          "maxTokens": 320,
+          "system": [
+            "You are a test reviewer. Give at most 3 cues.\n\nExample\nStatus: complete\nDraft:\n<<<\nHi.\n>>>\nOutput:\nNONE",
+            "Cue destruction and scope.",
+            "Example\nStatus: complete\nDraft:\n<<<\nAdd an export button.\n>>>\nOutput:\nexport button\nexport button | Export covers {} | filtered rows | all rows"
+          ]
+        },
+        {
+          "type": "view",
+          "view": {
+            "phase": "reviewing"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1600,
+        "text": "Add an export button to the dashboard.",
+        "origin": "type",
+        "edit": {
+          "start": 20,
+          "end": 20,
+          "text": " to the dashboard."
+        }
+      },
+      "note": "a period, but only 120 ms since the last review",
+      "expect": [
+        {
+          "type": "timer",
+          "at": 1780
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Add an export button to the dashboard."
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "timer",
+        "now": 1780
+      },
+      "note": "the gap has passed",
+      "expect": [
+        {
+          "type": "request",
+          "req": 2,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nAdd an export button to the dashboard.\n>>>",
+          "maxTokens": 320
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 2100,
+        "req": 1,
+        "text": "export button\nexport button | Export covers {} | filtered rows | all rows",
+        "done": true
+      },
+      "note": "reply for the older text: mapped by anchor, shown stale",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "reviewing",
+            "focus": "c1",
+            "latencyMs": 900,
+            "cues": [
+              {
+                "id": "c1",
+                "start": 7,
+                "end": 20,
+                "anchor": "export button",
+                "statement": "Export covers {}",
+                "options": [
+                  "filtered rows",
+                  "all rows"
+                ],
+                "chosen": null,
+                "pending": null,
+                "stale": true,
+                "provisional": false,
+                "held": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 2400,
+        "req": 2,
+        "text": "export button\nexport button | Export covers {} | filtered rows | all rows",
+        "done": true
+      },
+      "note": "fresh reply: same id, no longer stale",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "idle",
+            "latencyMs": 800,
+            "cues": [
+              {
+                "id": "c1",
+                "stale": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 3000,
+        "text": "Add an export button to the dashboard. Keep it simple.",
+        "origin": "type",
+        "edit": {
+          "start": 38,
+          "end": 38,
+          "text": " Keep it simple."
+        }
+      },
+      "note": "a sentence boundary well after the last review: at once",
+      "expect": [
+        {
+          "type": "request",
+          "req": 3,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nAdd an export button to the dashboard. Keep it simple.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "phase": "reviewing",
+            "text": "Add an export button to the dashboard. Keep it simple.",
+            "cues": [
+              {
+                "id": "c1",
+                "start": 7,
+                "end": 20,
+                "stale": true
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

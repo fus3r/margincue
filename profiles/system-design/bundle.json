@@ -1,0 +1,1447 @@
+{
+  "formatVersion": 1,
+  "version": "ecde66f57ce3",
+  "profile": "system-design",
+  "slots": [
+    {
+      "id": "freshness_window",
+      "scope": "project",
+      "frame": "serve_mutable_view",
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "30 second cache",
+              "with": [
+                [
+                  "bookings table",
+                  "origin read",
+                  "latest value"
+                ]
+              ]
+            },
+            {
+              "phrase": "cached value",
+              "with": [
+                [
+                  "bounded cache",
+                  "origin read"
+                ],
+                [
+                  "newest value",
+                  "freshness"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "must reflect a confirmed booking immediately",
+            "must always show the latest",
+            "cache for up to"
+          ]
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "cache de 30 secondes",
+              "with": [
+                [
+                  "table des réservations",
+                  "lecture directe",
+                  "valeur la plus récente"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "reflète immédiatement",
+            "affiche toujours la dernière valeur",
+            "mets en cache au plus"
+          ]
+        }
+      },
+      "label": {
+        "en": "Data freshness",
+        "fr": "Fraîcheur des données"
+      },
+      "statement": {
+        "en": {
+          "plain": "People see {}",
+          "expert": "Interactive reads use {}"
+        },
+        "fr": {
+          "plain": "Les personnes voient {}",
+          "expert": "Les lectures interactives utilisent {}"
+        }
+      },
+      "options": [
+        {
+          "id": "current_read",
+          "wording": {
+            "en": {
+              "plain": "the latest confirmed value",
+              "expert": "synchronous origin reads"
+            },
+            "fr": {
+              "plain": "la dernière valeur confirmée",
+              "expert": "une lecture synchrone à la source"
+            }
+          }
+        },
+        {
+          "id": "bounded_cache",
+          "wording": {
+            "en": {
+              "plain": "values up to 30 seconds old",
+              "expert": "a 30-second bounded cache"
+            },
+            "fr": {
+              "plain": "des valeurs de moins de 30 secondes",
+              "expert": "un cache limité à 30 secondes"
+            }
+          }
+        }
+      ],
+      "tier": "essential",
+      "rigor": "build",
+      "guard": false,
+      "cost": 3,
+      "when": "Change a display of mutable information where an authoritative read on each view and a short bounded cache are feasible. Faster access is useful and the newest value can matter, but the user has not set a freshness requirement.",
+      "settled": "The surface contract, draft, or explicit delegation fixes tolerable staleness. Historical, immutable and read-only analysis tasks do not raise it.",
+      "why": "A cache can make repeated reads faster, while people who just made a change may still see the old value.",
+      "source": "[Azure Cache-Aside, lifetime and consistency](https://learn.microsoft.com/en-us/azure/architecture/patterns/cache-aside#problems-and-considerations)",
+      "opens": []
+    },
+    {
+      "id": "submission_confirmation",
+      "scope": "project",
+      "frame": "design_submission",
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "queued receipt",
+              "with": [
+                [
+                  "completed one",
+                  "after completion",
+                  "worker commits"
+                ]
+              ]
+            },
+            {
+              "phrase": "receipt timing",
+              "with": [
+                [
+                  "durable queue",
+                  "enqueue"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "show acceptance as soon as",
+            "acknowledge on enqueue",
+            "confirm only when finished"
+          ]
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "reçu",
+              "with": [
+                [
+                  "mise en file durable"
+                ],
+                [
+                  "fin du traitement",
+                  "travail terminé"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "confirme dès la mise en file",
+            "confirme seulement à la fin"
+          ]
+        }
+      },
+      "label": {
+        "en": "Receipt timing",
+        "fr": "Moment de confirmation"
+      },
+      "statement": {
+        "en": {
+          "plain": "The user gets a receipt {}",
+          "expert": "The submit call succeeds {}"
+        },
+        "fr": {
+          "plain": "La personne reçoit une confirmation {}",
+          "expert": "La soumission réussit {}"
+        }
+      },
+      "options": [
+        {
+          "id": "on_enqueue",
+          "wording": {
+            "en": {
+              "plain": "as soon as work queues",
+              "expert": "after durable enqueue"
+            },
+            "fr": {
+              "plain": "dès la mise en file",
+              "expert": "après mise en file durable"
+            }
+          }
+        },
+        {
+          "id": "on_completion",
+          "wording": {
+            "en": {
+              "plain": "once the work finishes",
+              "expert": "after the worker commits"
+            },
+            "fr": {
+              "plain": "une fois le travail terminé",
+              "expert": "après validation par le worker"
+            }
+          }
+        }
+      ],
+      "tier": "essential",
+      "rigor": "build",
+      "guard": false,
+      "cost": 4,
+      "when": "Add a user-facing submission that enters a durable queue, where acknowledging queueing and waiting for completion are both practical. The draft leaves what the first receipt promises open.",
+      "settled": "The interaction design or API contract specifies acknowledgment on acceptance or completion. A task to inspect a queue or report finished work does not reopen the receipt.",
+      "why": "A fast receipt can confirm acceptance without telling the user the requested work is done.",
+      "source": "[Azure Queue-Based Load Leveling, response and durability](https://learn.microsoft.com/en-us/azure/architecture/patterns/queue-based-load-leveling#problems-and-considerations)",
+      "opens": [
+        "retry_after_unknown"
+      ]
+    },
+    {
+      "id": "retry_after_unknown",
+      "scope": "project",
+      "frame": "design_submission",
+      "requires": [
+        "unknown_outcome"
+      ],
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "timeout handling",
+              "with": [
+                [
+                  "status check",
+                  "outcome lookup",
+                  "idempotency key"
+                ]
+              ]
+            },
+            {
+              "phrase": "retry after timeout",
+              "with": [
+                [
+                  "side effect",
+                  "idempotency key",
+                  "outcome lookup"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "retry with the same key automatically",
+            "look up the operation before retrying"
+          ],
+          "exclude": [
+            "no idempotency key",
+            "without an idempotency key",
+            "no status check"
+          ],
+          "facts": {
+            "unknown_outcome": [
+              "may already have",
+              "outcome is unknown",
+              "lost acknowledgment",
+              "side effect may have succeeded"
+            ],
+            "keyed_retry": [
+              "idempotency key",
+              "same key retries"
+            ],
+            "outcome_lookup": [
+              "status check",
+              "outcome lookup"
+            ]
+          }
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "gestion du délai dépassé",
+              "with": [
+                [
+                  "clé d idempotence",
+                  "vérification de l état"
+                ]
+              ]
+            },
+            {
+              "phrase": "relance après timeout",
+              "with": [
+                [
+                  "clé d idempotence",
+                  "vérification de l état"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "relance automatiquement avec la même clé",
+            "vérifie l opération avant de relancer"
+          ],
+          "exclude": [
+            "pas de clé d idempotence",
+            "sans clé d idempotence",
+            "pas de vérification de l état"
+          ],
+          "facts": {
+            "unknown_outcome": [
+              "a peut être déjà",
+              "résultat inconnu",
+              "confirmation perdue"
+            ],
+            "keyed_retry": [
+              "clé d idempotence",
+              "relance avec la même clé"
+            ],
+            "outcome_lookup": [
+              "vérification de l état",
+              "consultation de l opération"
+            ]
+          }
+        }
+      },
+      "label": {
+        "en": "Retry after timeout",
+        "fr": "Relance après délai"
+      },
+      "statement": {
+        "en": {
+          "plain": "After a timeout, the request {}",
+          "expert": "Timeout recovery uses {}"
+        },
+        "fr": {
+          "plain": "Après un délai dépassé, la requête {}",
+          "expert": "La reprise après délai utilise {}"
+        }
+      },
+      "options": [
+        {
+          "id": "automatic_keyed_retry",
+          "wording": {
+            "en": {
+              "plain": "retries while shown as pending",
+              "expert": "retries with the same idempotency key"
+            },
+            "fr": {
+              "plain": "est relancée en restant en attente",
+              "expert": "une relance avec la même clé d’idempotence"
+            }
+          },
+          "requires": "keyed_retry"
+        },
+        {
+          "id": "status_before_retry",
+          "wording": {
+            "en": {
+              "plain": "waits for a status check",
+              "expert": "operation lookup before user retry"
+            },
+            "fr": {
+              "plain": "attend une vérification de son état",
+              "expert": "une consultation de l’opération avant relance manuelle"
+            }
+          },
+          "requires": "outcome_lookup"
+        }
+      ],
+      "tier": "essential",
+      "rigor": "build",
+      "guard": false,
+      "cost": 5,
+      "when": "A user-triggered side effect can succeed even if its acknowledgment times out. The service supports same-key retries and an outcome lookup, and both continuing automatically and asking the user to review status are feasible.",
+      "settled": "The draft, existing retry contract, or explicit delegation fixes timeout behavior. A read or a confirmed rejection has no uncertain side effect.",
+      "why": "A lost response can leave the result unknown. Blind retries can repeat the side effect, while waiting for review increases friction.",
+      "source": "[AWS Builders' Library, Making retries safe with idempotent APIs, late-arriving requests](https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/)",
+      "opens": []
+    },
+    {
+      "id": "live_degradation",
+      "scope": "project",
+      "frame": "serve_mutable_view",
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "labeled snapshot",
+              "with": [
+                [
+                  "offline",
+                  "outage",
+                  "unavailable"
+                ]
+              ]
+            },
+            {
+              "phrase": "unavailable notice",
+              "with": [
+                [
+                  "last saved view",
+                  "snapshot"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "serve the last snapshot read only",
+            "show an unavailable notice"
+          ],
+          "facts": {
+            "saved_snapshot": [
+              "last labeled snapshot",
+              "saved snapshot",
+              "last saved view"
+            ]
+          }
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "dernier instantané",
+              "with": [
+                [
+                  "indisponible",
+                  "panne",
+                  "hors ligne"
+                ]
+              ]
+            },
+            {
+              "phrase": "avis d indisponibilité",
+              "with": [
+                [
+                  "dernière vue enregistrée",
+                  "instantané"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "montre le dernier instantané en lecture seule",
+            "affiche un avis d indisponibilité"
+          ],
+          "facts": {
+            "saved_snapshot": [
+              "dernier instantané",
+              "dernière vue enregistrée"
+            ]
+          }
+        }
+      },
+      "label": {
+        "en": "Outage display",
+        "fr": "Affichage en panne"
+      },
+      "statement": {
+        "en": {
+          "plain": "During the outage, people see {}",
+          "expert": "The read path falls back to {}"
+        },
+        "fr": {
+          "plain": "Pendant la panne, la vue montre {}",
+          "expert": "Le chemin de lecture se replie sur {}"
+        }
+      },
+      "options": [
+        {
+          "id": "readonly_snapshot",
+          "wording": {
+            "en": {
+              "plain": "the last saved view, read-only",
+              "expert": "a labeled read-only snapshot"
+            },
+            "fr": {
+              "plain": "le dernier état enregistré en lecture seule",
+              "expert": "un instantané signalé et en lecture seule"
+            }
+          },
+          "requires": "saved_snapshot"
+        },
+        {
+          "id": "unavailable_notice",
+          "wording": {
+            "en": {
+              "plain": "an unavailable notice",
+              "expert": "an unavailable response"
+            },
+            "fr": {
+              "plain": "un avis d’indisponibilité",
+              "expert": "une réponse d’indisponibilité"
+            }
+          }
+        }
+      ],
+      "tier": "essential",
+      "rigor": "build",
+      "guard": false,
+      "cost": 4,
+      "when": "An interactive view depends on a service that may be unavailable. Serving a labeled read-only last result is safe and available, and showing an unavailable notice is also acceptable. The user owns availability versus freshness during the outage.",
+      "settled": "The fallback policy or draft fixes cached results or an error. If stale inputs would violate the user’s requirements, they are not a feasible fallback.",
+      "why": "A reduced view preserves access but may present out-of-date information. An unavailable notice avoids that ambiguity.",
+      "source": "[Google SRE, Addressing Cascading Failures, Enter Degraded Modes](https://sre.google/sre-book/addressing-cascading-failures/#enter-degraded-modes)",
+      "opens": []
+    },
+    {
+      "id": "deploy_inflight",
+      "scope": "project",
+      "frame": "roll_out_change",
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "drain",
+              "with": [
+                [
+                  "safely requeue",
+                  "requeue active jobs"
+                ],
+                [
+                  "restart",
+                  "rollout",
+                  "shutdown"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "wait for active renders to finish",
+            "drain all active jobs",
+            "requeue all in flight jobs"
+          ]
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "redémarrage",
+              "with": [
+                [
+                  "laisser finir",
+                  "vider la file"
+                ],
+                [
+                  "remettre en file",
+                  "relancer les tâches"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "attends que les tâches se terminent",
+            "remets toutes les tâches en file"
+          ]
+        }
+      },
+      "label": {
+        "en": "Active jobs",
+        "fr": "Tâches en cours"
+      },
+      "statement": {
+        "en": {
+          "plain": "At restart, current jobs {}",
+          "expert": "Graceful shutdown uses {}"
+        },
+        "fr": {
+          "plain": "Au redémarrage, les tâches en cours {}",
+          "expert": "L’arrêt contrôlé utilise {}"
+        }
+      },
+      "options": [
+        {
+          "id": "drain_active",
+          "wording": {
+            "en": {
+              "plain": "finish before we switch",
+              "expert": "bounded drain before exit"
+            },
+            "fr": {
+              "plain": "finissent avant la bascule",
+              "expert": "une attente bornée avant arrêt"
+            }
+          }
+        },
+        {
+          "id": "requeue_active",
+          "wording": {
+            "en": {
+              "plain": "are put back to run again",
+              "expert": "safe requeue on termination"
+            },
+            "fr": {
+              "plain": "sont remises en file pour repartir",
+              "expert": "une remise en file sûre à l’arrêt"
+            }
+          }
+        }
+      ],
+      "tier": "standard",
+      "rigor": "build",
+      "guard": false,
+      "cost": 3,
+      "when": "A planned restart or rollout can interrupt active work. Jobs can finish within an allowed drain window or can safely be returned and retried. The owner has not chosen whether deployment waits for current users' work.",
+      "settled": "The release policy, shutdown contract, or task fixes the handling of active jobs. A stateless change without active work does not raise it.",
+      "why": "Draining delays the restart, while requeueing can restart progress and delay completion for users.",
+      "source": "[Twelve-Factor IX, Disposability, graceful worker shutdown](https://12factor.net/disposability)",
+      "opens": []
+    },
+    {
+      "id": "restore_point",
+      "scope": "project",
+      "frame": "recover_live_state",
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "snapshot",
+              "with": [
+                [
+                  "verified write logs",
+                  "log replay"
+                ],
+                [
+                  "recover",
+                  "reopen",
+                  "restore the live"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "do not reopen until",
+            "use the last snapshot only"
+          ],
+          "exclude": [
+            "restore drill",
+            "isolated copy"
+          ],
+          "facts": {
+            "replay_logs": [
+              "verified write logs",
+              "recoverable writes",
+              "available write logs"
+            ]
+          }
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "sauvegarde",
+              "with": [
+                [
+                  "journaux vérifiés",
+                  "rejouer les écritures"
+                ],
+                [
+                  "restaure",
+                  "rétablis",
+                  "rouvre"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "ne rouvre pas avant",
+            "utilise uniquement la dernière sauvegarde"
+          ],
+          "exclude": [
+            "exercice de restauration",
+            "copie isolée"
+          ],
+          "facts": {
+            "replay_logs": [
+              "journaux vérifiés",
+              "écritures récupérables"
+            ]
+          }
+        }
+      },
+      "label": {
+        "en": "Recovery state",
+        "fr": "État restauré"
+      },
+      "statement": {
+        "en": {
+          "plain": "Service returns with {}",
+          "expert": "Recovery uses {}"
+        },
+        "fr": {
+          "plain": "Le service revient avec {}",
+          "expert": "La reprise utilise {}"
+        }
+      },
+      "options": [
+        {
+          "id": "replay_newer",
+          "wording": {
+            "en": {
+              "plain": "the newest recoverable work",
+              "expert": "backup plus log replay"
+            },
+            "fr": {
+              "plain": "les données récupérables les plus récentes",
+              "expert": "la sauvegarde et le rejeu des journaux"
+            }
+          },
+          "requires": "replay_logs"
+        },
+        {
+          "id": "last_snapshot",
+          "wording": {
+            "en": {
+              "plain": "the last backup, sooner",
+              "expert": "last snapshot only"
+            },
+            "fr": {
+              "plain": "la dernière sauvegarde, plus tôt",
+              "expert": "le dernier instantané seul"
+            }
+          }
+        }
+      ],
+      "tier": "standard",
+      "rigor": "study",
+      "guard": true,
+      "cost": 5,
+      "when": "Plan an actual recovery and cutover where both the last backup and additional recoverable writes are available. Replaying those writes preserves more work but delays opening the service. Selecting an older recovery point risks leaving out user work.",
+      "settled": "The approved recovery objectives, incident decision, or user instruction fixes which data must survive and when to reopen. A restore drill on a copy does not set a live recovery point.",
+      "why": "Opening from an older point can mask or lose work the user already completed. Replaying newer work can cost downtime.",
+      "source": "[AWS Well-Architected REL13-BP01, recovery objectives for downtime and data loss](https://docs.aws.amazon.com/wellarchitected/latest/reliability-pillar/rel_planning_for_recovery_objective_defined_recovery.html)",
+      "opens": []
+    },
+    {
+      "id": "overload_priority",
+      "scope": "project",
+      "frame": "prioritize_backlog",
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "set the priority",
+              "with": [
+                [
+                  "live kiosk",
+                  "interactive"
+                ],
+                [
+                  "batches",
+                  "background"
+                ],
+                [
+                  "peak",
+                  "overload"
+                ]
+              ]
+            },
+            {
+              "phrase": "interactive priority",
+              "with": [
+                [
+                  "oldest first",
+                  "fifo"
+                ],
+                [
+                  "overload",
+                  "shared capacity"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "give the live kiosk first access",
+            "serve the oldest request first"
+          ]
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "fixe la priorité",
+              "with": [
+                [
+                  "interactif",
+                  "en direct"
+                ],
+                [
+                  "lots",
+                  "arrière plan"
+                ],
+                [
+                  "pic",
+                  "surcharge"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "sers les plus anciennes demandes",
+            "donne la priorité aux requêtes interactives"
+          ]
+        }
+      },
+      "label": {
+        "en": "Overload priority",
+        "fr": "Priorité en surcharge"
+      },
+      "statement": {
+        "en": {
+          "plain": "When busy, we serve {} first",
+          "expert": "Overload scheduling uses {}"
+        },
+        "fr": {
+          "plain": "En cas de surcharge, on sert d’abord {}",
+          "expert": "L’ordonnancement en surcharge utilise {}"
+        }
+      },
+      "options": [
+        {
+          "id": "interactive_first",
+          "wording": {
+            "en": {
+              "plain": "people waiting live",
+              "expert": "interactive class priority"
+            },
+            "fr": {
+              "plain": "les personnes qui attendent en direct",
+              "expert": "la priorité interactive"
+            }
+          }
+        },
+        {
+          "id": "oldest_first",
+          "wording": {
+            "en": {
+              "plain": "whoever queued earliest",
+              "expert": "FIFO across classes"
+            },
+            "fr": {
+              "plain": "les demandes les plus anciennes",
+              "expert": "une file FIFO commune"
+            }
+          }
+        }
+      ],
+      "tier": "standard",
+      "rigor": "build",
+      "guard": false,
+      "cost": 4,
+      "when": "Interactive and background requests compete for scarce service capacity during a known overload. Live priority and serving oldest requests first are both feasible. Users will experience different delays and the owner has not set priority.",
+      "settled": "The draft, criticality, or service policy orders the classes. A request to tune capacity without choosing who waits leaves the existing order in place.",
+      "why": "Prioritizing interactive requests can keep a screen responsive while older asynchronous work waits longer.",
+      "source": "[Google SRE, Handling Overload, Criticality](https://sre.google/sre-book/handling-overload/#criticality); [Azure Priority Queue](https://learn.microsoft.com/en-us/azure/architecture/patterns/priority-queue)",
+      "opens": []
+    },
+    {
+      "id": "release_audience",
+      "scope": "project",
+      "frame": "roll_out_change",
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "plan activation",
+              "with": [
+                [
+                  "pilot",
+                  "canary"
+                ],
+                [
+                  "everyone",
+                  "all eligible"
+                ]
+              ]
+            },
+            {
+              "phrase": "first rollout",
+              "with": [
+                [
+                  "canary",
+                  "pilot"
+                ],
+                [
+                  "everyone",
+                  "all users"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "start with the volunteer pilot",
+            "release to all eligible users",
+            "start with a canary"
+          ]
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "premier déploiement",
+              "with": [
+                [
+                  "pilote",
+                  "canari"
+                ],
+                [
+                  "tout le monde",
+                  "tous les utilisateurs"
+                ]
+              ]
+            },
+            {
+              "phrase": "planifie l activation",
+              "with": [
+                [
+                  "groupe pilote"
+                ],
+                [
+                  "tous les utilisateurs"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "commence par le groupe pilote",
+            "lance pour tous les utilisateurs"
+          ]
+        }
+      },
+      "label": {
+        "en": "First rollout",
+        "fr": "Premier déploiement"
+      },
+      "statement": {
+        "en": {
+          "plain": "The change reaches {} first",
+          "expert": "Initial rollout targets {}"
+        },
+        "fr": {
+          "plain": "La modification atteint d’abord {}",
+          "expert": "Le déploiement initial vise {}"
+        }
+      },
+      "options": [
+        {
+          "id": "pilot_users",
+          "wording": {
+            "en": {
+              "plain": "a small pilot group",
+              "expert": "a canary cohort"
+            },
+            "fr": {
+              "plain": "un petit groupe pilote",
+              "expert": "une cohorte canari"
+            }
+          }
+        },
+        {
+          "id": "all_eligible",
+          "wording": {
+            "en": {
+              "plain": "all eligible users",
+              "expert": "all eligible traffic"
+            },
+            "fr": {
+              "plain": "toutes les personnes éligibles",
+              "expert": "tout le trafic éligible"
+            }
+          }
+        }
+      ],
+      "tier": "standard",
+      "rigor": "build",
+      "guard": false,
+      "cost": 3,
+      "when": "Plan the first production exposure of a change when a small pilot cohort and exposure to everyone eligible are both feasible. Outcomes can differ before the full rollout and the user owns the release policy.",
+      "settled": "A rollout brief, existing flag policy, user instruction, or explicit delegation fixes the initial audience. Implementing an inactive flag does not expose the feature.",
+      "why": "A pilot limits the number of people affected by an unexpected problem, while an immediate rollout gives everyone the change sooner.",
+      "source": "[Google SRE Workbook, Canarying Releases, definition and rationale](https://sre.google/workbook/canarying-releases/#what-is-canarying)",
+      "opens": [
+        "service_indicator"
+      ]
+    },
+    {
+      "id": "staging_parity",
+      "scope": "project",
+      "frame": "test_release",
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "cheap emulator",
+              "with": [
+                [
+                  "test account",
+                  "real kind of database"
+                ],
+                [
+                  "rollout",
+                  "trial"
+                ]
+              ]
+            },
+            {
+              "phrase": "emulator",
+              "with": [
+                [
+                  "production class"
+                ],
+                [
+                  "prelaunch",
+                  "release trial"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "must use the production database engine",
+            "use the emulator for this trial"
+          ]
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "émulateur",
+              "with": [
+                [
+                  "moteur de production",
+                  "base réelle"
+                ],
+                [
+                  "essai",
+                  "avant le lancement"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "doit utiliser le moteur de production",
+            "utilise l émulateur pour cet essai"
+          ]
+        }
+      },
+      "label": {
+        "en": "Release test",
+        "fr": "Essai avant lancement"
+      },
+      "statement": {
+        "en": {
+          "plain": "The trial uses {}",
+          "expert": "Prelaunch testing uses {}"
+        },
+        "fr": {
+          "plain": "L’essai utilise {}",
+          "expert": "Le test avant lancement utilise {}"
+        }
+      },
+      "options": [
+        {
+          "id": "production_class",
+          "wording": {
+            "en": {
+              "plain": "the same kind of service",
+              "expert": "production-class backing services"
+            },
+            "fr": {
+              "plain": "le même type de service",
+              "expert": "des services de même classe qu’en production"
+            }
+          }
+        },
+        {
+          "id": "emulator",
+          "wording": {
+            "en": {
+              "plain": "a cheaper stand-in",
+              "expert": "a lower-fidelity emulator"
+            },
+            "fr": {
+              "plain": "un substitut moins coûteux",
+              "expert": "un émulateur de fidélité moindre"
+            }
+          }
+        }
+      ],
+      "tier": "research",
+      "rigor": "study",
+      "guard": false,
+      "cost": 2,
+      "when": "Choose how to run a prelaunch trial with an available production-class backing service and a cheaper stand-in. Service differences could change what a pass proves, and both trial scopes are supported and useful.",
+      "settled": "The acceptance plan fixes environmental parity or limits the trial to a mock workflow. Selecting it was delegated or there is no production-like test environment available.",
+      "why": "A cheaper trial may validate the workflow while missing service incompatibilities that affect real users after launch.",
+      "source": "[Twelve-Factor X, Dev/prod parity, backing services](https://12factor.net/dev-prod-parity)",
+      "opens": []
+    },
+    {
+      "id": "cutover_rollback",
+      "scope": "project",
+      "frame": "migrate_state_format",
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "old app cannot read",
+              "with": [
+                [
+                  "compatibility window",
+                  "backup with downtime"
+                ]
+              ]
+            },
+            {
+              "phrase": "new format",
+              "with": [
+                [
+                  "rollback",
+                  "compatibility window"
+                ],
+                [
+                  "old reader",
+                  "incompatible"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "old and new app versions must keep",
+            "rollback requires an offline restore"
+          ],
+          "exclude": [
+            "disposable copy",
+            "dry run only"
+          ]
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "nouveau format",
+              "with": [
+                [
+                  "ancien lecteur",
+                  "ancienne version"
+                ],
+                [
+                  "fenêtre de compatibilité",
+                  "sauvegarde hors ligne"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "les deux versions doivent continuer à lire",
+            "le retour exige une restauration hors ligne"
+          ],
+          "exclude": [
+            "copie jetable",
+            "simulation seulement"
+          ]
+        }
+      },
+      "label": {
+        "en": "After cutover",
+        "fr": "Après la bascule"
+      },
+      "statement": {
+        "en": {
+          "plain": "After the switch, going back uses {}",
+          "expert": "Rollback relies on {}"
+        },
+        "fr": {
+          "plain": "Après la bascule, le retour passe par {}",
+          "expert": "Le retour arrière repose sur {}"
+        }
+      },
+      "options": [
+        {
+          "id": "compatibility_window",
+          "wording": {
+            "en": {
+              "plain": "a period with both formats",
+              "expert": "a tested compatibility window"
+            },
+            "fr": {
+              "plain": "une période avec les deux formats",
+              "expert": "une fenêtre de compatibilité testée"
+            }
+          }
+        },
+        {
+          "id": "offline_restore",
+          "wording": {
+            "en": {
+              "plain": "a backup restore with downtime",
+              "expert": "offline backup restore"
+            },
+            "fr": {
+              "plain": "une restauration avec interruption",
+              "expert": "une restauration hors ligne de la sauvegarde"
+            }
+          }
+        }
+      ],
+      "tier": "research",
+      "rigor": "study",
+      "guard": true,
+      "cost": 5,
+      "when": "Change a stateful format or store so the old release cannot directly read new writes. A tested compatibility window and a separate offline backup-based recovery path are both viable. The owner has not chosen how much rollback access or downtime to accept.",
+      "settled": "The migration plan fixes compatibility, backup recovery and what happens to writes after cutover. A rename on a disposable copy has no live rollback risk.",
+      "why": "Removing old-format compatibility can make rollback slower or leave out post-cutover writes. Preserving it costs migration complexity.",
+      "source": "[AWS Builders' Library, Ensuring rollback safety, Two-phase deployment technique](https://builder.aws.com/content/3F04j2yRAAMBuPSPs50xwXZqg01/ensuring-rollback-safety-during-deployments)",
+      "opens": [
+        "restore_point"
+      ]
+    },
+    {
+      "id": "service_indicator",
+      "scope": "project",
+      "frame": "define_service_target",
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "primary service target",
+              "with": [
+                [
+                  "failure",
+                  "succeed"
+                ],
+                [
+                  "slowness",
+                  "long wait"
+                ]
+              ]
+            },
+            {
+              "phrase": "primary sli",
+              "with": [
+                [
+                  "success ratio",
+                  "request success"
+                ],
+                [
+                  "latency",
+                  "response time"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "finish within 300 ms as primary",
+            "use request success as primary",
+            "primary sli is"
+          ]
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "objectif de service principal",
+              "with": [
+                [
+                  "échec",
+                  "réussite"
+                ],
+                [
+                  "lenteur",
+                  "latence"
+                ]
+              ]
+            },
+            {
+              "phrase": "indicateur principal",
+              "with": [
+                [
+                  "taux de réussite"
+                ],
+                [
+                  "latence"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "utilise le taux de réussite comme",
+            "l indicateur principal est"
+          ]
+        }
+      },
+      "label": {
+        "en": "Service target",
+        "fr": "Objectif de service"
+      },
+      "statement": {
+        "en": {
+          "plain": "The service target tracks {}",
+          "expert": "The primary SLI is {}"
+        },
+        "fr": {
+          "plain": "L’objectif de service suit {}",
+          "expert": "Le SLI principal est {}"
+        }
+      },
+      "options": [
+        {
+          "id": "request_success",
+          "wording": {
+            "en": {
+              "plain": "requests that succeed",
+              "expert": "request success ratio"
+            },
+            "fr": {
+              "plain": "les requêtes qui réussissent",
+              "expert": "le taux de requêtes réussies"
+            }
+          }
+        },
+        {
+          "id": "latency_attainment",
+          "wording": {
+            "en": {
+              "plain": "requests that finish quickly",
+              "expert": "latency threshold attainment"
+            },
+            "fr": {
+              "plain": "les requêtes qui se terminent vite",
+              "expert": "la part des requêtes sous le seuil de latence"
+            }
+          }
+        }
+      ],
+      "tier": "research",
+      "rigor": "study",
+      "guard": false,
+      "cost": 3,
+      "when": "Set one primary measure for an operational objective. User-visible request success and completion within a time limit are separately observable, are useful for different risks, and neither is fixed by the service contract.",
+      "settled": "The agreed SLO, incident goal, or acceptance check fixes the primary measure. Dashboard work on an existing SLI does not choose another one.",
+      "why": "A request can succeed and still be too slow. The selected measure changes which regressions count against the objective.",
+      "source": "[Google SRE, Service Level Objectives, Indicators](https://sre.google/sre-book/service-level-objectives/#indicators)",
+      "opens": []
+    },
+    {
+      "id": "event_ordering",
+      "scope": "project",
+      "frame": "specify_event_order",
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "single replayable sequence",
+              "with": [
+                [
+                  "independent",
+                  "each bench"
+                ]
+              ]
+            },
+            {
+              "phrase": "event ordering",
+              "with": [
+                [
+                  "per entity",
+                  "per record"
+                ],
+                [
+                  "global order",
+                  "single order"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "only event order within",
+            "guarantee global order across"
+          ]
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "ordre des événements",
+              "with": [
+                [
+                  "par entité",
+                  "par enregistrement"
+                ],
+                [
+                  "ordre global",
+                  "séquence unique"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "seul l ordre par entité",
+            "garantis l ordre global"
+          ]
+        }
+      },
+      "label": {
+        "en": "Event order",
+        "fr": "Ordre des événements"
+      },
+      "statement": {
+        "en": {
+          "plain": "Updates appear {}",
+          "expert": "Delivery guarantees {}"
+        },
+        "fr": {
+          "plain": "Les mises à jour apparaissent {}",
+          "expert": "La livraison garantit {}"
+        }
+      },
+      "options": [
+        {
+          "id": "per_entity_order",
+          "wording": {
+            "en": {
+              "plain": "in order per record",
+              "expert": "per-entity ordering"
+            },
+            "fr": {
+              "plain": "dans l’ordre de chaque enregistrement",
+              "expert": "l’ordre par entité"
+            }
+          }
+        },
+        {
+          "id": "global_order",
+          "wording": {
+            "en": {
+              "plain": "in one order across records",
+              "expert": "one global order"
+            },
+            "fr": {
+              "plain": "dans un ordre commun",
+              "expert": "un ordre global unique"
+            }
+          }
+        }
+      ],
+      "tier": "research",
+      "rigor": "build",
+      "guard": false,
+      "cost": 3,
+      "when": "Several independent records send events to a shared view or downstream consumer. Per-record order and a single overall order are feasible, but differ in the observable sequence and throughput. Neither guarantee is implicit in an existing contract.",
+      "settled": "The consuming workflow, queue contract, or draft says whether cross-record order matters. A batch report or unrelated change that preserves current order leaves it settled.",
+      "why": "Independent groups can be processed in parallel, while a single sequence makes a cross-record timeline reproducible at a coordination cost.",
+      "source": "[Azure Sequential Convoy, context and problem](https://learn.microsoft.com/en-us/azure/architecture/patterns/sequential-convoy#context-and-problem)",
+      "opens": []
+    }
+  ]
+}

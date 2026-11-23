@@ -1,0 +1,264 @@
+{
+  "name": "held cues while the sentence is being written (contract v1.1)",
+  "description": "A cue is held while the caret is at the end, the anchor is in the unterminated last sentence, the last edit is under settleMs (700) old and the text runs fewer than holdChars (16) past the anchor. Held cues stay in the view with held: true and take no focus; the core asks for a timer at the settle point.",
+  "assets": "fixtures/assets.json",
+  "steps": [
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      }
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1000,
+        "text": "Delete the unused flags",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 1,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nDelete the unused flags\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Delete the unused flags"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 1400,
+        "req": 1,
+        "text": "unused\nunused | A flag is unused when {} | no code references it | it is off everywhere",
+        "done": true
+      },
+      "note": "held: timer at the settle point",
+      "expect": [
+        {
+          "type": "timer",
+          "at": 1700
+        },
+        {
+          "type": "view",
+          "view": {
+            "phase": "idle",
+            "focus": null,
+            "cues": [
+              {
+                "id": "c1",
+                "start": 11,
+                "end": 17,
+                "held": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "timer",
+        "now": 1700
+      },
+      "note": "settled: released",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "focus": "c1",
+            "cues": [
+              {
+                "id": "c1",
+                "held": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 2000,
+        "text": "Delete the unused flags now",
+        "origin": "type",
+        "edit": {
+          "start": 23,
+          "end": 23,
+          "text": " now"
+        }
+      },
+      "note": "typing again near the anchor holds it again; the idle review comes before the settle point",
+      "expect": [
+        {
+          "type": "timer",
+          "at": 2280
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Delete the unused flags now",
+            "focus": null,
+            "cues": [
+              {
+                "id": "c1",
+                "held": true,
+                "stale": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 2050,
+        "text": "Delete the unused flags now",
+        "origin": "type",
+        "edit": {
+          "start": 5,
+          "end": 5,
+          "text": ""
+        },
+        "cursor": 5
+      },
+      "note": "caret away from the end: released",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "focus": "c1",
+            "cues": [
+              {
+                "id": "c1",
+                "held": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 2100,
+        "text": "Delete the unused flags now",
+        "origin": "type",
+        "edit": {
+          "start": 27,
+          "end": 27,
+          "text": ""
+        },
+        "cursor": 27
+      },
+      "note": "caret back at the end: held",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "focus": null,
+            "cues": [
+              {
+                "id": "c1",
+                "held": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "timer",
+        "now": 2280
+      },
+      "note": "idle review; the settle timer is next",
+      "expect": [
+        {
+          "type": "request",
+          "req": 2,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nDelete the unused flags now\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "timer",
+          "at": 2700
+        },
+        {
+          "type": "view",
+          "view": {
+            "phase": "reviewing"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 2300,
+        "text": "Delete the unused flags now please",
+        "origin": "type",
+        "edit": {
+          "start": 27,
+          "end": 27,
+          "text": " please"
+        }
+      },
+      "note": "17 code units past the anchor: released",
+      "expect": [
+        {
+          "type": "timer",
+          "at": 2580
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Delete the unused flags now please",
+            "focus": "c1",
+            "cues": [
+              {
+                "id": "c1",
+                "held": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 2400,
+        "text": "Delete the unused flags now please.",
+        "origin": "type",
+        "edit": {
+          "start": 34,
+          "end": 34,
+          "text": "."
+        }
+      },
+      "note": "a period under minGapMs after the last review waits for the gap (already 2580)",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "text": "Delete the unused flags now please."
+          }
+        }
+      ]
+    }
+  ]
+}

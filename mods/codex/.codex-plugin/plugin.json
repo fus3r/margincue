@@ -1,0 +1,10 @@
+{
+  "name": "margincue",
+  "version": "0.1.0",
+  "description": "Ask about consequential decisions when a request starts something new.",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "MarginCue"
+  }
+}

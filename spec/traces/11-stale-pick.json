@@ -1,0 +1,274 @@
+{
+  "name": "a pick on a stale cue waits for the next reply (contract v1.1)",
+  "description": "A pick on a stale cue is remembered (pending) and applied only if the next reply for the current text still has the cue; otherwise it is dropped and the view carries a note until the next edit or pick.",
+  "assets": "fixtures/assets.json",
+  "steps": [
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      }
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1000,
+        "text": "Clean up old reports automatically. Then add a button.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 1,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nClean up old reports automatically. Then add a button.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {}
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 1400,
+        "req": 1,
+        "text": "old\nold | A report is old after {} | 90 days | 30 days",
+        "done": true
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "cues": [
+              {
+                "id": "c1",
+                "start": 9,
+                "end": 12,
+                "stale": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 2000,
+        "text": "Clean up old reports automatically. Then add a button. Only reports older than 90 days.",
+        "origin": "type",
+        "edit": {
+          "start": 54,
+          "end": 54,
+          "text": " Only reports older than 90 days."
+        }
+      },
+      "note": "text after the anchor can settle the cue",
+      "expect": [
+        {
+          "type": "request",
+          "req": 2,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nClean up old reports automatically. Then add a button. Only reports older than 90 days.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "cues": [
+              {
+                "id": "c1",
+                "stale": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "pick",
+        "now": 2100,
+        "cue": "c1",
+        "option": 1
+      },
+      "note": "stale: pending; the review in flight is the one that decides",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "cues": [
+              {
+                "id": "c1",
+                "chosen": null,
+                "pending": 1
+              }
+            ],
+            "decisions": []
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 2600,
+        "req": 2,
+        "text": "NONE",
+        "done": true
+      },
+      "note": "the cue is gone: the pick is dropped, with a note",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "idle",
+            "cues": [],
+            "note": "The draft changed under that pick; it was not applied.",
+            "decisions": []
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 3000,
+        "text": "Archive the old invoices. Then email the team.",
+        "origin": "paste"
+      },
+      "note": "an edit clears the note",
+      "expect": [
+        {
+          "type": "request",
+          "req": 3,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nArchive the old invoices. Then email the team.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Archive the old invoices. Then email the team.",
+            "note": null,
+            "phase": "reviewing"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 3400,
+        "req": 3,
+        "text": "old\nold | An invoice is old after {} | 1 year | 90 days",
+        "done": true
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "idle",
+            "cues": [
+              {
+                "id": "c2",
+                "start": 12,
+                "end": 15
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 4000,
+        "text": "Archive the old invoices. Then email the team. Soon.",
+        "origin": "type",
+        "edit": {
+          "start": 46,
+          "end": 46,
+          "text": " Soon."
+        }
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 4,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nArchive the old invoices. Then email the team. Soon.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "cues": [
+              {
+                "id": "c2",
+                "stale": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "pick",
+        "now": 4100,
+        "cue": "c2",
+        "option": 1
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "cues": [
+              {
+                "id": "c2",
+                "pending": 1,
+                "chosen": null
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 4500,
+        "req": 4,
+        "text": "old\nold | An invoice is old after {} | 1 year | 90 days",
+        "done": true
+      },
+      "note": "the reply confirms the cue: the pick applies",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "idle",
+            "decisions": [
+              "An invoice is old after 90 days."
+            ],
+            "cues": [
+              {
+                "id": "c2",
+                "chosen": 1,
+                "pending": null,
+                "stale": false
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

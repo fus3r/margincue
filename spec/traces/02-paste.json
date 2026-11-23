@@ -1,0 +1,87 @@
+{
+  "name": "paste reviews at once",
+  "description": "A paste (or history, fill, open) is reviewed with no idle wait. NONE leaves the band quiet.",
+  "assets": "fixtures/assets.json",
+  "steps": [
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      }
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1000,
+        "text": "Delete the old reports and archive the rest.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 1,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nDelete the old reports and archive the rest.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "phase": "reviewing",
+            "text": "Delete the old reports and archive the rest."
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 1650,
+        "req": 1,
+        "text": "NONE",
+        "done": true
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "idle",
+            "cues": [],
+            "latencyMs": 650
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1700,
+        "text": "Delete the old reports and archive the rest.\n\nAlso the logs.",
+        "origin": "paste",
+        "edit": {
+          "start": 44,
+          "end": 44,
+          "text": "\n\nAlso the logs."
+        }
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 2,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nDelete the old reports and archive the rest.\n\nAlso the logs.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "phase": "reviewing"
+          }
+        }
+      ]
+    }
+  ]
+}

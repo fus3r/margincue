@@ -1,0 +1,28 @@
+{
+  "name": "quiet keeps a one-row sheet with an answering pane, and off cancels requests",
+  "assets": "catalogs",
+  "steps": [
+    { "event": { "type": "config", "enabled": true, "mode": "quiet", "language": "auto", "sheet": true, "profile": "general", "streaming": false, "eagerPlan": false } },
+    { "event": { "type": "draft", "now": 100, "origin": "paste", "text": "Crée un jeu de rythme pour trois joueurs." },
+      "expect": [{ "type": "request", "kind": "sheet", "req": 1 }, { "type": "view", "view": { "sheet": { "pending": true } } }] },
+    { "event": { "type": "reply", "now": 200, "req": 1, "done": true, "text": "Où jouer ? | navigateur | mobile" },
+      "expect": [{ "type": "view", "view": { "sheet": { "collapsed": true, "language": "fr", "items": [{ "chosen": null }] } } }] },
+    { "event": { "type": "sheetPane", "id": 1, "move": "open" },
+      "expect": [{ "type": "view", "view": { "sheet": { "collapsed": true, "pane": { "item": "c1" } } } }] },
+    { "event": { "type": "sheetAnswer", "id": 1, "now": 210, "cue": "c1", "option": 1, "via": "pane" },
+      "expect": [{ "type": "view", "view": { "sheet": { "collapsed": true, "pane": { "$absent": true }, "items": [{ "chosen": 1 }] } } }] },
+    { "event": { "type": "config", "enabled": true, "mode": "auto", "language": "auto", "sheet": true, "profile": "general", "streaming": false, "eagerPlan": false },
+      "expect": [{ "type": "view", "view": { "state": { "mode": "auto" }, "sheet": { "collapsed": false } } }] },
+    { "event": { "type": "config", "enabled": true, "mode": "on", "language": "auto", "sheet": true, "profile": "general", "streaming": false, "eagerPlan": false },
+      "expect": [{ "type": "view", "view": { "state": { "mode": "on" }, "sheet": { "collapsed": false } } }] },
+    { "event": { "type": "draft", "now": 500, "origin": "paste", "text": "Build a tool for sorting my photo albums." },
+      "expect": [{ "type": "request", "kind": "sheet", "req": 2 }, { "type": "view", "view": { "sheet": { "pending": true } } }] },
+    { "event": { "type": "config", "enabled": true, "mode": "off", "language": "auto", "sheet": true, "profile": "general", "streaming": false, "eagerPlan": false },
+      "expect": [{ "type": "cancel", "req": 2 }, { "type": "view", "view": { "phase": "off", "sheet": { "$absent": true } } }] },
+    { "event": { "type": "reply", "now": 700, "req": 2, "done": true, "text": "Who uses it? | me | team" }, "expect": [] },
+    { "event": { "type": "config", "enabled": true, "mode": "on", "language": "auto", "sheet": false, "profile": "general", "streaming": false, "eagerPlan": false },
+      "expect": [{ "type": "view", "view": { "state": { "mode": "on" }, "sheet": { "$absent": true } } }] },
+    { "event": { "type": "draft", "now": 800, "origin": "paste", "text": "Build a chart for workshop registrations." },
+      "expect": [{ "type": "view", "view": { "sheet": { "$absent": true } } }] }
+  ]
+}

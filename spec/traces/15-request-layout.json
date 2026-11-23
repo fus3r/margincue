@@ -1,0 +1,132 @@
+{
+  "name": "the request: system blocks and the user message",
+  "description": "System blocks in order: prompts/system.md with {{max_cues}} filled, the profile's rubric, its examples. A profile file with no headings is a rubric only. The user message: Status (always complete), the fenced draft, and the Dismissed line when any.",
+  "assets": "fixtures/assets.json",
+  "steps": [
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      }
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1000,
+        "text": "Rewrite the billing exporter.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 1,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nRewrite the billing exporter.\n>>>",
+          "maxTokens": 320,
+          "system": [
+            "You are a test reviewer. Give at most 3 cues.\n\nExample\nStatus: complete\nDraft:\n<<<\nHi.\n>>>\nOutput:\nNONE",
+            "Cue destruction and scope.",
+            "Example\nStatus: complete\nDraft:\n<<<\nAdd an export button.\n>>>\nOutput:\nexport button\nexport button | Export covers {} | filtered rows | all rows"
+          ]
+        },
+        {
+          "type": "view",
+          "view": {}
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 1400,
+        "req": 1,
+        "text": "Rewrite\nRewrite | The rewrite may change {} | internals only | the output format",
+        "done": true
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "cues": [
+              {
+                "id": "c1"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "dismiss",
+        "now": 1500,
+        "cue": "c1"
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "cues": []
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1600,
+        "text": "Rewrite the billing exporter. Soon.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 2,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nRewrite the billing exporter. Soon.\n>>>\nDismissed: The rewrite may change {}",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {}
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "terse",
+        "streaming": false,
+        "eagerPlan": false
+      },
+      "note": "rubric-only profile; a new generation forgets dismissals",
+      "expect": [
+        {
+          "type": "cancel",
+          "req": 2
+        },
+        {
+          "type": "request",
+          "req": 3,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nRewrite the billing exporter. Soon.\n>>>",
+          "maxTokens": 320,
+          "system": [
+            "You are a test reviewer. Give at most 3 cues.\n\nExample\nStatus: complete\nDraft:\n<<<\nHi.\n>>>\nOutput:\nNONE",
+            "Just a rubric, no headings."
+          ]
+        },
+        {
+          "type": "view",
+          "view": {
+            "profile": "terse"
+          }
+        }
+      ]
+    }
+  ]
+}

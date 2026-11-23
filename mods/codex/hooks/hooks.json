@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "resume|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "exec \"${PLUGIN_ROOT}/bin/margincue\" hook",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "exec \"${PLUGIN_ROOT}/bin/margincue\" hook",
+            "timeout": 2,
+            "statusMessage": "MarginCue Thinking..."
+          }
+        ]
+      }
+    ]
+  }
+}

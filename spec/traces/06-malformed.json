@@ -1,0 +1,383 @@
+{
+  "name": "malformed model output",
+  "description": "The parser strips code fences, list markers and quotes, accepts a missing plan line, appends {} to a statement without one, skips prose ahead of the plan, drops a cue with fewer than two options, ignores cue lines after NONE and past max_cues, and turns an anchor found nowhere in the current draft into a global cue.",
+  "assets": "fixtures/assets.json",
+  "steps": [
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      }
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1000,
+        "text": "Add an export button to the admin page.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 1,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nAdd an export button to the admin page.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {}
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 1500,
+        "req": 1,
+        "text": "```\n- \"export button\" | Export covers | 'filtered rows' | “all rows”\n```",
+        "done": true
+      },
+      "note": "fences, a list marker, quotes, no plan line, no slot",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "cues": [
+              {
+                "id": "c1",
+                "start": 7,
+                "end": 20,
+                "anchor": "export button",
+                "statement": "Export covers {}",
+                "options": [
+                  "filtered rows",
+                  "all rows"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 2000,
+        "text": "Clean up old reports. Keep the rest.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 2,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nClean up old reports. Keep the rest.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Clean up old reports. Keep the rest.",
+            "cues": [],
+            "phase": "reviewing"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 2500,
+        "req": 2,
+        "text": "Looking at the draft, the open decision here is what counts as old.\nold\nold | A report is old after {} | 90 days\nold | Reports count as old after {} | 90 days | 30 days",
+        "done": true
+      },
+      "note": "prose skipped, a one-option cue dropped",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "cues": [
+              {
+                "id": "c2",
+                "start": 9,
+                "end": 12,
+                "anchor": "old",
+                "statement": "Reports count as old after {}",
+                "options": [
+                  "90 days",
+                  "30 days"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 3000,
+        "text": "Make the dashboard load faster.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 3,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nMake the dashboard load faster.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Make the dashboard load faster.",
+            "cues": [],
+            "phase": "reviewing"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 3500,
+        "req": 3,
+        "text": "NONE\nfaster | Speedup may use {} | caching | an API change",
+        "done": true
+      },
+      "note": "cue lines after NONE are ignored",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "idle",
+            "cues": []
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 4000,
+        "text": "Add caching to the product search, and remove old logs, and resize the avatars.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 4,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nAdd caching to the product search, and remove old logs, and resize the avatars.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Add caching to the product search, and remove old logs, and resize the avatars.",
+            "phase": "reviewing"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 4500,
+        "req": 4,
+        "text": "caching ; old logs ; resize ; avatars\ncaching | Cache entries are {} | shared | per user\nold logs | Logs are old after {} | 30 days | 90 days\nresize | Avatars are resized to {} | 128 px | 256 px\navatars | Avatars live in {} | S3 | the database",
+        "done": true
+      },
+      "note": "only max_cues (3) are taken",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "cues": [
+              {
+                "id": "c3",
+                "anchor": "caching"
+              },
+              {
+                "id": "c4",
+                "anchor": "old logs"
+              },
+              {
+                "id": "c5",
+                "anchor": "resize"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 5000,
+        "text": "Ship the new onboarding flow.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 5,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nShip the new onboarding flow.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Ship the new onboarding flow.",
+            "cues": [],
+            "phase": "reviewing"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 5500,
+        "req": 5,
+        "text": "the rollout ; -\nthe rollout | The flow ships to {} | everyone at once | 10% first\n- | Success is judged by {} | completion rate | time to first action",
+        "done": true
+      },
+      "note": "an anchor not in the draft, and '-': global cues",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "cues": [
+              {
+                "id": "c6",
+                "start": {
+                  "$absent": true
+                },
+                "end": {
+                  "$absent": true
+                },
+                "anchor": "the rollout",
+                "statement": "The flow ships to {}"
+              },
+              {
+                "id": "c7",
+                "start": {
+                  "$absent": true
+                },
+                "end": {
+                  "$absent": true
+                },
+                "anchor": "",
+                "statement": "Success is judged by {}"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 6000,
+        "text": "Rename the module to something better.",
+        "origin": "paste"
+      },
+      "note": "global cues have no span to touch: they stay, stale, until the next reply",
+      "expect": [
+        {
+          "type": "request",
+          "req": 6,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nRename the module to something better.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Rename the module to something better.",
+            "phase": "reviewing",
+            "cues": [
+              {
+                "id": "c6",
+                "stale": true
+              },
+              {
+                "id": "c7",
+                "stale": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 6500,
+        "req": 6,
+        "text": "Sorry, I can't help with that request.",
+        "done": true
+      },
+      "note": "no cue line at all: the stale globals go",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "idle",
+            "cues": []
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 7000,
+        "text": "Rename the module to something better. Now.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 7,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nRename the module to something better. Now.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "phase": "reviewing"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 7300,
+        "req": 7,
+        "text": "",
+        "done": true,
+        "ok": false
+      },
+      "note": "a failed call",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "error"
+          }
+        }
+      ]
+    }
+  ]
+}

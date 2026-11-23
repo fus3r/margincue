@@ -1,0 +1,128 @@
+{
+  "name": "commands, shell and memory lines, short drafts",
+  "description": "Drafts starting with /, ! or # and drafts under 12 characters or 3 words are never sent.",
+  "assets": "fixtures/assets.json",
+  "steps": [
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      }
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1000,
+        "text": "/compact keep the decisions we made today",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "text": "/compact keep the decisions we made today"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1100,
+        "text": "! rm -rf build and then rebuild everything",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "text": "! rm -rf build and then rebuild everything"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1200,
+        "text": "# always use pnpm in this repository",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "text": "# always use pnpm in this repository"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1300,
+        "text": "fix the tests",
+        "origin": "paste"
+      },
+      "note": "13 characters, 3 words: reviewed",
+      "expect": [
+        {
+          "type": "request",
+          "req": 1,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nfix the tests\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "fix the tests",
+            "phase": "reviewing"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1400,
+        "text": "fix it now",
+        "origin": "paste"
+      },
+      "note": "under 12 characters: not reviewed, and the review in flight is cancelled",
+      "expect": [
+        {
+          "type": "cancel",
+          "req": 1
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "fix it now",
+            "phase": "idle"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1500,
+        "text": "refactoringeverythingnow",
+        "origin": "paste"
+      },
+      "note": "one word",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "text": "refactoringeverythingnow"
+          }
+        }
+      ]
+    }
+  ]
+}

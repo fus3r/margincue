@@ -1,0 +1,37 @@
+{
+  "name": "a settled kick-off gets one complete sheet",
+  "assets": "catalogs",
+  "steps": [
+    { "event": { "type": "config", "enabled": true, "mode": "auto", "sheet": true, "profile": "general", "streaming": false, "eagerPlan": false },
+      "expect": [{ "type": "view", "view": { "sheet": { "$absent": true } } }] },
+    { "event": { "type": "draft", "now": 100, "origin": "type", "text": "Build a tracker for our book club" },
+      "expect": [{ "type": "timer", "at": 380 }, { "type": "view", "view": { "sheet": { "$absent": true } } }] },
+    { "event": { "type": "timer", "now": 380 },
+      "expect": [{ "type": "request", "req": 1, "kind": "sheet", "prompt": "Build a tracker for our book club", "maxTokens": 320 },
+        { "type": "view", "view": { "sheet": { "pending": true, "items": [] } } }] },
+    { "event": { "type": "draft", "now": 420, "origin": "type", "text": "Build a tracker for our chess club" },
+      "expect": [{ "type": "cancel", "req": 1 }, { "type": "timer", "at": 700 }, { "type": "view", "view": { "sheet": { "$absent": true } } }] },
+    { "event": { "type": "reply", "now": 540, "req": 1, "done": true, "text": "What is tracked? | reads | loans" }, "expect": [] },
+    { "event": { "type": "timer", "now": 700 },
+      "expect": [{ "type": "request", "req": 2, "kind": "sheet", "prompt": "Build a tracker for our chess club" },
+        { "type": "view", "view": { "sheet": { "pending": true } } }] },
+    { "event": { "type": "reply", "now": 1300, "req": 2, "done": false, "text": "Who records results? | organizer | any member\n" }, "expect": [] },
+    { "event": { "type": "reply", "now": 1400, "req": 2, "done": true, "text": "prose\nWhat is tracked? | scores only | scores and games" },
+      "expect": [{ "type": "view", "view": { "sheet": { "pending": false, "focus": null, "collapsed": false, "afterSubmit": false, "items": [
+        { "id": "c1", "statement": "Who records results?", "options": ["organizer", "any member"], "chosen": null },
+        { "id": "c2", "statement": "What is tracked?", "options": ["scores only", "scores and games"], "chosen": null }
+      ] } } }] },
+    { "event": { "type": "sheetPane", "id": 2, "move": "open", "cue": "c2" },
+      "expect": [{ "type": "view", "view": { "sheet": { "pane": { "item": "c2", "position": 2, "total": 2, "canGoBack": true } } } }] },
+    { "event": { "type": "sheetPane", "id": 2, "move": "back" },
+      "expect": [{ "type": "view", "view": { "sheet": { "pane": { "item": "c1", "position": 1, "canGoBack": false } } } }] },
+    { "event": { "type": "sheetPane", "id": 2, "move": "skip" },
+      "expect": [{ "type": "view", "view": { "sheet": { "pane": { "item": "c2", "position": 2, "canGoBack": true } } } }] },
+    { "event": { "type": "sheetPane", "id": 2, "move": "close" },
+      "expect": [{ "type": "view", "view": { "sheet": { "pane": { "$absent": true } } } }] },
+    { "event": { "type": "dismiss", "now": 1500, "cue": "sheet-2" },
+      "expect": [{ "type": "view", "view": { "sheet": { "$absent": true } } }] },
+    { "event": { "type": "draft", "now": 1800, "origin": "history", "text": "Build a tracker for our book club" },
+      "expect": [{ "type": "view", "view": { "sheet": { "$absent": true } } }] }
+  ]
+}

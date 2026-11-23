@@ -1,0 +1,334 @@
+{
+  "name": "layered decisions, project instructions and model changes",
+  "description": "Standing values appear without requests, and only the narrowest matching answer travels.",
+  "assets": "catalogs",
+  "steps": [
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "mode": "auto",
+        "language": "auto",
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "enabled": true,
+            "state": {
+              "mode": "auto",
+              "first": null,
+              "marks": []
+            }
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "loadState",
+        "now": 0,
+        "state": {
+          "model": "largest",
+          "values": [
+            {
+              "slot": "cleanup_reach",
+              "option": "all_matches",
+              "scope": "user",
+              "setAt": 1
+            },
+            {
+              "slot": "cleanup_reach",
+              "option": "unused_only",
+              "scope": "model",
+              "setAt": 1,
+              "model": "largest"
+            },
+            {
+              "slot": "cleanup_reach",
+              "option": "task_only",
+              "scope": "project",
+              "setAt": 1
+            }
+          ]
+        }
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "state": {
+              "model": "largest"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 100,
+        "text": "Don't ask. Delete the old test databases.",
+        "origin": "type"
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "state": {
+              "first": null,
+              "marks": [
+                {
+                  "slot": "cleanup_reach",
+                  "label": "Cleanup",
+                  "value": "task-created artifacts only"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "set",
+        "now": 110,
+        "at": 5000,
+        "slot": "cleanup_reach",
+        "option": "unused_only",
+        "scope": "session"
+      },
+      "expect": [
+        {
+          "type": "persist",
+          "action": "set",
+          "value": {
+            "slot": "cleanup_reach",
+            "option": "unused_only",
+            "scope": "session",
+            "setAt": 5000
+          }
+        },
+        {
+          "type": "view",
+          "view": {
+            "state": {
+              "first": null,
+              "marks": [
+                {
+                  "slot": "cleanup_reach",
+                  "label": "Cleanup",
+                  "value": "unreferenced matches only"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "submit",
+        "now": 120,
+        "text": "Don't ask. Delete the old test databases."
+      },
+      "expect": [
+        {
+          "type": "submit",
+          "text": "Don't ask. Delete the old test databases.\n\nDecisions:\n- Deletion targets unreferenced matches only.",
+          "decisions": [
+            "Deletion targets unreferenced matches only."
+          ]
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "",
+            "state": {
+              "marks": []
+            }
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "forget",
+        "now": 130,
+        "slot": "cleanup_reach"
+      },
+      "expect": [
+        {
+          "type": "persist",
+          "action": "forget",
+          "slot": "cleanup_reach",
+          "scope": "session"
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 200,
+        "text": "Fais au mieux. Supprime les anciens fichiers.",
+        "origin": "type"
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "state": {
+              "first": null,
+              "marks": [
+                {
+                  "slot": "cleanup_reach",
+                  "label": "Nettoyage",
+                  "value": "les artefacts créés par la tâche"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "forget",
+        "now": 210,
+        "slot": "cleanup_reach",
+        "scope": "project"
+      },
+      "expect": [
+        {
+          "type": "persist",
+          "action": "forget",
+          "slot": "cleanup_reach",
+          "scope": "project"
+        },
+        {
+          "type": "view",
+          "view": {
+            "state": {
+              "first": null,
+              "marks": [
+                {
+                  "slot": "cleanup_reach",
+                  "label": "Nettoyage",
+                  "value": "les éléments non référencés"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "loadState",
+        "now": 220,
+        "state": {
+          "model": "small",
+          "values": [
+            {
+              "slot": "cleanup_reach",
+              "option": "all_matches",
+              "scope": "user",
+              "setAt": 1
+            },
+            {
+              "slot": "cleanup_reach",
+              "option": "unused_only",
+              "scope": "model",
+              "setAt": 1,
+              "model": "largest"
+            }
+          ]
+        }
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "state": {
+              "first": null,
+              "marks": [
+                {
+                  "slot": "cleanup_reach",
+                  "label": "Nettoyage",
+                  "value": "toutes les correspondances"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "loadState",
+        "now": 225,
+        "state": {
+          "model": "small",
+          "values": [
+            {
+              "slot": "cleanup_reach",
+              "option": "all_matches",
+              "scope": "user",
+              "setAt": 1
+            },
+            {
+              "slot": "cleanup_reach",
+              "option": "unused_only",
+              "scope": "model",
+              "setAt": 1,
+              "model": "largest"
+            }
+          ],
+          "instructionSlots": [
+            "cleanup_reach"
+          ]
+        }
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "state": {
+              "first": null,
+              "marks": [
+                {
+                  "slot": "cleanup_reach",
+                  "label": "Nettoyage",
+                  "value": "dans les consignes du projet"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "submit",
+        "now": 230,
+        "text": "Fais au mieux. Supprime les anciens fichiers."
+      },
+      "expect": [
+        {
+          "type": "submit",
+          "text": "Fais au mieux. Supprime les anciens fichiers.",
+          "decisions": []
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": ""
+          }
+        }
+      ]
+    }
+  ]
+}

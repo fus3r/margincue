@@ -1,0 +1,243 @@
+{
+  "name": "parallel plan request, then the full reply",
+  "description": "With eagerPlan and no streaming, each review sends a capped plan request beside the full one. Plan anchors become provisional cues; the full reply fills them in under the same id and removes those it did not confirm. A full reply first cancels its plan. A plan cut off before its line ends is ignored.",
+  "assets": "fixtures/assets.json",
+  "steps": [
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": true
+      }
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1000,
+        "text": "Add an export button to the dashboard.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 1,
+          "kind": "plan",
+          "prompt": "Status: complete\nDraft:\n<<<\nAdd an export button to the dashboard.\n>>>",
+          "maxTokens": 24
+        },
+        {
+          "type": "request",
+          "req": 2,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nAdd an export button to the dashboard.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "phase": "reviewing"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 1300,
+        "req": 1,
+        "text": "export button ; dashboard\nexport button | Export cov",
+        "done": true
+      },
+      "note": "plan line complete: provisional cues",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "reviewing",
+            "focus": "c1",
+            "cues": [
+              {
+                "id": "c1",
+                "start": 7,
+                "end": 20,
+                "anchor": "export button",
+                "statement": "",
+                "options": [],
+                "provisional": true
+              },
+              {
+                "id": "c2",
+                "start": 28,
+                "end": 37,
+                "anchor": "dashboard",
+                "provisional": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 1900,
+        "req": 2,
+        "text": "export button\nexport button | Export covers {} | filtered rows | all rows",
+        "done": true
+      },
+      "note": "full: c1 filled, unconfirmed c2 removed",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "idle",
+            "latencyMs": 900,
+            "cues": [
+              {
+                "id": "c1",
+                "provisional": false,
+                "statement": "Export covers {}",
+                "options": [
+                  "filtered rows",
+                  "all rows"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 2500,
+        "text": "Add an export button and a report link to the dashboard.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 3,
+          "kind": "plan",
+          "prompt": "Status: complete\nDraft:\n<<<\nAdd an export button and a report link to the dashboard.\n>>>",
+          "maxTokens": 24
+        },
+        {
+          "type": "request",
+          "req": 4,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nAdd an export button and a report link to the dashboard.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Add an export button and a report link to the dashboard."
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 2900,
+        "req": 4,
+        "text": "export button\nexport button | Export covers {} | filtered rows | all rows",
+        "done": true
+      },
+      "note": "full first: its plan is cancelled",
+      "expect": [
+        {
+          "type": "cancel",
+          "req": 3
+        },
+        {
+          "type": "view",
+          "view": {
+            "phase": "idle",
+            "cues": [
+              {
+                "id": "c1",
+                "stale": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 3000,
+        "req": 3,
+        "text": "export button\n",
+        "done": true
+      },
+      "note": "the cancelled plan's reply is ignored",
+      "expect": []
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 3500,
+        "text": "Rewrite the importer in Rust and drop the old one.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 5,
+          "kind": "plan",
+          "prompt": "Status: complete\nDraft:\n<<<\nRewrite the importer in Rust and drop the old one.\n>>>",
+          "maxTokens": 24
+        },
+        {
+          "type": "request",
+          "req": 6,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nRewrite the importer in Rust and drop the old one.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Rewrite the importer in Rust and drop the old one.",
+            "cues": [],
+            "phase": "reviewing"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 3700,
+        "req": 5,
+        "text": "importer ; old on",
+        "done": true
+      },
+      "note": "plan cut mid-line: ignored",
+      "expect": []
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 4100,
+        "req": 6,
+        "text": "NONE",
+        "done": true
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "idle",
+            "cues": []
+          }
+        }
+      ]
+    }
+  ]
+}

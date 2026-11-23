@@ -1,0 +1,743 @@
+{
+  "profile": "ml-research",
+  "frames": [
+    {
+      "id": "define_outcome",
+      "when": "Define a prediction outcome from operational records with an original and a revised cutoff. Merely displaying timestamp data is outside this frame.",
+      "slots": [
+        {
+          "id": "label_window",
+          "type": "enum",
+          "field": "Outcome cutoff used to label a success or miss.",
+          "options": [
+            {
+              "value": "original_cutoff",
+              "plain": "results by the original deadline",
+              "expert": "the original promised cutoff"
+            },
+            {
+              "value": "revised_cutoff",
+              "plain": "results by the revised deadline",
+              "expert": "the revised promised cutoff"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "essential",
+          "rigor": "build",
+          "guard": false,
+          "cost": 5,
+          "statement": {
+            "plain": "The outcome counts {}",
+            "expert": "The label uses {}"
+          },
+          "catalog_when": "Define a prediction outcome when the records contain both an original promised cutoff and a later agreed revision. Either cutoff answers a plausible user goal and the data covers both.",
+          "catalog_settled": "A label specification, downstream decision, the draft, or an explicit delegation determines which cutoff counts.",
+          "why": "Changing the cutoff can turn the same event from a miss into a success and change which model looks better.",
+          "source": "[REFORMS item 3d, outcome variable and definition](https://arxiv.org/html/2308.07832#Sx9)",
+          "opens": [],
+          "anchor_terms": [
+            "deadline",
+            "cutoff",
+            "extension",
+            "deferral",
+            "endpoint",
+            "retard",
+            "échéance",
+            "report"
+          ],
+          "tests": [
+            {
+              "draft": "Predict missed arrivals for shared labs. Both the original booked deadline and the agreed extension are recorded, and either would be useful in next month's report.",
+              "slot": "label_window",
+              "value": null
+            },
+            {
+              "draft": "Predict missed arrivals for shared labs. Both the original booked deadline and the agreed extension are recorded, and either would be useful in next month's report. A miss is measured against the agreed extension.",
+              "slot": "label_window",
+              "value": "revised_cutoff",
+              "evidence": "A miss is measured against the agreed extension."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "evaluate_prediction",
+      "when": "Specify a primary holdout or headline prediction estimate where the deployment group/time scope is relevant or where tuning and an untouched evaluation set must be kept distinct. Reading an already computed table alone is outside this frame.",
+      "slots": [
+        {
+          "id": "split_strategy",
+          "type": "enum",
+          "field": "Primary evaluation population and split unit.",
+          "options": [
+            {
+              "value": "unseen_groups",
+              "plain": "whole new groups",
+              "expert": "group-disjoint holdout"
+            },
+            {
+              "value": "known_groups_later",
+              "plain": "later records in known groups",
+              "expert": "within-group temporal holdout"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "essential",
+          "rigor": "build",
+          "guard": false,
+          "cost": 5,
+          "statement": {
+            "plain": "Test data comes from {}",
+            "expert": "Evaluation uses {}"
+          },
+          "catalog_when": "Repeated observations share a group and both predicting future observations from known groups and generalizing to unseen groups are feasible uses. The requested evaluation has one primary population and both holdouts can be built.",
+          "catalog_settled": "The deployment population, group or time split, existing split file, or delegated benchmark protocol already determines the holdout.",
+          "why": "A within-group score can benefit from recognizing groups and is not evidence for performance on new groups.",
+          "source": "[Kapoor and Narayanan, leakage type L3.2](https://arxiv.org/html/2207.07048#S2.SS4); [REFORMS item 6b](https://arxiv.org/html/2308.07832#Sx12)",
+          "opens": [
+            "uncertainty_target"
+          ],
+          "anchor_terms": [
+            "new",
+            "unseen",
+            "group",
+            "holdout",
+            "split",
+            "fold",
+            "cohort",
+            "nouveaux",
+            "club",
+            "groupes"
+          ],
+          "tests": [
+            {
+              "draft": "Predict faulty images in two settings, future pictures from cameras already installed and pictures from newly installed cameras. We have repeat observations per camera and room for one headline score.",
+              "slot": "split_strategy",
+              "value": null
+            },
+            {
+              "draft": "Predict faulty images in two settings, future pictures from cameras already installed and pictures from newly installed cameras. We have repeat observations per camera and room for one headline score. The headline score is for newly installed cameras.",
+              "slot": "split_strategy",
+              "value": "unseen_groups",
+              "evidence": "The headline score is for newly installed cameras."
+            }
+          ]
+        },
+        {
+          "id": "final_score_partition",
+          "type": "enum",
+          "field": "Dataset or status for the headline result after tuning.",
+          "options": [
+            {
+              "value": "untouched_holdout",
+              "plain": "a fresh-data estimate",
+              "expert": "untouched labeled holdout"
+            },
+            {
+              "value": "exploratory_validation",
+              "plain": "an exploratory tuning-set score",
+              "expert": "tuning validation, explicitly exploratory"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "essential",
+          "rigor": "compete",
+          "guard": false,
+          "cost": 5,
+          "statement": {
+            "plain": "The headline result is {}",
+            "expert": "Headline evaluation uses {}"
+          },
+          "catalog_when": "Request a headline result after tuning on validation data, with a separate untouched labeled set actually available. Both a quick exploratory result from tuning data and an independent final estimate are useful and permitted.",
+          "catalog_settled": "The draft or protocol fixes the evaluation partition or status of the claim. A demand for a final unbiased estimate with no independent data is a limitation to handle during the work.",
+          "why": "Selection on validation favors lucky candidates, so the reused score has a different interpretation.",
+          "source": "[ESL 2nd ed., §7.2, separate training, validation and test sets](https://mcube.lab.nycu.edu.tw/~cfung/docs/books/hastie2009elements_of_statistical_learning.pdf#page=241); [Kapoor and Narayanan, L1.1](https://arxiv.org/html/2207.07048#S2.SS4)",
+          "opens": [],
+          "anchor_terms": [
+            "headline",
+            "holdout",
+            "untouched",
+            "final",
+            "exploratory",
+            "validation",
+            "estimation",
+            "chiffre"
+          ],
+          "tests": [
+            {
+              "draft": "Validation picked our best checkpoint. Logs and an untouched labeled holdout are ready. Give me a headline number for the note, which can be an exploratory update or a final estimate.",
+              "slot": "final_score_partition",
+              "value": null
+            },
+            {
+              "draft": "Validation picked our best checkpoint. Logs and an untouched labeled holdout are ready. Give me a headline number for the note, which can be an exploratory update or a final estimate. Use the untouched holdout for the headline.",
+              "slot": "final_score_partition",
+              "value": "untouched_holdout",
+              "evidence": "Use the untouched holdout for the headline."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "compare_models",
+      "when": "Plan or interpret a comparison of candidate models where the selection criterion or the allocation of tuning effort matters. A chart, log summary or formatting change alone is outside this frame.",
+      "slots": [
+        {
+          "id": "metric_priority",
+          "type": "enum",
+          "field": "Primary metric or outcome used to rank the classifiers.",
+          "options": [
+            {
+              "value": "recall",
+              "plain": "catching more real cases",
+              "expert": "higher recall"
+            },
+            {
+              "value": "precision",
+              "plain": "fewer false alerts per flag",
+              "expert": "higher precision"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "essential",
+          "rigor": "explore",
+          "guard": false,
+          "cost": 4,
+          "statement": {
+            "plain": "Model selection prioritizes {}",
+            "expert": "Model selection targets {}"
+          },
+          "catalog_when": "Select or compare classifiers with labeled outcomes when catching more positives and reducing false alerts are both feasible priorities and favor different candidates. The user asks for one primary criterion and has not picked it.",
+          "catalog_settled": "An explicit metric, loss, decision workflow, or delegation provides the selection criterion. Merely computing a specified score is settled.",
+          "why": "Models can exchange false negatives for false positives, so the metric can reverse the ranking.",
+          "source": "[REFORMS Module 7a, performance metrics](https://arxiv.org/html/2308.07832#Sx13)",
+          "opens": [
+            "threshold_policy"
+          ],
+          "anchor_terms": [
+            "winner",
+            "ranking",
+            "criterion",
+            "metric",
+            "recall",
+            "precision",
+            "critère",
+            "métrique"
+          ],
+          "tests": [
+            {
+              "draft": "Choose one scanner model from these two. The same labeled check shows A catches more violations and B generates fewer fruitless reviews per flag. Make one the headline winner.",
+              "slot": "metric_priority",
+              "value": null
+            },
+            {
+              "draft": "Choose one scanner model from these two. The same labeled check shows A catches more violations and B generates fewer fruitless reviews per flag. Make one the headline winner. Use precision to pick the winner.",
+              "slot": "metric_priority",
+              "value": "precision",
+              "evidence": "Use precision to pick the winner."
+            }
+          ]
+        },
+        {
+          "id": "comparison_budget",
+          "type": "enum",
+          "field": "Resource or trial-count normalization for model comparison.",
+          "options": [
+            {
+              "value": "equal_compute",
+              "plain": "the same compute time",
+              "expert": "compute budget"
+            },
+            {
+              "value": "equal_trials",
+              "plain": "the same number of tries",
+              "expert": "trial count"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "standard",
+          "rigor": "compete",
+          "guard": false,
+          "cost": 3,
+          "statement": {
+            "plain": "Each method gets {}",
+            "expert": "Tuning matches {}"
+          },
+          "catalog_when": "Compare models where per-trial resource costs materially differ, both equal trial counts and equal compute allotments fit the cap, and the user has not chosen whether to compare search opportunity or results under a resource budget.",
+          "catalog_settled": "The benchmark design, compute policy, or delegated execution specifies the budget per method. A frozen comparison does not reopen it.",
+          "why": "Equal compute can give a faster model more trials. Equal trials can spend more compute on the slower model.",
+          "source": "[REFORMS Module 5, modeling and comparable baselines](https://arxiv.org/html/2308.07832#Sx11); [NeurIPS Paper Checklist, Experiment compute resources](https://neurips.cc/public/guides/PaperChecklist)",
+          "opens": [
+            "uncertainty_target"
+          ],
+          "anchor_terms": [
+            "compute",
+            "budget",
+            "trials",
+            "run",
+            "minutes",
+            "GPU",
+            "essais",
+            "coût"
+          ],
+          "tests": [
+            {
+              "draft": "Compare the small encoder to the large one. We can afford equal trials or equal GPU-hours, and the small one runs twice as many trials per hour. Pick a comparison that will inform our next experiment.",
+              "slot": "comparison_budget",
+              "value": null
+            },
+            {
+              "draft": "Compare the small encoder to the large one. We can afford equal trials or equal GPU-hours, and the small one runs twice as many trials per hour. Pick a comparison that will inform our next experiment. The comparison holds GPU-hours equal per encoder.",
+              "slot": "comparison_budget",
+              "value": "equal_compute",
+              "evidence": "The comparison holds GPU-hours equal per encoder."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "design_serving_features",
+      "when": "Choose which inputs the predictive model may use at serving time when a timely signal is conditional or revised later. Auditing an existing input without fitting or serving a model is outside this frame.",
+      "slots": [
+        {
+          "id": "feature_fallback",
+          "type": "enum",
+          "field": "Policy for optional point-in-time serving features and fallbacks.",
+          "options": [
+            {
+              "value": "common_inputs",
+              "plain": "inputs we always have",
+              "expert": "universally observed inputs"
+            },
+            {
+              "value": "timely_proxy",
+              "plain": "timely data when present",
+              "expert": "as-of proxy with fallback"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "standard",
+          "rigor": "build",
+          "guard": false,
+          "cost": 5,
+          "statement": {
+            "plain": "Predictions use {}",
+            "expert": "Serving features use {}"
+          },
+          "catalog_when": "A serving feature can be late or missing, an always-available model exists, and a legitimate point-in-time proxy is available on some requests. Both avoiding the optional feature and using its timely proxy with a fallback fit the request.",
+          "catalog_settled": "A feature contract, latency requirement, or explicit policy fixes the usable inputs. A value that only exists after prediction time is excluded, with no cue to choose leakage.",
+          "why": "The optional signal can improve some predictions while creating differences between covered and uncovered cases. Retrospective data can exaggerate that benefit.",
+          "source": "[Kapoor and Narayanan, leakage type L2](https://arxiv.org/html/2207.07048#S2.SS4); [REFORMS item 6c](https://arxiv.org/html/2308.07832#Sx12)",
+          "opens": [],
+          "anchor_terms": [
+            "as-of",
+            "proxy",
+            "live",
+            "late",
+            "revised",
+            "fallback",
+            "direct",
+            "disponible",
+            "corrigée",
+            "météo"
+          ],
+          "tests": [
+            {
+              "draft": "We score parcel delay at scan time. Historical traffic data gets revised; a genuine scan-time reading exists for two thirds of parcels and the basic model runs for all of them.",
+              "slot": "feature_fallback",
+              "value": null
+            },
+            {
+              "draft": "We score parcel delay at scan time. Historical traffic data gets revised; a genuine scan-time reading exists for two thirds of parcels and the basic model runs for all of them. Use only inputs available for every parcel.",
+              "slot": "feature_fallback",
+              "value": "common_inputs",
+              "evidence": "Use only inputs available for every parcel."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "act_on_predictions",
+      "when": "Use an existing score or confidence estimate to trigger an action or present a user-visible classification. Reading a score table or plotting an operating curve alone is outside this frame.",
+      "slots": [
+        {
+          "id": "threshold_policy",
+          "type": "enum",
+          "field": "Operating cutoff or primary alert-cost preference for the fixed score.",
+          "options": [
+            {
+              "value": "lower_threshold",
+              "plain": "more catches and more alerts",
+              "expert": "a lower score threshold"
+            },
+            {
+              "value": "higher_threshold",
+              "plain": "fewer alarms, more missed cases",
+              "expert": "a higher score threshold"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "standard",
+          "rigor": "build",
+          "guard": false,
+          "cost": 4,
+          "statement": {
+            "plain": "The alert cutoff favors {}",
+            "expert": "The action uses {}"
+          },
+          "catalog_when": "A fixed score will trigger a user-facing action. Labeled operating curves show that feasible thresholds trade more catches and more alerts for fewer false alerts and more misses. Neither priority is fixed.",
+          "catalog_settled": "A threshold, alert budget, cost policy or existing operating point fixes the choice. Reporting curves or accuracy without setting a threshold leaves the operating policy out of scope.",
+          "why": "Even with the scoring model fixed, a threshold changes who is flagged and how much work follows a flag.",
+          "source": "[ISL 1st ed., §4.4.3, classification thresholds and ROC](https://www.statlearning.com/s/ISLRSeventhPrinting.pdf)",
+          "opens": [],
+          "anchor_terms": [
+            "cutoff",
+            "threshold",
+            "alert",
+            "dispatch",
+            "score",
+            "seuil",
+            "alertes"
+          ],
+          "tests": [
+            {
+              "draft": "Turn the anomaly score into a library returns alert. Two tested cutoffs trade more recovered items for more interruptions at the desk, and the team can run either one.",
+              "slot": "threshold_policy",
+              "value": null
+            },
+            {
+              "draft": "Turn the anomaly score into a library returns alert. Two tested cutoffs trade more recovered items for more interruptions at the desk, and the team can run either one. The desk wants the lower-alert cutoff we tested.",
+              "slot": "threshold_policy",
+              "value": "higher_threshold",
+              "evidence": "The desk wants the lower-alert cutoff we tested."
+            }
+          ]
+        },
+        {
+          "id": "abstention_policy",
+          "type": "enum",
+          "field": "Disposition of low-confidence outputs in the actual workflow.",
+          "options": [
+            {
+              "value": "provisional_output",
+              "plain": "a provisional suggestion",
+              "expert": "flagged provisional outputs"
+            },
+            {
+              "value": "human_review",
+              "plain": "review by a person",
+              "expert": "abstention with manual referral"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "research",
+          "rigor": "study",
+          "guard": false,
+          "cost": 4,
+          "statement": {
+            "plain": "Uncertain cases get {}",
+            "expert": "Low-confidence predictions get {}"
+          },
+          "catalog_when": "A fixed classifier has low-confidence cases. A provisional automated result and abstention with an available human review route are both permitted. The user owns the trade-off between immediate coverage and unreliable results.",
+          "catalog_settled": "The workflow, policy or draft sets whether low-confidence results can be shown or referred. No usable review route, or a fixed reporting-only request, removes the choice.",
+          "why": "Abstaining can improve the accuracy of automated results by covering fewer cases and increasing review work.",
+          "source": "[El-Yaniv and Wiener, risk–coverage trade-off](https://www.jmlr.org/papers/v11/el-yaniv10a.html)",
+          "opens": [],
+          "anchor_terms": [
+            "confidence",
+            "uncertain",
+            "provisional",
+            "abstain",
+            "review",
+            "confiance",
+            "vérifier"
+          ],
+          "tests": [
+            {
+              "draft": "Put document tags from the fixed classifier into the review tool. For low-confidence tags, we can either show a labeled suggestion immediately or use the staffed review queue.",
+              "slot": "abstention_policy",
+              "value": null
+            },
+            {
+              "draft": "Put document tags from the fixed classifier into the review tool. For low-confidence tags, we can either show a labeled suggestion immediately or use the staffed review queue. Low-confidence tags always go to human review.",
+              "slot": "abstention_policy",
+              "value": "human_review",
+              "evidence": "Low-confidence tags always go to human review."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "report_study",
+      "when": "Define what the main study summary estimates across populations or groups, or the uncertainty it should show. Reformatting existing results alone is outside this frame.",
+      "slots": [
+        {
+          "id": "coverage_scope",
+          "type": "enum",
+          "field": "Population covered by the study comparison or the main claim.",
+          "options": [
+            {
+              "value": "common_cohort",
+              "plain": "the shared labeled cohort",
+              "expert": "common-cohort estimates"
+            },
+            {
+              "value": "subgroup_estimates",
+              "plain": "results by eligible subgroup",
+              "expert": "separate subgroup estimates"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "standard",
+          "rigor": "study",
+          "guard": false,
+          "cost": 4,
+          "statement": {
+            "plain": "The main report covers {}",
+            "expert": "The comparison reports {}"
+          },
+          "catalog_when": "Compare methods with a shared labeled cohort plus labeled additional subgroups where only some methods apply. Both a like-for-like common-cohort result and separate labeled subgroup results are useful. The conclusion's scope is still open.",
+          "catalog_settled": "The paper, scope statement, or manifest defines the evaluation cohort and claim. Unlabeled outcomes cannot support an observed comparison outside that cohort.",
+          "why": "Changing eligibility changes what a headline result can represent, even when each subgroup is scored correctly.",
+          "source": "[REFORMS Module 3g, evaluation representativeness](https://arxiv.org/html/2308.07832#Sx9)",
+          "opens": [
+            "subgroup_weight"
+          ],
+          "anchor_terms": [
+            "population",
+            "cohort",
+            "labeled",
+            "coverage",
+            "shared",
+            "subgroup",
+            "périmètre",
+            "groupe",
+            "commun"
+          ],
+          "tests": [
+            {
+              "draft": "Compare two report classifiers. Both run on desktop. Only the newer one runs on mobile, where we already have separate labels. The report can be a like-for-like score or show results per eligible platform.",
+              "slot": "coverage_scope",
+              "value": null
+            },
+            {
+              "draft": "Compare two report classifiers. Both run on desktop. Only the newer one runs on mobile, where we already have separate labels. The report can be a like-for-like score or show results per eligible platform. Use only the common desktop cohort in the comparison.",
+              "slot": "coverage_scope",
+              "value": "common_cohort",
+              "evidence": "Use only the common desktop cohort in the comparison."
+            }
+          ]
+        },
+        {
+          "id": "subgroup_weight",
+          "type": "enum",
+          "field": "Weighting unit for an aggregate of group results.",
+          "options": [
+            {
+              "value": "equal_groups",
+              "plain": "each group",
+              "expert": "macro-averaging group scores"
+            },
+            {
+              "value": "equal_examples",
+              "plain": "each example",
+              "expert": "sample-size weighting group scores"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "research",
+          "rigor": "study",
+          "guard": false,
+          "cost": 3,
+          "statement": {
+            "plain": "The overall score gives equal weight to {}",
+            "expert": "Group performance is combined by {}"
+          },
+          "catalog_when": "Aggregate one study score across several observed groups with unequal sizes. An equal-group interpretation and a per-observation interpretation are both useful, feasible and likely to produce different rankings.",
+          "catalog_settled": "The estimand, weights, client specification, or aggregation protocol selects the denominator. Reading an already computed aggregate does not reopen it.",
+          "why": "Large groups can dominate an observation-weighted score even when smaller groups have very different outcomes.",
+          "source": "[REFORMS 1a, target population](https://arxiv.org/html/2308.07832#Sx7); [REFORMS 7a, metrics](https://arxiv.org/html/2308.07832#Sx13)",
+          "opens": [],
+          "anchor_terms": [
+            "weight",
+            "aggregate",
+            "average",
+            "overall",
+            "score",
+            "group",
+            "poids",
+            "agrégé",
+            "groupe"
+          ],
+          "tests": [
+            {
+              "draft": "Reduce our three labeled regions to one score. One region has 80 times as many images, and the two weighting rules favor different models.",
+              "slot": "subgroup_weight",
+              "value": null
+            },
+            {
+              "draft": "Reduce our three labeled regions to one score. One region has 80 times as many images, and the two weighting rules favor different models. Each region has equal weight.",
+              "slot": "subgroup_weight",
+              "value": "equal_groups",
+              "evidence": "Each region has equal weight."
+            }
+          ]
+        },
+        {
+          "id": "uncertainty_target",
+          "type": "enum",
+          "field": "What source of variation the reported interval is about.",
+          "options": [
+            {
+              "value": "fit_variation",
+              "plain": "differences across repeat runs",
+              "expert": "fixed cases, varying seeds"
+            },
+            {
+              "value": "case_variation",
+              "plain": "variation across new cases",
+              "expert": "fixed fit, resampling cases"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "research",
+          "rigor": "study",
+          "guard": false,
+          "cost": 2,
+          "statement": {
+            "plain": "The error bar reflects {}",
+            "expert": "Uncertainty conditions on {}"
+          },
+          "catalog_when": "Choose one uncertainty summary for an evaluation with both repeated model fits and case-level held-out predictions. The stakeholder may care about fit-to-fit variability on this benchmark or sampling variation across future cases under a fixed fit.",
+          "catalog_settled": "The protocol, requested interval, or analysis plan specifies the source of variation. The only available data can also rule one target out.",
+          "why": "Variability from training randomness and uncertainty across cases answer different questions and can differ substantially.",
+          "source": "[NeurIPS Paper Checklist, Experiment statistical significance, factors of variability](https://neurips.cc/public/guides/PaperChecklist); [REFORMS Module 7b](https://arxiv.org/html/2308.07832#Sx13)",
+          "opens": [],
+          "anchor_terms": [
+            "interval",
+            "uncertainty",
+            "error bar",
+            "reruns",
+            "seed",
+            "case",
+            "incertitude",
+            "graines"
+          ],
+          "tests": [
+            {
+              "draft": "Add one interval to the main result. We have eight fits with different seeds and stored case predictions for the chosen fit. Readers ask both about reruns and about new examples.",
+              "slot": "uncertainty_target",
+              "value": null
+            },
+            {
+              "draft": "Add one interval to the main result. We have eight fits with different seeds and stored case predictions for the chosen fit. Readers ask both about reruns and about new examples. The interval covers rerun variance on this fixed benchmark.",
+              "slot": "uncertainty_target",
+              "value": "fit_variation",
+              "evidence": "The interval covers rerun variance on this fixed benchmark."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "report_multiple_tests",
+      "when": "Determine the claims or error policy for a family of statistical tests. Reading already computed adjustments alone is outside this frame.",
+      "slots": [
+        {
+          "id": "multiplicity_scope",
+          "type": "enum",
+          "field": "Family-wide error criterion or purpose of the claims from multiple tests.",
+          "options": [
+            {
+              "value": "familywise",
+              "plain": "avoiding any false claim",
+              "expert": "family-wise error control"
+            },
+            {
+              "value": "false_discovery",
+              "plain": "more leads for follow-up",
+              "expert": "false discovery rate control"
+            }
+          ],
+          "extra_values": [
+            "other",
+            "delegated"
+          ],
+          "tier": "research",
+          "rigor": "study",
+          "guard": false,
+          "cost": 4,
+          "statement": {
+            "plain": "The findings prioritize {}",
+            "expert": "Multiplicity control uses {}"
+          },
+          "catalog_when": "Report a family of valid tests where either minimizing the chance of any false claim or accepting a controlled false discovery proportion for follow-up is feasible and relevant. The intended strength of the result is open.",
+          "catalog_settled": "A confirmatory protocol, a discovery plan, or a declared error criterion sets the multiplicity goal. Computing existing corrections is routine.",
+          "why": "Controlling the chance of even one false rejection is a stronger goal than controlling the expected proportion of false discoveries.",
+          "source": "[ISL 2nd ed., §§13.3–13.4, authors’ Chapter 13 slides](https://hastie.su.domains/ISLR2/Slides/Ch13_Multiple_Testing.pdf)",
+          "opens": [],
+          "anchor_terms": [
+            "tests",
+            "false claim",
+            "discovery",
+            "error",
+            "confirmatory",
+            "résultats",
+            "erreur",
+            "pistes"
+          ],
+          "tests": [
+            {
+              "draft": "Report the results for 18 prespecified feature tests. The note may contain a short set of confirmatory claims or a longer set of candidates for independent follow-up.",
+              "slot": "multiplicity_scope",
+              "value": null
+            },
+            {
+              "draft": "Report the results for 18 prespecified feature tests. The note may contain a short set of confirmatory claims or a longer set of candidates for independent follow-up. For this note, control the chance of any false claim.",
+              "slot": "multiplicity_scope",
+              "value": "familywise",
+              "evidence": "For this note, control the chance of any false claim."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,143 @@
+{
+  "name": "returning to a reviewed text redraws without a request",
+  "description": "The LRU of reviewed texts: undo or history back to a reviewed draft applies the cached reply at once.",
+  "assets": "fixtures/assets.json",
+  "steps": [
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      }
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1000,
+        "text": "Make the search endpoint faster.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 1,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nMake the search endpoint faster.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {}
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 1500,
+        "req": 1,
+        "text": "faster\nfaster | Speedup may use {} | query and index tuning only | caching with stale results",
+        "done": true
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "cues": [
+              {
+                "id": "c1",
+                "anchor": "faster",
+                "stale": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 2000,
+        "text": "Make the search endpoint faster. Thanks",
+        "origin": "type",
+        "edit": {
+          "start": 32,
+          "end": 32,
+          "text": " Thanks"
+        }
+      },
+      "expect": [
+        {
+          "type": "timer",
+          "at": 2280
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Make the search endpoint faster. Thanks",
+            "cues": [
+              {
+                "id": "c1",
+                "stale": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 2100,
+        "text": "Make the search endpoint faster.",
+        "origin": "history"
+      },
+      "note": "cache hit: no request, the pending idle review is dropped",
+      "expect": [
+        {
+          "type": "timer",
+          "at": null
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Make the search endpoint faster.",
+            "cues": [
+              {
+                "id": "c1",
+                "stale": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 2200,
+        "text": "Make the search endpoint faster. Thanks",
+        "origin": "history"
+      },
+      "note": "not reviewed yet: a request",
+      "expect": [
+        {
+          "type": "request",
+          "req": 2,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nMake the search endpoint faster. Thanks\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Make the search endpoint faster. Thanks",
+            "phase": "reviewing"
+          }
+        }
+      ]
+    }
+  ]
+}

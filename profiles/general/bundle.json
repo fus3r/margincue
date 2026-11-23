@@ -1,0 +1,2318 @@
+{
+  "formatVersion": 1,
+  "version": "236d9942e454",
+  "profile": "general",
+  "slots": [
+    {
+      "id": "ship_authority",
+      "scope": "project",
+      "touch": {
+        "en": {
+          "match": [
+            "deploy",
+            "publish",
+            "deploy it",
+            "push to main",
+            "ship it",
+            "go live",
+            "push the branch",
+            "merge the PR",
+            {
+              "phrase": "finish",
+              "with": [
+                [
+                  "main",
+                  "release",
+                  "production",
+                  "deploys",
+                  "deployment",
+                  "website",
+                  "go live",
+                  "checkout page"
+                ]
+              ]
+            },
+            {
+              "phrase": "wrap up",
+              "with": [
+                [
+                  "main",
+                  "release",
+                  "production",
+                  "deploys",
+                  "deployment",
+                  "website",
+                  "go live",
+                  "checkout page"
+                ]
+              ]
+            },
+            {
+              "phrase": "resume",
+              "with": [
+                [
+                  "main",
+                  "release",
+                  "production",
+                  "deploys",
+                  "deployment",
+                  "website",
+                  "go live",
+                  "checkout page"
+                ]
+              ]
+            },
+            {
+              "phrase": "complete",
+              "with": [
+                [
+                  "main",
+                  "release",
+                  "production",
+                  "deploys",
+                  "deployment",
+                  "website",
+                  "go live",
+                  "checkout page"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "don't deploy",
+            "do not deploy",
+            "no deploy",
+            "don't publish",
+            "do not publish",
+            "no publishing",
+            "keep it local",
+            "stop there",
+            "without deploying",
+            "I'll deploy",
+            "I will deploy",
+            "deploy to production",
+            "publish to npm",
+            "go ahead and deploy",
+            "yes deploy",
+            "yes please deploy"
+          ],
+          "exclude": [
+            "how to deploy",
+            "how do we deploy",
+            "how to publish",
+            "publish the post",
+            "publish this post",
+            "publish a post",
+            "publish the comment",
+            "deploy button",
+            "publish button",
+            "deployment docs"
+          ]
+        },
+        "fr": {
+          "match": [
+            "déployer",
+            "déploie",
+            "déployez",
+            "publier",
+            "publie",
+            "publiez",
+            "mets en ligne",
+            "mettre en ligne",
+            "pousse sur main",
+            {
+              "phrase": "termine",
+              "with": [
+                [
+                  "branche principale",
+                  "main",
+                  "release",
+                  "production",
+                  "déploiement",
+                  "site",
+                  "mise en ligne"
+                ]
+              ]
+            },
+            {
+              "phrase": "finis",
+              "with": [
+                [
+                  "branche principale",
+                  "main",
+                  "release",
+                  "production",
+                  "déploiement",
+                  "site",
+                  "mise en ligne"
+                ]
+              ]
+            },
+            {
+              "phrase": "reprends",
+              "with": [
+                [
+                  "branche principale",
+                  "main",
+                  "release",
+                  "production",
+                  "déploiement",
+                  "site",
+                  "mise en ligne"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "ne déploie pas",
+            "ne pas déployer",
+            "sans déployer",
+            "ne publie pas",
+            "ne pas publier",
+            "reste en local",
+            "je m'occupe du déploiement",
+            "j'assurerai le déploiement",
+            "je vais déployer",
+            "déploie en production",
+            "tu peux déployer",
+            "arrête toi là"
+          ],
+          "exclude": [
+            "comment déployer",
+            "comment publier",
+            "bouton déployer",
+            "bouton publier"
+          ]
+        }
+      },
+      "label": {
+        "en": "Delivery",
+        "fr": "Livraison"
+      },
+      "statement": {
+        "en": {
+          "plain": "When done, the work is {}",
+          "expert": "Delivery stops at {}"
+        },
+        "fr": {
+          "plain": "Une fois fini, le travail est {}",
+          "expert": "La livraison s'arrête à {}"
+        }
+      },
+      "options": [
+        {
+          "id": "local_only",
+          "wording": {
+            "en": {
+              "plain": "kept local for your review",
+              "expert": "uncommitted local changes"
+            },
+            "fr": {
+              "plain": "gardé en local pour relecture",
+              "expert": "des changements locaux non commités"
+            }
+          }
+        },
+        {
+          "id": "push_only",
+          "wording": {
+            "en": {
+              "plain": "pushed, but not made live",
+              "expert": "a pushed branch or PR"
+            },
+            "fr": {
+              "plain": "poussé, mais pas mis en ligne",
+              "expert": "une branche poussée ou PR"
+            }
+          }
+        },
+        {
+          "id": "make_live",
+          "wording": {
+            "en": {
+              "plain": "pushed and made live",
+              "expert": "merge and production deploy"
+            },
+            "fr": {
+              "plain": "poussé et mis en ligne",
+              "expert": "fusion et déploiement en production"
+            }
+          }
+        }
+      ],
+      "tier": "essential",
+      "rigor": "explore",
+      "guard": true,
+      "cost": 5,
+      "when": "The draft asks the agent to finish, wrap up or resume work in a project whose result reaches people only after a push, deploy, release or publish, and neither the draft nor the conversation says whether the agent may take that last step.",
+      "settled": "The draft or a Decisions line says to ship or to stop short (\"build and deploy\", \"keep it local\"); the user already granted shipping, or the conversation shows the agent merging or deploying; there is no outward step; or the user is answering the agent.",
+      "why": "A deploy puts unreviewed work in front of users at once, while stopping short leaves a finished fix unshipped and costs another round trip.",
+      "source": "MarginCue owner history, authoring half; Saltzer and Schroeder 1975, fail-safe defaults",
+      "opens": []
+    },
+    {
+      "id": "send_or_draft",
+      "scope": "project",
+      "touch": {
+        "en": {
+          "match": [
+            "send",
+            "publish the post",
+            "publish this post",
+            "publish a post",
+            "publish the comment",
+            {
+              "phrase": "write",
+              "with": [
+                [
+                  "email",
+                  "emails",
+                  "message",
+                  "messages",
+                  "reply",
+                  "replies",
+                  "comment",
+                  "post",
+                  "support tickets",
+                  "slack"
+                ]
+              ]
+            },
+            {
+              "phrase": "prepare",
+              "with": [
+                [
+                  "email",
+                  "emails",
+                  "message",
+                  "messages",
+                  "reply",
+                  "replies",
+                  "comment",
+                  "post",
+                  "support tickets",
+                  "slack"
+                ]
+              ]
+            },
+            {
+              "phrase": "answer",
+              "with": [
+                [
+                  "email",
+                  "emails",
+                  "message",
+                  "messages",
+                  "reply",
+                  "replies",
+                  "comment",
+                  "post",
+                  "support tickets",
+                  "slack"
+                ]
+              ]
+            },
+            {
+              "phrase": "reply",
+              "with": [
+                [
+                  "email",
+                  "message",
+                  "support ticket",
+                  "thread",
+                  "slack",
+                  "to the customer"
+                ]
+              ]
+            },
+            {
+              "phrase": "post",
+              "with": [
+                [
+                  "comment",
+                  "reply",
+                  "thread",
+                  "slack",
+                  "forum"
+                ]
+              ]
+            },
+            "answer the two support tickets"
+          ],
+          "settled": [
+            "draft only",
+            "draft an email",
+            "draft a message",
+            "send directly",
+            "send it directly",
+            "send both replies directly",
+            "email directly",
+            "message directly",
+            "replies directly",
+            "don't send",
+            "do not send",
+            "without sending",
+            "I'll send",
+            "I will send",
+            "post it now",
+            "go ahead and send",
+            "yes send",
+            "for me to send"
+          ],
+          "exclude": [
+            "how to send",
+            "how do i send",
+            "send button",
+            "send a test request",
+            "send a packet",
+            "send it to me here"
+          ]
+        },
+        "fr": {
+          "match": [
+            "envoie",
+            "envoyer",
+            "envoyez",
+            "poste le message",
+            {
+              "phrase": "écris",
+              "with": [
+                [
+                  "mail",
+                  "mails",
+                  "message",
+                  "messages",
+                  "réponse",
+                  "réponses",
+                  "commentaire",
+                  "publication",
+                  "tickets",
+                  "slack"
+                ]
+              ]
+            },
+            {
+              "phrase": "rédige",
+              "with": [
+                [
+                  "mail",
+                  "mails",
+                  "message",
+                  "messages",
+                  "réponse",
+                  "réponses",
+                  "commentaire",
+                  "publication",
+                  "tickets",
+                  "slack"
+                ]
+              ]
+            },
+            {
+              "phrase": "réponds",
+              "with": [
+                [
+                  "mail",
+                  "mails",
+                  "message",
+                  "messages",
+                  "réponse",
+                  "réponses",
+                  "commentaire",
+                  "publication",
+                  "tickets",
+                  "slack"
+                ]
+              ]
+            },
+            {
+              "phrase": "prépare",
+              "with": [
+                [
+                  "mail",
+                  "mails",
+                  "message",
+                  "messages",
+                  "réponse",
+                  "réponses",
+                  "commentaire",
+                  "publication",
+                  "tickets",
+                  "slack"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "brouillon uniquement",
+            "fais un brouillon",
+            "sans envoyer",
+            "n'envoie pas",
+            "ne pas envoyer",
+            "je l'enverrai",
+            "envoie directement",
+            "envoie le directement",
+            "pour que je l envoie"
+          ],
+          "exclude": [
+            "comment envoyer",
+            "bouton envoyer",
+            "envoie une requête",
+            "envoie un paquet",
+            "envoie le moi ici"
+          ]
+        }
+      },
+      "label": {
+        "en": "Send or draft",
+        "fr": "Envoi ou brouillon"
+      },
+      "statement": {
+        "en": {
+          "plain": "The message is {}",
+          "expert": "Outbound messages are {}"
+        },
+        "fr": {
+          "plain": "Le message est {}",
+          "expert": "Les messages sortants sont {}"
+        }
+      },
+      "options": [
+        {
+          "id": "draft_only",
+          "wording": {
+            "en": {
+              "plain": "drafted for you to send",
+              "expert": "returned as drafts"
+            },
+            "fr": {
+              "plain": "rédigé pour que tu l'envoies",
+              "expert": "rendus comme brouillons"
+            }
+          }
+        },
+        {
+          "id": "send_directly",
+          "wording": {
+            "en": {
+              "plain": "sent by me directly",
+              "expert": "sent through the connected account"
+            },
+            "fr": {
+              "plain": "envoyé directement par moi",
+              "expert": "envoyés via le compte connecté"
+            }
+          }
+        }
+      ],
+      "tier": "essential",
+      "rigor": "explore",
+      "guard": true,
+      "cost": 5,
+      "when": "The draft has the agent write an email, message, reply, comment or post that the agent could send or publish itself through a connected account or tool, and the draft does not say whether the agent sends it or hands back a draft.",
+      "settled": "The draft says who sends (\"draft only\", \"I'll send it\", \"post it\"); the user is approving or editing a draft the agent already showed; a standing instruction covers sending; or the agent has no way to send.",
+      "why": "A sent message or public post cannot be recalled, while a draft that was meant to go out leaves people waiting for an answer.",
+      "source": "MarginCue owner history, authoring half",
+      "opens": [
+        "message_audience"
+      ]
+    },
+    {
+      "id": "message_audience",
+      "scope": "project",
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "write to",
+              "with": [
+                [
+                  "maintainers",
+                  "team",
+                  "organizers"
+                ],
+                [
+                  "issue tracker",
+                  "public thread",
+                  "shared channel"
+                ],
+                [
+                  "address",
+                  "direct message",
+                  "privately"
+                ]
+              ]
+            },
+            {
+              "phrase": "raise this",
+              "with": [
+                [
+                  "public thread",
+                  "shared channel"
+                ],
+                [
+                  "direct message",
+                  "private"
+                ]
+              ]
+            },
+            "where to post"
+          ],
+          "settled": [
+            "send it privately",
+            "post it publicly",
+            "post in",
+            "send it in a dm",
+            "in this thread"
+          ]
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "écris",
+              "with": [
+                [
+                  "mainteneurs",
+                  "équipe",
+                  "organisateurs"
+                ],
+                [
+                  "public",
+                  "canal partagé"
+                ],
+                [
+                  "adresse",
+                  "en privé"
+                ]
+              ]
+            },
+            {
+              "phrase": "signale",
+              "with": [
+                [
+                  "canal partagé",
+                  "fil public"
+                ],
+                [
+                  "message direct",
+                  "en privé"
+                ]
+              ]
+            },
+            "où poster"
+          ],
+          "settled": [
+            "envoie le en privé",
+            "poste le publiquement",
+            "publie dans",
+            "dans ce fil"
+          ]
+        }
+      },
+      "label": {
+        "en": "Visibility",
+        "fr": "Visibilité"
+      },
+      "statement": {
+        "en": {
+          "plain": "The message goes {}",
+          "expert": "Visibility is {}"
+        },
+        "fr": {
+          "plain": "Le message part {}",
+          "expert": "La visibilité est {}"
+        }
+      },
+      "options": [
+        {
+          "id": "shared",
+          "wording": {
+            "en": {
+              "plain": "to the shared channel",
+              "expert": "the public thread or forum"
+            },
+            "fr": {
+              "plain": "sur le canal partagé",
+              "expert": "le fil ou forum public"
+            }
+          }
+        },
+        {
+          "id": "private",
+          "wording": {
+            "en": {
+              "plain": "privately to the person",
+              "expert": "a private direct message"
+            },
+            "fr": {
+              "plain": "en privé à la personne",
+              "expert": "un message privé direct"
+            }
+          }
+        }
+      ],
+      "tier": "essential",
+      "rigor": "explore",
+      "guard": true,
+      "cost": 4,
+      "when": "The draft asks for a message or question that could go privately to one person or publicly to a shared channel, forum, tracker or thread, who can read it matters (a personal request, a complaint, an unreleased detail), and the draft does not say which.",
+      "settled": "The draft names the channel or recipients, or says private or public; only one channel exists; the user is replying inside an existing thread; or the user has already chosen where to send it.",
+      "why": "A question posted where others can read it cannot be made private again and may expose a request meant for one person.",
+      "source": "MarginCue owner history, authoring half",
+      "opens": []
+    },
+    {
+      "id": "account_access",
+      "scope": "project",
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "emailed",
+              "with": [
+                [
+                  "tracker",
+                  "calendar",
+                  "task list",
+                  "spreadsheet"
+                ]
+              ]
+            },
+            {
+              "phrase": "my mailbox",
+              "with": [
+                [
+                  "tracker",
+                  "find the attachment",
+                  "download"
+                ]
+              ]
+            },
+            {
+              "phrase": "my google drive",
+              "with": [
+                [
+                  "may access",
+                  "if needed",
+                  "from there"
+                ]
+              ]
+            },
+            {
+              "phrase": "my calendar",
+              "with": [
+                [
+                  "if needed",
+                  "if you can"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "may open my mailbox",
+            "may access my",
+            "read only",
+            "don't touch my",
+            "do not access my",
+            "update my calendar",
+            "summarize my emails"
+          ]
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "envoyé par mail",
+              "with": [
+                [
+                  "suivi",
+                  "tableau",
+                  "agenda"
+                ]
+              ]
+            },
+            {
+              "phrase": "ma boîte mail",
+              "with": [
+                [
+                  "télécharge",
+                  "retrouve la pièce jointe"
+                ]
+              ]
+            },
+            {
+              "phrase": "mon drive",
+              "with": [
+                [
+                  "si besoin",
+                  "si nécessaire"
+                ]
+              ]
+            },
+            {
+              "phrase": "mon agenda",
+              "with": [
+                [
+                  "si besoin",
+                  "si tu peux"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "tu peux ouvrir ma",
+            "lecture seule",
+            "ne touche pas à mon",
+            "mets à jour mon agenda",
+            "résume mes mails"
+          ]
+        }
+      },
+      "label": {
+        "en": "Account access",
+        "fr": "Accès au compte"
+      },
+      "statement": {
+        "en": {
+          "plain": "In your account, I {}",
+          "expert": "External account access is {}"
+        },
+        "fr": {
+          "plain": "Dans ton compte, je {}",
+          "expert": "L'accès au compte externe est {}"
+        }
+      },
+      "options": [
+        {
+          "id": "no_access",
+          "wording": {
+            "en": {
+              "plain": "change nothing, you handle it",
+              "expert": "none, user supplies material"
+            },
+            "fr": {
+              "plain": "ne touche à rien",
+              "expert": "nul, tu fournis le contenu"
+            }
+          }
+        },
+        {
+          "id": "read_only",
+          "wording": {
+            "en": {
+              "plain": "only read what is needed",
+              "expert": "read-only via the connector"
+            },
+            "fr": {
+              "plain": "lis seulement le nécessaire",
+              "expert": "en lecture seule"
+            }
+          }
+        },
+        {
+          "id": "read_write",
+          "wording": {
+            "en": {
+              "plain": "read and make the edits",
+              "expert": "read-write via the connector"
+            },
+            "fr": {
+              "plain": "lis et fais les modifications",
+              "expert": "en lecture et écriture"
+            }
+          }
+        }
+      ],
+      "tier": "essential",
+      "rigor": "explore",
+      "guard": true,
+      "cost": 4,
+      "when": "The draft mentions material or records that live in the user's own external account (mailbox, messaging app, calendar, cloud drive, task manager) that the agent can reach through a browser or connector, without saying whether the agent may open, fetch from or change that account.",
+      "settled": "The draft grants or withholds access (\"you may fetch it\", \"update my calendar\", \"don't touch my mail\"); a standing instruction covers that account; the material is already in the workspace; or the request plainly requires reading there, such as summarising what changed.",
+      "why": "Acting in a personal account can expose or change private data, while holding back leaves the agent waiting for files it could have fetched.",
+      "source": "MarginCue owner history, authoring half; Saltzer and Schroeder 1975, least privilege",
+      "opens": []
+    },
+    {
+      "id": "rule_reach",
+      "scope": "project",
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "uploads",
+              "with": [
+                [
+                  "limited to",
+                  "new limit",
+                  "maximum"
+                ],
+                [
+                  "already",
+                  "existing"
+                ]
+              ]
+            },
+            {
+              "phrase": "new rule",
+              "with": [
+                [
+                  "existing entries",
+                  "already exist",
+                  "existing records"
+                ]
+              ]
+            },
+            {
+              "phrase": "new limit",
+              "with": [
+                [
+                  "existing files",
+                  "already"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "from now on",
+            "only new",
+            "existing files stay",
+            "fix the existing ones",
+            "applies everywhere",
+            "apply this retroactively"
+          ]
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "uploads",
+              "with": [
+                [
+                  "limite",
+                  "limités",
+                  "maximum"
+                ],
+                [
+                  "déjà",
+                  "existants"
+                ]
+              ]
+            },
+            {
+              "phrase": "nouvelle règle",
+              "with": [
+                [
+                  "déjà",
+                  "entrées existantes",
+                  "données existantes"
+                ]
+              ]
+            },
+            {
+              "phrase": "nouvelle limite",
+              "with": [
+                [
+                  "fichiers existants",
+                  "déjà"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "à partir de maintenant",
+            "seulement les nouveaux",
+            "fichiers existants restent",
+            "rétroactivement",
+            "partout"
+          ]
+        }
+      },
+      "label": {
+        "en": "Rule applies to",
+        "fr": "Portée de la règle"
+      },
+      "statement": {
+        "en": {
+          "plain": "The new rule applies to {}",
+          "expert": "The constraint is enforced {}"
+        },
+        "fr": {
+          "plain": "La nouvelle règle s'applique {}",
+          "expert": "La contrainte s'applique {}"
+        }
+      },
+      "options": [
+        {
+          "id": "new_only",
+          "wording": {
+            "en": {
+              "plain": "new entries from now on",
+              "expert": "prospectively only"
+            },
+            "fr": {
+              "plain": "aux nouvelles entrées seulement",
+              "expert": "seulement à l'avenir"
+            }
+          }
+        },
+        {
+          "id": "include_existing",
+          "wording": {
+            "en": {
+              "plain": "existing entries too",
+              "expert": "retroactively on existing records"
+            },
+            "fr": {
+              "plain": "aux entrées existantes aussi",
+              "expert": "rétroactivement aux données existantes"
+            }
+          }
+        }
+      ],
+      "tier": "standard",
+      "rigor": "build",
+      "guard": false,
+      "cost": 4,
+      "when": "The draft states a new rule or limit for recurring entries (calendar events, records, uploads, files, names) while entries made under the old practice already exist, and does not say whether those existing entries are changed or only new ones must follow it.",
+      "settled": "The draft says \"from now on\" or \"fix the existing ones\", or its wording covers what exists (\"everywhere\"); a Decisions line fixes it; no old entries exist; the rule constrains a deliverable still being made; or the user is answering the agent.",
+      "why": "Applying a rule to existing entries rewrites data people rely on, while applying it only forward leaves the exceptions the user may have meant to remove.",
+      "source": "MarginCue owner history, authoring half",
+      "opens": []
+    },
+    {
+      "id": "undo_scope",
+      "scope": "project",
+      "touch": {
+        "en": {
+          "match": [
+            "undo all of that",
+            "undo everything",
+            "revert everything",
+            "roll it all back",
+            "roll back everything",
+            {
+              "phrase": "cancel it",
+              "with": [
+                [
+                  "still running",
+                  "already opened",
+                  "already created"
+                ]
+              ]
+            },
+            {
+              "phrase": "undo that",
+              "with": [
+                [
+                  "still running",
+                  "already opened"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "just stop",
+            "leave the pull request open",
+            "revert the files too",
+            "keep the files",
+            "stop the job only"
+          ]
+        },
+        "fr": {
+          "match": [
+            "annule tout",
+            "défais tout",
+            "reviens en arrière sur tout",
+            {
+              "phrase": "annule ça",
+              "with": [
+                [
+                  "tourne encore",
+                  "déjà ouvert",
+                  "déjà créé"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "arrête seulement",
+            "laisse la pull request",
+            "garde les fichiers",
+            "annule aussi les modifications"
+          ]
+        }
+      },
+      "label": {
+        "en": "Rollback",
+        "fr": "Retour arrière"
+      },
+      "statement": {
+        "en": {
+          "plain": "Cancelling means {}",
+          "expert": "Rollback scope is {}"
+        },
+        "fr": {
+          "plain": "Annuler veut dire {}",
+          "expert": "La portée du retour arrière est {}"
+        }
+      },
+      "options": [
+        {
+          "id": "stop_only",
+          "wording": {
+            "en": {
+              "plain": "only stopping what is running",
+              "expert": "halt running processes only"
+            },
+            "fr": {
+              "plain": "arrêter seulement ce qui tourne",
+              "expert": "arrêt des processus seulement"
+            }
+          }
+        },
+        {
+          "id": "revert_edits",
+          "wording": {
+            "en": {
+              "plain": "stopping and reverting the edits",
+              "expert": "halt and revert file edits"
+            },
+            "fr": {
+              "plain": "arrêter et défaire les modifications",
+              "expert": "arrêt et retour des fichiers"
+            }
+          }
+        },
+        {
+          "id": "full_revert",
+          "wording": {
+            "en": {
+              "plain": "reverting and deleting what was created",
+              "expert": "full revert, delete created resources"
+            },
+            "fr": {
+              "plain": "tout défaire et supprimer les créations",
+              "expert": "retour complet, ressources créées supprimées"
+            }
+          }
+        }
+      ],
+      "tier": "essential",
+      "rigor": "explore",
+      "guard": true,
+      "cost": 5,
+      "when": "The draft asks to cancel, stop, undo or roll back (\"undo all that\", \"cancel it\") while the agent has both running work and lasting effects (edited files, created or shared resources, sent changes), and does not say which of these to reverse.",
+      "settled": "The draft names what to reverse or keep (\"just stop the job\", \"revert the files too\"); a Decisions line fixes it; only one thing could be undone; or the user is picking from the agent's own list of undo options.",
+      "why": "Reverting or deleting more than intended destroys hours of work and items others use, while only stopping may leave unwanted edits in place.",
+      "source": "MarginCue owner history, authoring half",
+      "opens": []
+    },
+    {
+      "id": "cleanup_reach",
+      "scope": "project",
+      "touch": {
+        "en": {
+          "match": [
+            "delete",
+            "erase",
+            "prune",
+            "wipe",
+            "purge",
+            {
+              "phrase": "clean up",
+              "with": [
+                [
+                  "old",
+                  "unused",
+                  "duplicate",
+                  "temporary",
+                  "test",
+                  "stale"
+                ]
+              ]
+            },
+            {
+              "phrase": "remove",
+              "with": [
+                [
+                  "old",
+                  "unused",
+                  "duplicate",
+                  "temporary",
+                  "stale",
+                  "test databases",
+                  "old files"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "only those whose",
+            "only files older than",
+            "only records older than",
+            "delete only",
+            "only delete",
+            "don't delete",
+            "do not delete",
+            "without deleting",
+            "archive instead",
+            "names start with",
+            "do a dry run"
+          ],
+          "exclude": [
+            "how to delete",
+            "how do i delete",
+            "delete button",
+            "delete icon",
+            "delete key",
+            "delete this sentence"
+          ]
+        },
+        "fr": {
+          "match": [
+            "supprime",
+            "supprimez",
+            "supprimer",
+            "efface",
+            "effacer",
+            "purge",
+            "nettoie les anciens",
+            {
+              "phrase": "nettoie",
+              "with": [
+                [
+                  "anciennes",
+                  "inutilisés",
+                  "doublons",
+                  "temporaires",
+                  "obsolètes"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "ne supprime pas",
+            "ne pas supprimer",
+            "sans supprimer",
+            "supprime uniquement",
+            "supprime seulement",
+            "uniquement ceux dont",
+            "dont le nom commence",
+            "archive plutôt",
+            "simule la suppression"
+          ],
+          "exclude": [
+            "comment supprimer",
+            "bouton supprimer",
+            "touche supprimer",
+            "supprime cette phrase"
+          ]
+        }
+      },
+      "label": {
+        "en": "Cleanup",
+        "fr": "Nettoyage"
+      },
+      "statement": {
+        "en": {
+          "plain": "Cleanup deletes {}",
+          "expert": "Deletion targets {}"
+        },
+        "fr": {
+          "plain": "Le nettoyage supprime {}",
+          "expert": "La suppression vise {}"
+        }
+      },
+      "options": [
+        {
+          "id": "all_matches",
+          "wording": {
+            "en": {
+              "plain": "everything matching the description",
+              "expert": "all pattern matches"
+            },
+            "fr": {
+              "plain": "tout ce qui correspond",
+              "expert": "toutes les correspondances"
+            }
+          }
+        },
+        {
+          "id": "unused_only",
+          "wording": {
+            "en": {
+              "plain": "only items nothing still uses",
+              "expert": "unreferenced matches only"
+            },
+            "fr": {
+              "plain": "seulement ce qui ne sert plus",
+              "expert": "les éléments non référencés"
+            }
+          }
+        },
+        {
+          "id": "task_only",
+          "wording": {
+            "en": {
+              "plain": "only items made in this task",
+              "expert": "task-created artifacts only"
+            },
+            "fr": {
+              "plain": "seulement ce que j'ai créé ici",
+              "expert": "les artefacts créés par la tâche"
+            }
+          }
+        }
+      ],
+      "tier": "essential",
+      "rigor": "explore",
+      "guard": true,
+      "cost": 5,
+      "when": "The draft asks to delete, prune or clean up items named by a loose category (old, unused, temporary, duplicate, test) where some items sit on the boundary, such as ones still referenced, recently used or owned by others, and the line is not drawn.",
+      "settled": "The draft or a Decisions line gives an exact rule or list (paths, a name pattern, an age); the items sit in a scratch area the agent created; the removal is a text edit in a draft; or it is reversible, such as archiving.",
+      "why": "Deleting an item that is still referenced or belongs to someone else breaks it with no undo, while keeping too much leaves the clutter the user wanted gone.",
+      "source": "reasoned; the dry-run option that destructive command-line tools commonly offer",
+      "opens": []
+    },
+    {
+      "id": "costly_launch",
+      "scope": "project",
+      "touch": {
+        "en": {
+          "match": [
+            "paid job",
+            "queued expensive runs",
+            "launch a paid run",
+            "start the paid job",
+            {
+              "phrase": "queued",
+              "with": [
+                [
+                  "shared staging cluster",
+                  "hours",
+                  "benchmark",
+                  "load tests",
+                  "metered"
+                ]
+              ]
+            },
+            {
+              "phrase": "resume",
+              "with": [
+                [
+                  "paid runs",
+                  "queued benchmarks",
+                  "long benchmark"
+                ]
+              ]
+            },
+            {
+              "phrase": "start",
+              "with": [
+                [
+                  "long benchmark",
+                  "shared cluster"
+                ],
+                [
+                  "hours",
+                  "queued",
+                  "exclusive"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "run only the first",
+            "hold all runs",
+            "start both now",
+            "don't start the runs",
+            "do not start the runs",
+            "wait until the cluster"
+          ]
+        },
+        "fr": {
+          "match": [
+            "tâches coûteuses en attente",
+            "lance un calcul payant",
+            "lancer un calcul payant",
+            {
+              "phrase": "en attente",
+              "with": [
+                [
+                  "cluster partagé",
+                  "benchmark",
+                  "tests de charge",
+                  "plusieurs heures"
+                ]
+              ]
+            },
+            {
+              "phrase": "reprends",
+              "with": [
+                [
+                  "tâches coûteuses",
+                  "benchmarks en attente",
+                  "long benchmark"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "lance seulement le premier",
+            "attends que le cluster",
+            "lance les deux maintenant",
+            "ne lance pas les tests"
+          ]
+        }
+      },
+      "label": {
+        "en": "Costly runs",
+        "fr": "Lancements coûteux"
+      },
+      "statement": {
+        "en": {
+          "plain": "Queued costly runs are {}",
+          "expert": "Pending expensive jobs are {}"
+        },
+        "fr": {
+          "plain": "Les lancements coûteux en attente sont {}",
+          "expert": "Les tâches coûteuses en attente sont {}"
+        }
+      },
+      "options": [
+        {
+          "id": "hold",
+          "wording": {
+            "en": {
+              "plain": "held for your go-ahead",
+              "expert": "held pending approval"
+            },
+            "fr": {
+              "plain": "gardés jusqu'à ton feu vert",
+              "expert": "retenues jusqu'à validation"
+            }
+          }
+        },
+        {
+          "id": "sequential",
+          "wording": {
+            "en": {
+              "plain": "started now, one after another",
+              "expert": "launched sequentially now"
+            },
+            "fr": {
+              "plain": "lancés maintenant, l'un après l'autre",
+              "expert": "lancées en séquence maintenant"
+            }
+          }
+        },
+        {
+          "id": "parallel",
+          "wording": {
+            "en": {
+              "plain": "started now, in parallel",
+              "expert": "launched concurrently now"
+            },
+            "fr": {
+              "plain": "lancés maintenant, en parallèle",
+              "expert": "lancées en parallèle maintenant"
+            }
+          }
+        }
+      ],
+      "tier": "essential",
+      "rigor": "explore",
+      "guard": true,
+      "cost": 4,
+      "when": "The draft resumes, continues or approves work while queued or planned runs would cost real money, quota or hours of exclusive machine time (paid compute, long benchmark jobs, bulk API calls), and it does not say whether those runs start now.",
+      "settled": "The draft names which runs to start or hold; the user already approved the launch; the draft meets the condition the agent set for launching, such as a resource now being free; the pending steps are cheap; or no costly run is in view.",
+      "why": "A launched run spends money, quota or machine hours that cannot be recovered, while holding it stalls work the user expected to find done.",
+      "source": "MarginCue owner history, authoring half",
+      "opens": [
+        "spend_cap"
+      ]
+    },
+    {
+      "id": "spend_cap",
+      "scope": "project",
+      "touch": {
+        "en": {
+          "match": [
+            "spend",
+            "buy credits",
+            "purchase credits",
+            "paid service",
+            {
+              "phrase": "sweep",
+              "with": [
+                [
+                  "cloud GPUs",
+                  "paid compute",
+                  "API credits",
+                  "paid API",
+                  "per call",
+                  "GPU hours",
+                  "cloud compute"
+                ]
+              ]
+            },
+            {
+              "phrase": "use",
+              "with": [
+                [
+                  "cloud GPUs",
+                  "paid compute",
+                  "API credits",
+                  "paid API",
+                  "per call",
+                  "GPU hours",
+                  "cloud compute"
+                ],
+                [
+                  "until",
+                  "sweep",
+                  "repeat",
+                  "batch"
+                ]
+              ]
+            },
+            {
+              "phrase": "run",
+              "with": [
+                [
+                  "cloud GPUs",
+                  "paid compute",
+                  "API credits",
+                  "paid API",
+                  "per call",
+                  "GPU hours",
+                  "cloud compute"
+                ],
+                [
+                  "until",
+                  "sweep",
+                  "repeat",
+                  "batch"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "stop at",
+            "cap at",
+            "capped at",
+            "at most",
+            "no more than",
+            "budget of",
+            "do not spend",
+            "don't spend",
+            "spend no more",
+            "without spending",
+            "no cap",
+            "use up the credits"
+          ],
+          "exclude": [
+            "how much did we spend",
+            "how much we spend",
+            "spend time",
+            "spend a minute",
+            "spend a few minutes"
+          ]
+        },
+        "fr": {
+          "match": [
+            "dépense",
+            "dépenser",
+            "achète des crédits",
+            "acheter des crédits",
+            "service payant",
+            {
+              "phrase": "utilise",
+              "with": [
+                [
+                  "GPU cloud",
+                  "calcul payant",
+                  "crédits API",
+                  "API payante",
+                  "par requête",
+                  "heures GPU",
+                  "calcul cloud"
+                ],
+                [
+                  "jusqu à",
+                  "sweep",
+                  "balayage",
+                  "boucle",
+                  "lot"
+                ]
+              ]
+            },
+            {
+              "phrase": "lance",
+              "with": [
+                [
+                  "GPU cloud",
+                  "calcul payant",
+                  "crédits API",
+                  "API payante",
+                  "par requête",
+                  "heures GPU",
+                  "calcul cloud"
+                ],
+                [
+                  "jusqu à",
+                  "boucle",
+                  "lot"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "arrête à",
+            "arrête toi à",
+            "au plus",
+            "maximum de",
+            "budget de",
+            "ne dépense pas",
+            "sans dépenser",
+            "sans plafond",
+            "épuise les crédits"
+          ],
+          "exclude": [
+            "combien a t on dépensé",
+            "dépense du temps",
+            "dépense quelques minutes"
+          ]
+        }
+      },
+      "label": {
+        "en": "Spending",
+        "fr": "Dépenses"
+      },
+      "statement": {
+        "en": {
+          "plain": "Spending is capped at {}",
+          "expert": "Resource budget is {}"
+        },
+        "fr": {
+          "plain": "La dépense va jusqu'à {}",
+          "expert": "Le budget de ressources est {}"
+        }
+      },
+      "options": [
+        {
+          "id": "pilot_then_ask",
+          "wording": {
+            "en": {
+              "plain": "a small trial, then I ask",
+              "expert": "a pilot allotment, then review"
+            },
+            "fr": {
+              "plain": "un petit essai, puis je demande",
+              "expert": "une enveloppe pilote, puis revue"
+            }
+          }
+        },
+        {
+          "id": "goal_budget",
+          "wording": {
+            "en": {
+              "plain": "whatever the goal needs",
+              "expert": "uncapped until the goal"
+            },
+            "fr": {
+              "plain": "ce qu'il faut pour l'objectif",
+              "expert": "sans plafond jusqu'à l'objectif"
+            }
+          }
+        }
+      ],
+      "tier": "standard",
+      "rigor": "build",
+      "guard": true,
+      "cost": 5,
+      "when": "The draft starts or extends open-ended work that pays per use beyond the normal session (cloud compute, pay-per-call APIs, purchased credits, a paid service), and sets no limit, so the agent must choose how much to spend before stopping.",
+      "settled": "The draft or a Decisions line sets a cap, a share of credits, a number of runs or a stopping rule; the user says there is no cap or wants credits used up before they expire; or the work is a single bounded call.",
+      "why": "An uncapped loop can burn a month of credits overnight, while a cap set too low stops the run before it shows anything.",
+      "source": "reasoned",
+      "opens": []
+    },
+    {
+      "id": "check_in_policy",
+      "scope": "project",
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "rework",
+              "with": [
+                [
+                  "offline until",
+                  "unattended",
+                  "overnight"
+                ]
+              ]
+            },
+            {
+              "phrase": "refactor",
+              "with": [
+                [
+                  "offline until",
+                  "unattended",
+                  "overnight"
+                ]
+              ]
+            },
+            {
+              "phrase": "work on",
+              "with": [
+                [
+                  "while i am offline",
+                  "while i am away",
+                  "until tomorrow"
+                ]
+              ]
+            },
+            {
+              "phrase": "run experiments",
+              "with": [
+                [
+                  "unattended",
+                  "overnight"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "carte blanche",
+            "you decide",
+            "don't ask",
+            "decide everything yourself",
+            "ask me first",
+            "check with me",
+            "don't wait for me"
+          ]
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "refonds",
+              "with": [
+                [
+                  "hors ligne",
+                  "absent jusqu à",
+                  "cette nuit"
+                ]
+              ]
+            },
+            {
+              "phrase": "refactorise",
+              "with": [
+                [
+                  "hors ligne",
+                  "absent jusqu à",
+                  "cette nuit"
+                ]
+              ]
+            },
+            {
+              "phrase": "travaille",
+              "with": [
+                [
+                  "pendant mon absence",
+                  "jusqu à demain"
+                ]
+              ]
+            },
+            {
+              "phrase": "lance des expériences",
+              "with": [
+                [
+                  "cette nuit",
+                  "sans surveillance"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "carte blanche",
+            "fais au mieux",
+            "choisis toi même",
+            "demande moi d abord",
+            "décide seul",
+            "ne m attends pas"
+          ]
+        }
+      },
+      "label": {
+        "en": "Check-ins",
+        "fr": "Points de validation"
+      },
+      "statement": {
+        "en": {
+          "plain": "At real forks, I {}",
+          "expert": "Mid-task design decisions are {}"
+        },
+        "fr": {
+          "plain": "Aux vrais choix, je {}",
+          "expert": "Les décisions en cours de tâche sont {}"
+        }
+      },
+      "options": [
+        {
+          "id": "ask",
+          "wording": {
+            "en": {
+              "plain": "stop and ask you",
+              "expert": "escalated to the user"
+            },
+            "fr": {
+              "plain": "m'arrête pour te demander",
+              "expert": "remontées à l'utilisateur"
+            }
+          }
+        },
+        {
+          "id": "keep_going",
+          "wording": {
+            "en": {
+              "plain": "decide and keep going",
+              "expert": "made autonomously and logged"
+            },
+            "fr": {
+              "plain": "décide et continue",
+              "expert": "prises seul et consignées"
+            }
+          }
+        }
+      ],
+      "tier": "standard",
+      "rigor": "build",
+      "guard": false,
+      "cost": 4,
+      "when": "The draft hands over an open-ended, multi-hour task with licence for large changes (big refactors, many experiments, heavy token use), and says nothing about whether the agent should stop for approval at major forks or decide alone and keep going.",
+      "settled": "The draft delegates (\"carte blanche\", \"you decide\", \"don't ask\") or asks for check-ins (\"ask me before merging\", named checkpoints); a standing instruction covers autonomy; or the task is a bounded change, a question or a suggestion.",
+      "why": "Stopping to ask can leave an unattended run idle for hours, while deciding alone can spend the whole budget on a direction the user would have vetoed.",
+      "source": "MarginCue owner history, authoring half; Parasuraman, Sheridan and Wickens 2000, levels of automation",
+      "opens": [
+        "spend_cap"
+      ]
+    },
+    {
+      "id": "style_reference",
+      "scope": "project",
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "redesign",
+              "with": [
+                [
+                  "rest of the app",
+                  "other screens",
+                  "same look",
+                  "shared style"
+                ]
+              ]
+            },
+            {
+              "phrase": "rethink the design",
+              "with": [
+                [
+                  "existing pages",
+                  "same style"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "match the existing style",
+            "follow the design system",
+            "don't model it on",
+            "ignore the existing style"
+          ]
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "refonds",
+              "with": [
+                [
+                  "reste de l app",
+                  "autres écrans",
+                  "même style"
+                ]
+              ]
+            },
+            {
+              "phrase": "refonte",
+              "with": [
+                [
+                  "reste du site",
+                  "autres pages",
+                  "même style"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "reprends le style existant",
+            "suis le design system",
+            "ne te base pas sur",
+            "ignore le style existant"
+          ]
+        }
+      },
+      "label": {
+        "en": "Design reference",
+        "fr": "Référence visuelle"
+      },
+      "statement": {
+        "en": {
+          "plain": "The redesign follows {}",
+          "expert": "Design reference is {}"
+        },
+        "fr": {
+          "plain": "La refonte suit {}",
+          "expert": "La référence de design est {}"
+        }
+      },
+      "options": [
+        {
+          "id": "existing_style",
+          "wording": {
+            "en": {
+              "plain": "the style of existing pages",
+              "expert": "current in-product patterns"
+            },
+            "fr": {
+              "plain": "le style des pages existantes",
+              "expert": "les motifs actuels du produit"
+            }
+          }
+        },
+        {
+          "id": "new_direction",
+          "wording": {
+            "en": {
+              "plain": "a new direction, ignoring old pages",
+              "expert": "external references, current UI excluded"
+            },
+            "fr": {
+              "plain": "une nouvelle direction, sans les anciennes",
+              "expert": "des références externes, l'existant exclu"
+            }
+          }
+        }
+      ],
+      "tier": "standard",
+      "rigor": "build",
+      "guard": false,
+      "cost": 3,
+      "when": "The draft asks to redesign or substantially improve one part of a product, site or document while the rest shares the old look or approach, and does not say whether the other parts are a model to follow or also due for replacement.",
+      "settled": "The draft says to match the existing style, or names a reference to follow or to avoid; the rest of the product is an approved design system; or the change is a small fix inside a design the user accepts.",
+      "why": "Copying the look the user wants to replace makes the redesign inherit what they disliked, and the work is redone.",
+      "source": "MarginCue owner history, authoring half",
+      "opens": []
+    },
+    {
+      "id": "preview_first",
+      "scope": "project",
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "landing page",
+              "with": [
+                [
+                  "animations",
+                  "redesign",
+                  "from scratch",
+                  "creative direction"
+                ]
+              ]
+            },
+            {
+              "phrase": "slide deck",
+              "with": [
+                [
+                  "design from scratch",
+                  "visual identity",
+                  "creative direction"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "show me a static mockup",
+            "show a mockup first",
+            "preview first",
+            "build it directly",
+            "approved mockup"
+          ]
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "landing page",
+              "with": [
+                [
+                  "animations",
+                  "refonte",
+                  "direction artistique"
+                ]
+              ]
+            },
+            {
+              "phrase": "page d accueil",
+              "with": [
+                [
+                  "animations",
+                  "refonte",
+                  "direction artistique"
+                ]
+              ]
+            },
+            {
+              "phrase": "diaporama",
+              "with": [
+                [
+                  "identité visuelle",
+                  "direction artistique"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "montre moi une maquette",
+            "aperçu d abord",
+            "construis directement",
+            "maquette validée"
+          ]
+        }
+      },
+      "label": {
+        "en": "Preview first",
+        "fr": "Aperçu préalable"
+      },
+      "statement": {
+        "en": {
+          "plain": "Before building it all, I {}",
+          "expert": "Delivery is {}"
+        },
+        "fr": {
+          "plain": "Avant de tout construire, je {}",
+          "expert": "La livraison est {}"
+        }
+      },
+      "options": [
+        {
+          "id": "build_directly",
+          "wording": {
+            "en": {
+              "plain": "build it straight through",
+              "expert": "the complete build in one pass"
+            },
+            "fr": {
+              "plain": "construis tout d'une traite",
+              "expert": "la version complète en une passe"
+            }
+          }
+        },
+        {
+          "id": "preview_first",
+          "wording": {
+            "en": {
+              "plain": "show a quick preview first",
+              "expert": "a mockup for sign-off first"
+            },
+            "fr": {
+              "plain": "montre d'abord un aperçu rapide",
+              "expert": "une maquette à valider d'abord"
+            }
+          }
+        }
+      ],
+      "tier": "standard",
+      "rigor": "build",
+      "guard": false,
+      "cost": 3,
+      "when": "The draft asks for a new or wholly redone result whose look or creative direction is a matter of taste (a page, a redesign, a slide deck, a public piece) and takes hours to build, without saying whether to show a mockup or sample first.",
+      "settled": "The draft asks for a preview first or says to build it all directly; the user already approved a mockup or direction; the change adds to an approved design; or the result is functional and small enough to review whole.",
+      "why": "A full build in the wrong direction wastes hours of work and review, while a preview costs a short pause.",
+      "source": "reasoned; Buxton 2007, Sketching User Experiences",
+      "opens": []
+    },
+    {
+      "id": "content_placement",
+      "scope": "project",
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "release notes",
+              "with": [
+                [
+                  "project website",
+                  "landing page"
+                ]
+              ]
+            },
+            {
+              "phrase": "add a guide",
+              "with": [
+                [
+                  "existing website",
+                  "main page"
+                ]
+              ]
+            },
+            {
+              "phrase": "add an article",
+              "with": [
+                [
+                  "existing website",
+                  "main page"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "in a new",
+            "on the homepage",
+            "in the existing section",
+            "under the existing",
+            "put them in",
+            "under /notes"
+          ]
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "notes de version",
+              "with": [
+                [
+                  "site du projet",
+                  "page d accueil"
+                ]
+              ]
+            },
+            {
+              "phrase": "ajoute un guide",
+              "with": [
+                [
+                  "site existant",
+                  "page principale"
+                ]
+              ]
+            },
+            {
+              "phrase": "ajoute un article",
+              "with": [
+                [
+                  "site existant",
+                  "page principale"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "dans une nouvelle",
+            "sur la page d accueil",
+            "dans la section existante",
+            "place les dans"
+          ]
+        }
+      },
+      "label": {
+        "en": "Content location",
+        "fr": "Emplacement"
+      },
+      "statement": {
+        "en": {
+          "plain": "The new content goes {}",
+          "expert": "New content is placed {}"
+        },
+        "fr": {
+          "plain": "Le nouveau contenu va {}",
+          "expert": "Le nouveau contenu est placé {}"
+        }
+      },
+      "options": [
+        {
+          "id": "existing_page",
+          "wording": {
+            "en": {
+              "plain": "on the existing main page",
+              "expert": "inline in the current page"
+            },
+            "fr": {
+              "plain": "sur la page principale existante",
+              "expert": "dans la page actuelle"
+            }
+          }
+        },
+        {
+          "id": "new_section",
+          "wording": {
+            "en": {
+              "plain": "in a separate new section",
+              "expert": "under a dedicated new route"
+            },
+            "fr": {
+              "plain": "dans une nouvelle section séparée",
+              "expert": "sous une nouvelle route dédiée"
+            }
+          }
+        }
+      ],
+      "tier": "standard",
+      "rigor": "build",
+      "guard": false,
+      "cost": 2,
+      "when": "The draft adds new content (a post, an article, a guide, release notes) to an existing site or document with a main page and room for separate sections, and does not say whether it goes into the existing page or a section of its own.",
+      "settled": "The draft names the location (a path, a section, \"a new page for articles\"); the site already has one obvious home for that kind of content; or the content replaces an existing item in place.",
+      "why": "Content put in the wrong place reshapes a public site in a way the user then has to undo, links included.",
+      "source": "MarginCue owner history, authoring half",
+      "opens": []
+    },
+    {
+      "id": "filter_boundary",
+      "scope": "project",
+      "touch": {
+        "en": {
+          "match": [
+            {
+              "phrase": "weekly digest",
+              "with": [
+                [
+                  "between",
+                  "partly",
+                  "nearby"
+                ]
+              ]
+            },
+            {
+              "phrase": "recurring alert",
+              "with": [
+                [
+                  "between",
+                  "nearby",
+                  "adjacent"
+                ]
+              ]
+            },
+            {
+              "phrase": "set up a watch",
+              "with": [
+                [
+                  "nearby",
+                  "overlap",
+                  "between"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "include events only partly",
+            "include near matches",
+            "exclude near matches",
+            "strictly within",
+            "exact matches only"
+          ]
+        },
+        "fr": {
+          "match": [
+            {
+              "phrase": "récapitulatif hebdomadaire",
+              "with": [
+                [
+                  "entre",
+                  "chevauche",
+                  "proche"
+                ]
+              ]
+            },
+            {
+              "phrase": "veille",
+              "with": [
+                [
+                  "entre",
+                  "limitrophe",
+                  "chevauche"
+                ]
+              ]
+            },
+            {
+              "phrase": "alerte récurrente",
+              "with": [
+                [
+                  "entre",
+                  "proche",
+                  "catégorie voisine"
+                ]
+              ]
+            }
+          ],
+          "settled": [
+            "inclue les cas limites",
+            "exclus les cas limites",
+            "strictement dans",
+            "correspondance exacte",
+            "inclue les événements partiels"
+          ]
+        }
+      },
+      "label": {
+        "en": "Near matches",
+        "fr": "Cas limites"
+      },
+      "statement": {
+        "en": {
+          "plain": "Borderline items are {}",
+          "expert": "Near-miss matches are {}"
+        },
+        "fr": {
+          "plain": "Les cas limites sont {}",
+          "expert": "Les correspondances approchantes sont {}"
+        }
+      },
+      "options": [
+        {
+          "id": "exclude_near",
+          "wording": {
+            "en": {
+              "plain": "left out",
+              "expert": "excluded by the strict filter"
+            },
+            "fr": {
+              "plain": "écartés",
+              "expert": "exclues par le filtre strict"
+            }
+          }
+        },
+        {
+          "id": "flag_near",
+          "wording": {
+            "en": {
+              "plain": "included, marked as partial matches",
+              "expert": "included and flagged as partial"
+            },
+            "fr": {
+              "plain": "inclus, marqués comme partiels",
+              "expert": "incluses et signalées comme partielles"
+            }
+          }
+        }
+      ],
+      "tier": "standard",
+      "rigor": "build",
+      "guard": false,
+      "cost": 2,
+      "when": "The draft sets up a recurring search, watch, digest or alert from criteria the user gave, and real items will straddle them (a date window they partly overlap, a nearby region, an adjacent tier or category), without saying how to treat borderline items.",
+      "settled": "The draft or a Decisions line says to include or exclude near matches; the criteria are exact identifiers with no boundary; or the user is answering the agent's question about the criteria.",
+      "why": "A strict filter silently drops items the user would have wanted, while a loose one fills every digest with noise they stop reading.",
+      "source": "MarginCue owner history, authoring half",
+      "opens": []
+    }
+  ]
+}

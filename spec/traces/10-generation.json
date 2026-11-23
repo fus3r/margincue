@@ -1,0 +1,130 @@
+{
+  "name": "config changes bump the generation (contract v1.1)",
+  "description": "Changing the profile or enabled starts a new generation: requests in flight are cancelled and any reply from an older generation is a no-op. A config that changes neither keeps everything.",
+  "assets": "fixtures/assets.json",
+  "steps": [
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      }
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1000,
+        "text": "Delete the unused feature flags.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 1,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nDelete the unused feature flags.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {}
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false,
+        "timing": {
+          "idleMs": 200
+        }
+      },
+      "note": "same profile, still on: nothing changes",
+      "expect": []
+    },
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "two",
+        "streaming": false,
+        "eagerPlan": false
+      },
+      "note": "new profile: cancel, review again",
+      "expect": [
+        {
+          "type": "cancel",
+          "req": 1
+        },
+        {
+          "type": "request",
+          "req": 2,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nDelete the unused feature flags.\n>>>",
+          "maxTokens": 320,
+          "system": [
+            "You are a test reviewer. Give at most 2 cues.\n\nExample\nStatus: complete\nDraft:\n<<<\nHi.\n>>>\nOutput:\nNONE",
+            "Two at most."
+          ]
+        },
+        {
+          "type": "view",
+          "view": {
+            "profile": "two",
+            "phase": "reviewing"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 1500,
+        "req": 1,
+        "text": "unused\nunused | A flag is unused when {} | no code references it | it is off everywhere",
+        "done": true
+      },
+      "note": "older generation: no-op",
+      "expect": []
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 1700,
+        "req": 2,
+        "text": "unused\nunused | A flag is unused when {} | no code references it | it is off everywhere",
+        "done": true
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "idle",
+            "cues": [
+              {
+                "id": "c1",
+                "anchor": "unused"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "nope",
+        "streaming": false,
+        "eagerPlan": false
+      },
+      "note": "an unknown profile is refused (metric only)",
+      "expect": []
+    }
+  ]
+}

@@ -1,0 +1,261 @@
+{
+  "name": "instant first touch, delegation, quiet and late amendments",
+  "description": "A clause starts the cloud review; an exact in-flight reply after Enter can be applied once.",
+  "assets": "catalogs",
+  "steps": [
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "mode": "auto",
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "state": {
+              "mode": "auto"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 100,
+        "text": "Add an export button,",
+        "origin": "type"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 1,
+          "tier": "cloud",
+          "kind": "full"
+        },
+        {
+          "type": "view",
+          "view": {
+            "phase": "reviewing"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "submit",
+        "now": 200,
+        "text": "Add an export button,"
+      },
+      "expect": [
+        {
+          "type": "submit",
+          "text": "Add an export button,",
+          "decisions": []
+        },
+        {
+          "type": "timer",
+          "at": 3700
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "",
+            "phase": "idle"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 500,
+        "req": 1,
+        "done": true,
+        "text": "export button\nexport button | Export covers {} | filtered rows | all rows"
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "amendment": {
+              "id": "c1",
+              "statement": "Export covers {}",
+              "options": [
+                "filtered rows",
+                "all rows"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "amend",
+        "now": 600,
+        "cue": "c1",
+        "option": 1
+      },
+      "expect": [
+        {
+          "type": "amend",
+          "cue": "c1",
+          "option": 1,
+          "ms": 400,
+          "text": "Amendment to my last prompt: Export covers all rows."
+        },
+        {
+          "type": "timer",
+          "at": null
+        },
+        {
+          "type": "view",
+          "view": {
+            "amendment": {
+              "$absent": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 800,
+        "text": "Build a new landing page with animations",
+        "origin": "type"
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "state": {
+              "open": 1,
+              "first": {
+                "slot": "preview_first",
+                "guard": false,
+                "scope": "project"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "delegate",
+        "now": 820,
+        "slot": "preview_first"
+      },
+      "expect": [
+        {
+          "type": "persist",
+          "action": "delegate",
+          "value": {
+            "slot": "preview_first",
+            "option": "delegated",
+            "scope": "project",
+            "setAt": 820
+          }
+        },
+        {
+          "type": "view",
+          "view": {
+            "state": {
+              "open": 0,
+              "first": null
+            }
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "submit",
+        "now": 830,
+        "text": "Build a new landing page with animations"
+      },
+      "expect": [
+        {
+          "type": "submit",
+          "text": "Build a new landing page with animations",
+          "decisions": []
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": ""
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "mode": "quiet",
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "state": {
+              "mode": "quiet"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 900,
+        "text": "Deploy and delete the old database.",
+        "origin": "type"
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "state": {
+              "open": 2,
+              "first": null,
+              "marks": []
+            }
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "mode": "off",
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "off",
+            "state": {
+              "mode": "off",
+              "open": 0,
+              "first": null
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

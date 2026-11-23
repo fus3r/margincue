@@ -1,0 +1,8 @@
+{
+  "name": "margincue",
+  "version": "0.2.0",
+  "description": "Standing decisions and optional expert review for the prompt box. Shows local cues while you type and attaches decisions you confirm.",
+  "author": { "name": "MarginCue" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

@@ -1,0 +1,8 @@
+{
+  "system": "You are a test reviewer. Give at most {{max_cues}} cues.\n\nExample\nStatus: complete\nDraft:\n<<<\nHi.\n>>>\nOutput:\nNONE\n",
+  "profiles": {
+    "general": "---\nname: general\ndescription: Test profile.\nmax_cues: 3\n---\n## Rubric\nCue destruction and scope.\n\n## Examples\n### Draft\nAdd an export button.\n### Output\nexport button\nexport button | Export covers {} | filtered rows | all rows\n",
+    "two": "---\nname: two\nmax_cues: 2\n---\n## Rubric\nTwo at most.\n",
+    "terse": "Just a rubric, no headings.\n"
+  }
+}

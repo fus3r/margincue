@@ -1,0 +1,196 @@
+{
+  "name": "cues survive edits; touching the anchor drops them",
+  "description": "With the splice known, spans shift and cues turn stale. An insertion exactly at an anchor's edge does not touch it; replacing any of its characters drops every cue on it.",
+  "assets": "fixtures/assets.json",
+  "steps": [
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      }
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1000,
+        "text": "Add caching to the product search.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 1,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nAdd caching to the product search.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {}
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 1500,
+        "req": 1,
+        "text": "caching\ncaching | Cache entries are {} | shared across all users | separate per user\ncaching | Results may be stale for {} | up to 5 minutes | never",
+        "done": true
+      },
+      "note": "two cues may share an anchor",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "idle",
+            "focus": "c1",
+            "cues": [
+              {
+                "id": "c1",
+                "start": 4,
+                "end": 11,
+                "anchor": "caching",
+                "statement": "Cache entries are {}",
+                "stale": false
+              },
+              {
+                "id": "c2",
+                "start": 4,
+                "end": 11,
+                "anchor": "caching",
+                "statement": "Results may be stale for {}",
+                "stale": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 2000,
+        "text": "Now Add caching to the product search.",
+        "origin": "type",
+        "edit": {
+          "start": 0,
+          "end": 0,
+          "text": "Now "
+        }
+      },
+      "note": "insert before: shift",
+      "expect": [
+        {
+          "type": "timer",
+          "at": 2280
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Now Add caching to the product search.",
+            "cues": [
+              {
+                "id": "c1",
+                "start": 8,
+                "end": 15,
+                "stale": true
+              },
+              {
+                "id": "c2",
+                "start": 8,
+                "end": 15,
+                "stale": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 2050,
+        "text": "Now Add caching layer to the product search.",
+        "origin": "type",
+        "edit": {
+          "start": 15,
+          "end": 15,
+          "text": " layer"
+        }
+      },
+      "note": "insert right after the anchor: untouched",
+      "expect": [
+        {
+          "type": "timer",
+          "at": 2330
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Now Add caching layer to the product search.",
+            "cues": [
+              {
+                "id": "c1",
+                "start": 8,
+                "end": 15
+              },
+              {
+                "id": "c2",
+                "start": 8,
+                "end": 15
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 2100,
+        "text": "Now Add a cache layer to the product search.",
+        "origin": "type",
+        "edit": {
+          "start": 8,
+          "end": 15,
+          "text": "a cache"
+        }
+      },
+      "note": "anchor replaced: both cues dropped",
+      "expect": [
+        {
+          "type": "timer",
+          "at": 2380
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Now Add a cache layer to the product search.",
+            "cues": [],
+            "focus": null
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 2200,
+        "text": "Now Add a cache layer to the product search.",
+        "origin": "type",
+        "edit": {
+          "start": 3,
+          "end": 3,
+          "text": ""
+        },
+        "cursor": 3
+      },
+      "note": "a caret move changes nothing here",
+      "expect": []
+    }
+  ]
+}

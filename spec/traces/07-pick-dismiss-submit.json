@@ -1,0 +1,344 @@
+{
+  "name": "pick, dismiss, acceptAll and submit with decisions",
+  "description": "A pick confirms an option, moves the focus to the next open cue and reviews at once with the Decisions block in the draft. A dismissed cue goes to the Dismissed line and is not shown again. acceptAll confirms every default shown. Submit attaches the confirmed decisions, never an unconfirmed default, and resets.",
+  "assets": "fixtures/assets.json",
+  "steps": [
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      }
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1000,
+        "text": "Add caching to the product search and delete old logs.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 1,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nAdd caching to the product search and delete old logs.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {}
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 1500,
+        "req": 1,
+        "text": "caching ; old logs\ncaching | Cache entries are {} | shared across all users | separate per user\nold logs | Logs count as old after {} | 30 days | 90 days",
+        "done": true
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "focus": "c1",
+            "decisions": [],
+            "cues": [
+              {
+                "id": "c1",
+                "anchor": "caching"
+              },
+              {
+                "id": "c2",
+                "start": 45,
+                "end": 53,
+                "anchor": "old logs"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "pick",
+        "now": 2000,
+        "cue": "c1",
+        "option": 1
+      },
+      "note": "pick: decision recorded, focus moves on, review at once",
+      "expect": [
+        {
+          "type": "request",
+          "req": 2,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nAdd caching to the product search and delete old logs.\n\nDecisions:\n- Cache entries are separate per user.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "phase": "reviewing",
+            "focus": "c2",
+            "decisions": [
+              "Cache entries are separate per user."
+            ],
+            "cues": [
+              {
+                "id": "c1",
+                "chosen": 1
+              },
+              {
+                "id": "c2",
+                "chosen": null
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "dismiss",
+        "now": 2100,
+        "cue": "c2"
+      },
+      "note": "dismiss: no request",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "focus": "c1",
+            "cues": [
+              {
+                "id": "c1",
+                "chosen": 1
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 2600,
+        "req": 2,
+        "text": "NONE",
+        "done": true
+      },
+      "note": "a confirmed cue stays though the reply no longer has it",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "idle",
+            "cues": [
+              {
+                "id": "c1",
+                "chosen": 1,
+                "stale": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 3000,
+        "text": "Add caching to the product search and delete old logs. Also add a CSV export.",
+        "origin": "paste",
+        "edit": {
+          "start": 54,
+          "end": 54,
+          "text": " Also add a CSV export."
+        }
+      },
+      "note": "the request carries the decisions and the dismissed statement",
+      "expect": [
+        {
+          "type": "request",
+          "req": 3,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nAdd caching to the product search and delete old logs. Also add a CSV export.\n\nDecisions:\n- Cache entries are separate per user.\n>>>\nDismissed: Logs count as old after {}",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "phase": "reviewing",
+            "cues": [
+              {
+                "id": "c1",
+                "stale": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 3500,
+        "req": 3,
+        "text": "CSV export ; old logs\nCSV export | Export covers {} | filtered rows | all rows\nold logs | Logs count as old after {} | 30 days | 90 days",
+        "done": true
+      },
+      "note": "the dismissed cue is suppressed; the focus stays on its cue",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "idle",
+            "focus": "c1",
+            "cues": [
+              {
+                "id": "c3",
+                "anchor": "CSV export",
+                "chosen": null
+              },
+              {
+                "id": "c1",
+                "chosen": 1,
+                "stale": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "acceptAll",
+        "now": 4000
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 4,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nAdd caching to the product search and delete old logs. Also add a CSV export.\n\nDecisions:\n- Export covers filtered rows.\n- Cache entries are separate per user.\n>>>\nDismissed: Logs count as old after {}",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "phase": "reviewing",
+            "decisions": [
+              "Export covers filtered rows.",
+              "Cache entries are separate per user."
+            ],
+            "cues": [
+              {
+                "id": "c3",
+                "chosen": 0
+              },
+              {
+                "id": "c1",
+                "chosen": 1
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "submit",
+        "now": 4200,
+        "text": "Add caching to the product search and delete old logs. Also add a CSV export."
+      },
+      "expect": [
+        {
+          "type": "submit",
+          "text": "Add caching to the product search and delete old logs. Also add a CSV export.\n\nDecisions:\n- Export covers filtered rows.\n- Cache entries are separate per user.",
+          "decisions": [
+            "Export covers filtered rows.",
+            "Cache entries are separate per user."
+          ]
+        },
+        {
+          "type": "cancel",
+          "req": 4
+        },
+        {
+          "type": "view",
+          "view": {
+            "phase": "idle",
+            "text": "",
+            "cues": [],
+            "focus": null,
+            "decisions": []
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 5000,
+        "text": "Refactor the auth module, it is a mess.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 5,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nRefactor the auth module, it is a mess.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {}
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 5400,
+        "req": 5,
+        "text": "Refactor\nRefactor | Refactor may change {} | internals only | the public API too",
+        "done": true
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "phase": "idle"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "submit",
+        "now": 6000,
+        "text": "Refactor the auth module, it is a mess."
+      },
+      "note": "nothing confirmed: the text goes as typed",
+      "expect": [
+        {
+          "type": "submit",
+          "text": "Refactor the auth module, it is a mess.",
+          "decisions": []
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "",
+            "cues": []
+          }
+        }
+      ]
+    }
+  ]
+}

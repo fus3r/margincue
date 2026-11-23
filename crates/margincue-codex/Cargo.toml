@@ -1,0 +1,18 @@
+[package]
+name = "margincue-codex"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+[dependencies]
+regex = "1"
+rmcp = { version = "=3.6.0", default-features = false, features = ["elicitation", "server", "transport-io"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["rt", "time"] }
+unicode-normalization = "0.1"
+
+[profile.release]
+strip = true

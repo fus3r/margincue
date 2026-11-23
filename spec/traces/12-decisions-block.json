@@ -1,0 +1,198 @@
+{
+  "name": "a Decisions block the user typed is kept verbatim (contract v1.1)",
+  "description": "When the draft already ends with a Decisions block, its lines stay verbatim and in place; MarginCue appends its own lines, and leaves out a decision whose statement a user line already fills.",
+  "assets": "fixtures/assets.json",
+  "steps": [
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      }
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1000,
+        "text": "Add an export button.\n\nDecisions:\n- Export is CSV only.\n* keep the old endpoint",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 1,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nAdd an export button.\n\nDecisions:\n- Export is CSV only.\n* keep the old endpoint\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {}
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 1400,
+        "req": 1,
+        "text": "export button\nexport button | Export covers {} | filtered rows | all rows",
+        "done": true
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "cues": [
+              {
+                "id": "c1",
+                "anchor": "export button"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "pick",
+        "now": 2000,
+        "cue": "c1",
+        "option": 1
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 2,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nAdd an export button.\n\nDecisions:\n- Export is CSV only.\n* keep the old endpoint\n- Export covers all rows.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "decisions": [
+              "Export covers all rows."
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "submit",
+        "now": 2200,
+        "text": "Add an export button.\n\nDecisions:\n- Export is CSV only.\n* keep the old endpoint"
+      },
+      "expect": [
+        {
+          "type": "submit",
+          "text": "Add an export button.\n\nDecisions:\n- Export is CSV only.\n* keep the old endpoint\n- Export covers all rows.",
+          "decisions": [
+            "Export covers all rows."
+          ]
+        },
+        {
+          "type": "cancel",
+          "req": 2
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": ""
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 3000,
+        "text": "Add an export button.\n\nDecisions:\n-  Export covers   selected rows only.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 3,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nAdd an export button.\n\nDecisions:\n-  Export covers   selected rows only.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": "Add an export button.\n\nDecisions:\n-  Export covers   selected rows only."
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 3400,
+        "req": 3,
+        "text": "export button\nexport button | Export covers {} | filtered rows | all rows",
+        "done": true
+      },
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "cues": [
+              {
+                "id": "c2"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "pick",
+        "now": 3500,
+        "cue": "c2",
+        "option": 1
+      },
+      "note": "the user's own line already fills this statement: nothing to attach, and the draft to review is unchanged (cached)",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "decisions": [],
+            "cues": [
+              {
+                "id": "c2",
+                "chosen": 1
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "submit",
+        "now": 3600,
+        "text": "Add an export button.\n\nDecisions:\n-  Export covers   selected rows only."
+      },
+      "note": "nothing is added; the user's line is untouched",
+      "expect": [
+        {
+          "type": "submit",
+          "text": "Add an export button.\n\nDecisions:\n-  Export covers   selected rows only.",
+          "decisions": []
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": ""
+          }
+        }
+      ]
+    }
+  ]
+}

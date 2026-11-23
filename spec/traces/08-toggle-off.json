@@ -1,0 +1,162 @@
+{
+  "name": "toggle off and on",
+  "description": "Off cancels what is in flight, clears the cues and sends nothing while off; replies from before are no-ops. Submitting while off attaches nothing. On again reviews the current draft at once.",
+  "assets": "fixtures/assets.json",
+  "steps": [
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      }
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 1000,
+        "text": "Migrate the users table to the new schema.",
+        "origin": "paste"
+      },
+      "expect": [
+        {
+          "type": "request",
+          "req": 1,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nMigrate the users table to the new schema.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {}
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "config",
+        "enabled": false,
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      },
+      "expect": [
+        {
+          "type": "cancel",
+          "req": 1
+        },
+        {
+          "type": "view",
+          "view": {
+            "enabled": false,
+            "phase": "off",
+            "cues": []
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "reply",
+        "now": 1600,
+        "req": 1,
+        "text": "Migrate\nMigrate | Existing rows are {} | converted in place | copied to a new table",
+        "done": true
+      },
+      "note": "from before: ignored",
+      "expect": []
+    },
+    {
+      "event": {
+        "type": "draft",
+        "now": 2000,
+        "text": "Migrate the users table to the new schema. Keep a backup.",
+        "origin": "type",
+        "edit": {
+          "start": 42,
+          "end": 42,
+          "text": " Keep a backup."
+        }
+      },
+      "note": "off: no timer, no request",
+      "expect": [
+        {
+          "type": "view",
+          "view": {
+            "text": "Migrate the users table to the new schema. Keep a backup.",
+            "phase": "off"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "config",
+        "enabled": true,
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      },
+      "note": "on: review at once",
+      "expect": [
+        {
+          "type": "request",
+          "req": 2,
+          "kind": "full",
+          "prompt": "Status: complete\nDraft:\n<<<\nMigrate the users table to the new schema. Keep a backup.\n>>>",
+          "maxTokens": 320
+        },
+        {
+          "type": "view",
+          "view": {
+            "enabled": true,
+            "phase": "reviewing"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "config",
+        "enabled": false,
+        "profile": "general",
+        "streaming": false,
+        "eagerPlan": false
+      },
+      "expect": [
+        {
+          "type": "cancel",
+          "req": 2
+        },
+        {
+          "type": "view",
+          "view": {
+            "enabled": false,
+            "phase": "off"
+          }
+        }
+      ]
+    },
+    {
+      "event": {
+        "type": "submit",
+        "now": 3000,
+        "text": "Migrate the users table to the new schema. Keep a backup."
+      },
+      "expect": [
+        {
+          "type": "submit",
+          "text": "Migrate the users table to the new schema. Keep a backup.",
+          "decisions": []
+        },
+        {
+          "type": "view",
+          "view": {
+            "text": ""
+          }
+        }
+      ]
+    }
+  ]
+}

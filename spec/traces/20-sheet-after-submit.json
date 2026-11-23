@@ -1,0 +1,30 @@
+{
+  "name": "Enter keeps the thinking row and the composer shows one open question at a time",
+  "assets": "catalogs",
+  "steps": [
+    { "event": { "type": "config", "enabled": true, "mode": "auto", "sheet": true, "profile": "general", "streaming": false, "eagerPlan": false } },
+    { "event": { "type": "draft", "now": 100, "origin": "type", "text": "Create a game about running a bakery" },
+      "expect": [{ "type": "timer", "at": 380 }, { "type": "view", "view": { "sheet": { "$absent": true } } }] },
+    { "event": { "type": "submit", "now": 180, "text": "Create a game about running a bakery" },
+      "expect": [
+        { "type": "request", "kind": "sheet", "req": 1 }, { "type": "submit", "text": "Create a game about running a bakery", "decisions": [] },
+        { "type": "timer", "at": null }, { "type": "view", "view": { "text": "", "sheet": { "pending": true, "afterSubmit": true } } }
+      ] },
+    { "event": { "type": "turnStart", "now": 200 }, "expect": [] },
+    { "event": { "type": "reply", "now": 4200, "req": 1, "done": true, "text": "Where should it run? | browser | desktop\nWhat does the player manage? | recipes | the whole shop" },
+      "expect": [{ "type": "view", "view": { "sheet": { "pending": false, "afterSubmit": true, "collapsed": false, "items": [{ "id": "c1" }, { "id": "c2" }] } } }] },
+    { "event": { "type": "sheetAnswer", "id": 1, "now": 4250, "cue": "c2", "option": 0, "via": "composer" }, "expect": [] },
+    { "event": { "type": "sheetAnswer", "id": 1, "now": 4300, "cue": "c1", "option": 1, "via": "composer" },
+      "expect": [
+        { "type": "amend", "cue": "c1", "option": 1, "ms": 4120, "text": "Amendment to my last prompt: Where should it run? desktop." },
+        { "type": "view", "view": { "sheet": { "items": [{ "id": "c2" }] } } }
+      ] },
+    { "event": { "type": "sheetAnswer", "id": 1, "now": 4400, "cue": "c2", "option": 0, "via": "composer" },
+      "expect": [
+        { "type": "amend", "cue": "c2", "option": 0, "text": "Amendment to my last prompt: What does the player manage? recipes." },
+        { "type": "view", "view": { "sheet": { "$absent": true } } }
+      ] },
+    { "event": { "type": "endAmendment", "now": 4800 }, "expect": [] },
+    { "event": { "type": "sheetAnswer", "id": 1, "now": 4900, "cue": "c2", "option": 0, "via": "composer" }, "expect": [] }
+  ]
+}
