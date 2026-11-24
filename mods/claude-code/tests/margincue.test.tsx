@@ -2,7 +2,7 @@
 // own test kit. Every hook the test registers with `on` stands for the engine.
 import type { On, PromptChangeInput, PromptChangeResult, PromptEditInput, PromptEditResult } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
-import type { MountPressTarget, TestBody } from 'claude-code/testing'
+import type { MountSelectTarget, TestBody } from 'claude-code/testing'
 import { ASSETS } from '../hooks/assets'
 import type { ProfileBundle } from '../core/bundle'
 
@@ -348,13 +348,11 @@ function heldPanel(on: Engine) {
   return { asked, answer: (answer: string | null) => reply(answer) }
 }
 const DIALOG = { plugin: 'margincue', component: 'AskUserQuestion', requestId: 'dialog', surface: 'desktop' } as const
-/** Where the card's links point; a click on one picks, it opens nothing. */
-const PICK = 'https://github.com/fus3r/margincue#pick-'
-/** A click on a part of the card's plan, then on one of its options. */
-async function pick(ui: { press: (target: MountPressTarget) => Promise<unknown> }, row: string, option: number) {
-  await ui.press({ key: 'card-plan', link: { href: `${PICK}${row}` } })
-  await ui.press({ key: 'card-options', link: { href: `${PICK}${row}~${option}` } })
+/** A pick in the menu of one of the card's chips. */
+async function pick(ui: { select: (target: MountSelectTarget) => Promise<unknown> }, row: string, option: number | string) {
+  await ui.select({ key: `card-${row}`, value: String(option) })
 }
+type ChipProps = { label?: string; value?: string; options?: { label?: string }[] }
 
 /** A desktop session as the app starts one, with a prompt sent at Enter and its dialog open. */
 async function desktopAtEnter($: Parameters<TestBody>[0], on: Engine, card = CARD) {
@@ -375,17 +373,15 @@ test('in the desktop app MarginCue draws its own card above Claude\'s dialog; Se
   expect(gate.asked.map((question) => [question.question, question.options.map((option) => option.label)])).toEqual([
     ['Send your prompt with these choices?', ['Send', 'Send as written']],
   ])
-  // The card: the plan in plain sentences, each part Claude would decide a link.
-  expect(await ui.find({ type: 'Text', text: /3 decisions · click one to change it/ })).toBeDefined()
-  const plan = async () => String((await ui.find({ key: 'card-plan' }))?.props.text)
-  expect(await plan()).toContain(`Export [the filtered rows](${PICK}c1). Run it [in the browser](${PICK}c2).`)
-  // A click on a part opens its options under the plan, what is set ticked; a pick rewrites the sentence.
-  await ui.press({ key: 'card-plan', link: { href: `${PICK}c1` } })
-  expect(String((await ui.find({ key: 'card-options' }))?.props.text)).toBe(
-    `\u2713 [the filtered rows](${PICK}c1~0) \u00b7 [all rows](${PICK}c1~1) \u00b7 [the selected rows](${PICK}c1~2)`)
-  await ui.press({ key: 'card-options', link: { href: `${PICK}c1~1` } })
-  expect(await plan()).toContain(`Export [all rows](${PICK}c1).`)
-  expect(await ui.find({ key: 'card-options' })).toBeUndefined()
+  // The card: one chip a choice, its name and what Claude would assume; a click opens the app's own menu there.
+  expect(await ui.find({ type: 'Text', text: /3 choices Claude would make$/ })).toBeDefined()
+  const chip = async (row: string) => (await ui.find({ key: `card-${row}` }))?.props as ChipProps
+  expect([(await chip('c1')).label, (await chip('c1')).value]).toEqual(['Rows', '0'])
+  expect((await chip('c1')).options?.map((option) => option.label)).toEqual(['the filtered rows', 'all rows', 'the selected rows'])
+  expect((await chip('c2')).label).toBe('Runs in')
+  await pick(ui, 'c1', 1)
+  expect((await chip('c1')).value).toBe('1')
+  expect(await ui.find({ type: 'Text', text: /3 choices Claude would make, 1 yours/ })).toBeDefined()
   gate.answer('Send')
   expect((await pending).text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.`)
   await ui.unmount()
@@ -394,7 +390,7 @@ test('in the desktop app MarginCue draws its own card above Claude\'s dialog; Se
 test('the card keeps within the 48 rows the app allows there: the preview joins it once drawn, whole, and only if it fits', async ($, on) => {
   const { clock, gate, pending, ui } = await desktopAtEnter($, on)
   await clock.advance(5000)
-  expect(await ui.find({ key: 'card-plan' })).toBeDefined()
+  expect(await ui.find({ key: 'card-c1' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Preview · Export dialog/ })).toBeDefined()
   gate.answer(null)
   await pending
@@ -428,10 +424,30 @@ test('a card too tall for the app leaves the preview out rather than lose the ca
   await clock.settle()
   await clock.advance(6000)
   const ui = await $.ui.mount({ ...DIALOG, props: { tool: 'AskUserQuestion', questions: gate.asked } })
-  expect(await ui.find({ key: 'card-plan' })).toBeDefined()
+  expect(await ui.find({ key: 'card-c1' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Preview ·/ })).toBeUndefined()
   gate.answer(null)
   await pending
+  await ui.unmount()
+})
+
+test('a pick-any choice is one chip too: its menu ticks what is set, and a pick toggles it', async ($, on) => {
+  const card = [
+    'read | You want a weekly activity report for team owners.',
+    'kind | build',
+    'row | covers | covers | many | Include {} in the report | sign-ins | invitations | billing events',
+  ].join('\n')
+  const { gate, pending, ui } = await desktopAtEnter($, on, card)
+  const labels = async () => ((await ui.find({ key: 'card-c1' }))?.props as ChipProps).options?.map((option) => option.label)
+  expect(await labels()).toEqual(['sign-ins +2', '\u2713 sign-ins', '\u2713 invitations', '\u2713 billing events'])
+  // Each entry names the state it leads to: a pick that arrives twice still lands once.
+  await pick(ui, 'c1', 'drop-2')
+  await pick(ui, 'c1', 'drop-2')
+  expect(await labels()).toEqual(['sign-ins +1', '\u2713 sign-ins', '\u2713 invitations', '\u25cb billing events'])
+  // The first entry shows what is set and changes nothing.
+  await pick(ui, 'c1', 'set')
+  gate.answer('Send')
+  expect((await pending).text).toBe('Build an export tool for the dashboard.\n\nDecisions:\n- Include sign-ins and invitations in the report.')
   await ui.unmount()
 })
 
@@ -464,8 +480,8 @@ test('Claude\'s own questions are drawn as Claude asked them: the card only join
   const other = await $.ui.mount({ ...DIALOG, requestId: 'claude', props: { tool: 'AskUserQuestion', questions: [
     { question: 'Which database should I use?', header: 'Database', multiSelect: false, options: [{ label: 'Postgres', description: '' }, { label: 'SQLite', description: '' }] },
   ] } })
-  expect(await other.find({ key: 'card-plan' })).toBeUndefined()
-  expect(await ui.find({ key: 'card-plan' })).toBeDefined()
+  expect(await other.find({ key: 'card-c1' })).toBeUndefined()
+  expect(await ui.find({ key: 'card-c1' })).toBeDefined()
   gate.answer(null)
   expect((await pending).text).toBe(`${DRAFT}.`)
   await other.unmount()

@@ -11,7 +11,7 @@ import type { Elements, EngineInterface, PromptDecoration, Register, RenderSurfa
 import { createCore, DEPTHS, isHostCommand, MODES, SCOPES } from '../core/index'
 import type { Assets, Core, Depth, Effect, Event, LanguageSetting, Mode, Origin, Scope, StateLoad, Timing, View } from '../core/index'
 import type { MargincueBand, MargincueExpert, MargincueReceipt, MargincueRow } from '../types'
-import { BLANK_CLOSE, BLANK_OPEN, joinList, parseBlanks, renderBlanks } from '../core/card'
+import { BLANK_CLOSE, BLANK_OPEN, parseBlanks, renderBlanks } from '../core/card'
 import type { ParsedBlank } from '../core/card'
 import { nameKey } from '../core/grounding'
 import { ASSETS } from './assets'
@@ -113,8 +113,6 @@ const host = {
   interactive: false,
   /** MarginCue's card is up in an app, above Claude's own dialog, waiting for the person to send. */
   gate: false,
-  /** The choice whose options are open under the card's plan, if any. */
-  openRow: null as string | null,
   /** The app running this session (the desktop app, VS Code), from the engine's entrypoint; null at a terminal or in a script. */
   appHost: null as string | null,
   /** MARGINCUE_NO_SETUP: no first-run questions in this session (a recording, a test harness). */
@@ -591,7 +589,6 @@ const skipped = (answer: string) => !answer.trim() || /^\s*\[[^\]]*\]\s*$/.test(
  */
 async function gateAtEnter($: $): Promise<{ how: Held; addition?: string }> {
   host.gate = true
-  host.openRow = null
   if (host.view) publish($, host.view)
   try {
     const answer = await $.ui.ask(GATE_QUESTION, { options: [GATE_SEND, GATE_RAW], header: 'MarginCue' })
@@ -613,86 +610,93 @@ function shownOptions(row: MargincueRow): number[] {
   return [...new Set([0, at, Math.round((at + last) / 2), last])].sort((a, b) => a - b)
 }
 
-/** Where a pressed word of the card's plan points: a click opens nothing; a cmd-click opens MarginCue's page. */
-const PICK = 'https://github.com/fus3r/margincue#pick-'
-const md = (text: string) => text.replace(/([\\`*_{}\[\]()#+!|<>~])/g, '\\$1')
+/** A choice's name on its chip: the card's label, acronyms kept whole. */
+function chipName(row: MargincueRow): string {
+  if (row.origin === 'repo') return `${row.statement.replace(/\s+is\s+\{\}\s*$/, '').replace(/^"(.*)"$/, '\u201c$1\u201d')} is`
+  const words = row.label.split(' ').map((word) => /^(csv|api|ui|url|id|ids|db|sql|pdf|json|ux)$/i.test(word) ? word.toUpperCase() : word)
+  const name = words.join(' ')
+  return name.charAt(0).toUpperCase() + name.slice(1)
+}
 
-/** A press on a word of the plan opens its options; a press on an option picks it. */
-function pickFromLink($: $, href: string): void {
-  if (!href.startsWith(PICK)) return
-  const [row, option] = href.slice(PICK.length).split('~')
-  if (!row) return
-  if (option === undefined) host.openRow = host.openRow === row ? null : row
-  else {
-    act($, { type: 'cardSet', row, option: Number(option) })
-    const picked = host.view?.card?.rows.find((entry) => entry.id === row)
-    if (picked?.type !== 'many') host.openRow = null
-  }
-  // Which part is open lives here, not in the card the drawing reads: ask for the redraw.
-  $.ui.invalidate('ui.render')
+/** What a pick-any chip shows: the first of what is set and how many more. */
+function chipSummary(row: MargincueRow): string {
+  const set = row.selected.map((i) => row.options[i]!).filter(Boolean)
+  return set.length === 0 ? 'nothing more' : set.length === 1 ? set[0]! : `${set[0]} +${set.length - 1}`
 }
 
 /**
- * MarginCue's card above Claude's dialog in an app, FeedForward-style: the plan as plain sentences in the app's
- * own type, each part Claude would decide a link (the prompt it reads sits just above, in the transcript). A click opens that part's options on
- * the line below; a pick rewrites the sentence. The app takes at most 48 rows there, counted at 40 columns, and
- * draws nothing of a tree past that: the card keeps under it, the preview only whole.
+ * One choice as a chip in an app: its name, then the app's own dropdown with the value in force. A pick-any chip's
+ * menu ticks what is set; each entry names the state it leads to, so a pick that arrives twice still lands once.
+ */
+function choiceChip($: $, ui: Elements[RenderSurface], row: MargincueRow) {
+  const { Select } = ui
+  const options = shownOptions(row)
+  if (row.type === 'many') {
+    // The menu's first entry is what the chip shows; each one under it adds or drops its option.
+    const items: { key: string; value: string; label: string }[] = [{ key: `card-${row.id}-set`, value: 'set', label: chipSummary(row) }]
+    for (const i of options) {
+      const on = row.selected.includes(i)
+      items.push({ key: `card-${row.id}-${i}`, value: `${on ? 'drop' : 'add'}-${i}`, label: `${on ? '\u2713' : '\u25cb'} ${row.options[i]}` })
+    }
+    const toggle = (value: string): void => {
+      const [verb, at] = value.split('-')
+      const option = Number(at)
+      const now = host.view?.card?.rows.find((entry) => entry.id === row.id)
+      if (!now || Number.isNaN(option) || (verb === 'add') === now.selected.includes(option)) return
+      void act($, { type: 'cardSet', row: row.id, option })
+    }
+    return <Select key={`card-${row.id}`} label={chipName(row)} value="set" options={items} onSelect={toggle} />
+  }
+  return (
+    <Select key={`card-${row.id}`} label={chipName(row)} value={String(row.selected[0] ?? options[0] ?? 0)}
+      options={options.map((i) => ({ key: `card-${row.id}-${i}`, value: String(i), label: row.options[i]! }))}
+      onSelect={(value) => act($, { type: 'cardSet', row: row.id, option: Number(value) })} />
+  )
+}
+
+/**
+ * MarginCue's card above Claude's dialog in an app: each choice Claude would make is one chip, its name and its
+ * value, and a click opens the app's own menu right there. A pick-any chip's menu ticks what is set and a pick
+ * toggles it. The app takes at most 48 rows there, counted at 40 columns, and draws nothing of a tree past that:
+ * the card keeps under it, the preview only whole.
  */
 function drawGateCard($: $, ui: Elements[RenderSurface], card: NonNullable<MargincueBand['card']>) {
-  const { Box, Text, Markdown, Code } = ui
+  const { Box, Text, Code } = ui
   // Inside the frame: 40 columns less its padding; a Code block draws its own inset too.
-  const rowsOf = (text: string, cols = 34) => text.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(line.length / cols)), 0)
-  const valueOf = (row: MargincueRow) => row.type === 'many'
-    ? (row.selected.length ? joinList(row.selected.map((i) => row.options[i]!)) : 'nothing more')
-    : row.options[row.selected[0] ?? 0] ?? ''
-  const sentence = (row: MargincueRow) => {
-    const link = `[${md(valueOf(row))}](${PICK}${row.id})`
-    if (row.origin === 'repo') {
-      const name = row.statement.replace(/\s+is\s+\{\}\s*$/, '').replace(/^"(.*)"$/, '\u201c$1\u201d')
-      return row.chosen ? `${md(name)} is ${link}.` : `${md(name)} isn't in your code: it's ${link}?`
-    }
-    const at = row.statement.indexOf('{}')
-    const before = at < 0 ? row.statement : row.statement.slice(0, at)
-    const after = (at < 0 ? '' : row.statement.slice(at + 2)).replace(/\s*[.:]?\s*$/, '')
-    return `${md(before)}${link}${md(after)}.`
-  }
+  const COLS = 34
+  const rowsOf = (text: string, cols = COLS) => text.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(line.length / cols)), 0)
+  const valueOf = (row: MargincueRow) => row.type === 'many' ? chipSummary(row) : row.options[row.selected[0] ?? 0] ?? ''
   const count = card.rows.length
   const yours = card.rows.filter((row) => row.chosen).length
-  const head = `\u00b7 ${count} decision${count === 1 ? '' : 's'}${yours ? `, ${yours} yours` : ''} \u00b7 click one to change it`
+  const head = `\u00b7 ${count} choice${count === 1 ? '' : 's'} Claude would make${yours ? `, ${yours} yours` : ''}`
   const hint = 'Anything to add? Pick Other below.'
-  // 48 rows, less the frame (border and padding, 4), the gaps between its parts (4) and the dialog's (1), a margin (2).
-  let budget = 48 - 4 - 4 - 1 - 2 - rowsOf(`MarginCue ${head}`) - rowsOf(hint)
+  // 48 rows, less the frame (border and padding, 4), the gaps between its parts (3) and the dialog's (1), a margin (2).
+  let budget = 48 - 4 - 3 - 1 - 2 - rowsOf(`MarginCue ${head}`) - rowsOf(hint)
+  // Chips flow in a row: each takes its name, its value and a chevron, wrapping at the frame's width.
+  let used = COLS
   const shown: MargincueRow[] = []
   for (const row of card.rows) {
-    const need = rowsOf(sentence(row).replace(/\]\([^)]*\)/g, ']'))
-    if (need > budget) break
-    budget -= need
+    const width = chipName(row).length + valueOf(row).length + 6
+    const extra = used + 1 + width > COLS ? Math.max(1, Math.ceil(width / COLS)) + 1 : 0
+    if (extra > budget) break
+    budget -= extra
+    used = extra ? Math.min(width, COLS) : used + 1 + width
     shown.push(row)
   }
-  const open = shown.find((row) => row.id === host.openRow)
-  const options = open ? shownOptions(open).map((i) => {
-    const mark = open.selected.includes(i) ? '\u2713 ' : ''
-    return `${mark}[${md(open.options[i]!)}](${PICK}${open.id}~${i})`
-  }).join(' \u00b7 ') : ''
-  if (open) budget -= rowsOf(`${open.label}: ${options.replace(/\]\([^)]*\)/g, ']')}`) + 1
   const left = card.rows.length - shown.length
   if (left) budget -= 1
   const sketch = card.sketch && card.sketch.lines.length && 1 + rowsOf(card.sketch.lines.join('\n'), 28) <= budget ? card.sketch : null
-  const plan = shown.map(sentence).join(' ')
-  const links = [...shown.map((row) => `${PICK}${row.id}`), ...(open ? shownOptions(open).map((i) => `${PICK}${open.id}~${i}`) : [])]
+  const chip = (row: MargincueRow) => choiceChip($, ui, row)
+
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={2} paddingY={1} rowGap={1}>
       <Box flexDirection="row" columnGap={1} flexWrap="wrap">
         <Text weight="semibold" color={host.palette.accent}>MarginCue</Text>
         <Text dimColor>{head}</Text>
       </Box>
-      <Markdown key="card-plan" text={plan} pressableLinks={links} onLinkPress={(link) => pickFromLink($, link.href)} />
-      {open ? (
-        <Box flexDirection="column">
-          <Text dimColor>{`${open.label.charAt(0).toUpperCase()}${open.label.slice(1)}${open.type === 'many' ? ', any of these' : ''}`}</Text>
-          <Markdown key="card-options" text={options} pressableLinks={links} onLinkPress={(link) => pickFromLink($, link.href)} />
-        </Box>
-      ) : null}
+      <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
+        {shown.map(chip)}
+      </Box>
       {left ? <Text dimColor>{`${left} more left to Claude`}</Text> : null}
       {sketch ? (
         <Box flexDirection="column">
@@ -821,27 +825,19 @@ async function submitted($: $, typed: string, turnId?: string, addition?: string
  * next step, or after the turn writes the follow-up.
  */
 function drawChoicesApp($: $, ui: Elements[RenderSurface], card: NonNullable<MargincueBand['card']>, maxRows: number) {
-  const { Box, Text, Button } = ui
+  const { Box, Text } = ui
   const turn = card.stage === 'turn'
   const count = card.rows.length
   const shown = card.rows.slice(0, Math.max(1, maxRows - 2))
   return (
-    <Box flexDirection="column" paddingX={1} rowGap={0}>
-      <Box flexDirection="row" columnGap={1}>
-        <Text bold color={host.palette.accent}>MarginCue</Text>
-        <Text dimColor>{`Claude made ${count} choice${count === 1 ? '' : 's'} for you. ${turn ? 'Switch one and it adapts at its next step.' : 'Switch one to write the follow-up.'}`}</Text>
+    <Box flexDirection="column" paddingX={1}>
+      <Box flexDirection="row" columnGap={1} flexWrap="wrap">
+        <Text weight="semibold" color={host.palette.accent}>MarginCue</Text>
+        <Text dimColor>{`\u00b7 Claude made ${count} choice${count === 1 ? '' : 's'} for you \u00b7 ${turn ? 'switch one and it adapts at its next step' : 'switch one to write the follow-up'}`}</Text>
       </Box>
-      {shown.map((row: MargincueRow) => (
-        <Box key={`row-${row.id}`} flexDirection="row" flexWrap="wrap" columnGap={1} alignItems="center">
-          <Text dimColor>{row.label}</Text>
-          {row.options.map((label, i) => (
-            <Button key={`card-${row.id}-${i}`} label={label} variant={row.selected.includes(i) ? 'primary' : 'secondary'}
-              onPress={() => act($, { type: 'cardSet', row: row.id, option: i })}>
-              <Text>{label}</Text>
-            </Button>
-          ))}
-        </Box>
-      ))}
+      <Box flexDirection="row" flexWrap="wrap" columnGap={2} rowGap={0}>
+        {shown.map((row: MargincueRow) => choiceChip($, ui, row))}
+      </Box>
       {count > shown.length ? <Text dimColor>{`${count - shown.length} more in the terminal card`}</Text> : null}
     </Box>
   )

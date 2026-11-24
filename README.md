@@ -61,7 +61,7 @@ Your draft goes to Claude the same way your prompt does. The project index (file
 | | Card while you type | Choices as switches | Receipt |
 | --- | --- | --- | --- |
 | Claude Code: terminal (macOS, Linux, Windows) | above the prompt | on the card, during the turn | under the answer |
-| Claude Code: desktop app (Code tab), VS Code | at Enter (these apps show plugins no draft): the plan in plain sentences, each decision a link to change it, above Claude's send question, whose "Other" adds to your prompt | above the prompt, during the turn | under the answer |
+| Claude Code: desktop app (Code tab), VS Code | at Enter (these apps show plugins no draft): each choice Claude would make as a dropdown, above Claude's send question, whose "Other" adds to your prompt | above the prompt, during the turn | under the answer |
 | Codex CLI | on ctrl+g | on ctrl+g, sent into the running turn | after the turn |
 | Codex desktop app and IDE extension | at the top of the agent's reply (they have no hook before Enter) | marked in the reply | after the turn |
 
