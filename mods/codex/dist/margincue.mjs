@@ -10077,7 +10077,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.13";
+var VERSION = "0.4.14";
 
 // src/model.ts
 var LIGHT = [/luna/i, /mini/i, /nano/i, /lite/i, /small/i, /flash/i, /terra/i];
