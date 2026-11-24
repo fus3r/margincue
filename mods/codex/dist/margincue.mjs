@@ -4050,7 +4050,15 @@ What to draw:
 Follow the listed choices exactly and use the project's own names where they are given. No commentary, no code fences, no Markdown. Reply NONE when the result has nothing visible to show (a pure fix or a question), or when it changes a screen, a tool or code that already exists and has not been shown to you: never invent what it looks like.
 
 Write the title and the sample {language}.`,
-  "blanksProtocol": '# Choices you make for the user (MarginCue)\n\nThe user runs MarginCue, which lets them switch the choices you make for them while you keep working. When you settle a choice the user did not specify and that changes what they get (a format, a threshold, where something lives, what is in or out of scope, which existing code to build on, a dependency), write it once in your prose as \u27E6label: your choice | alternative | alternative\u27E7 and carry on with your choice. Do not stop to ask. MarginCue shows each one as a switch, and the user can switch it only while you work: mark a choice in the message where you make it, as early as you can, never only in a closing summary. Place the mark where your choice reads naturally in the sentence, since the user sees only your choice in its place. If the user switches one while you work, you receive a message beginning "Amendment to my last prompt:"; adjust what you did accordingly.\n\n- label: two to four words naming the choice. Your choice and each alternative: at most six words, concrete.\n- Give one to three alternatives a reasonable user might prefer.\n- At most four per reply, in prose only (never inside code, commands or file contents), and never for something the user already settled or for trivia.\n\nExample: Each run is saved as \u27E6run log format: one JSONL file per run | one SQLite database | one CSV per run\u27E7, and a zone stay counts as stuck after \u27E6stuck threshold: 45 s | 30 s | 60 s\u27E7.',
+  "blanksProtocol": `# Choices you make for the user (MarginCue)
+
+The user runs MarginCue, which lets them switch the choices you make for them while you keep working. When you settle a choice the user did not specify and that changes what they get (a format, a threshold, where something lives, what is in or out of scope, which existing code to build on, a dependency), write it once in your prose as \u27E6label: your choice | alternative | alternative\u27E7 and carry on with your choice. Do not stop to ask. MarginCue shows each one as a switch, and the user can switch it only while you work, so mark a choice the first time you state it: in your plan, or in the message where you start acting on it ("I'll keep each run in \u27E6run log: one JSONL file per run | one SQLite database\u27E7"). Never mark a choice for the first time in a closing summary. Place the mark where your choice reads naturally in the sentence, since the user sees only your choice in its place. If the user switches one while you work, you receive a message beginning "Amendment to my last prompt:"; adjust what you did accordingly.
+
+- label: two to four words naming the choice. Your choice and each alternative: at most six words, concrete.
+- Give one to three alternatives a reasonable user might prefer.
+- At most four per reply, in prose only (never inside code, commands or file contents), and never for something the user already settled or for trivia.
+
+Example: Each run is saved as \u27E6run log format: one JSONL file per run | one SQLite database | one CSV per run\u27E7, and a zone stay counts as stuck after \u27E6stuck threshold: 45 s | 30 s | 60 s\u27E7.`,
   "bundles": [
     {
       "formatVersion": 1,
@@ -10041,7 +10049,7 @@ var CodexModel = class {
     child.on("error", (error) => this.fail(`codex could not start: ${error.message}`));
     child.on("exit", () => this.fail("codex app-server exited"));
     createInterface({ input: child.stdout }).on("line", (line) => this.receive(line));
-    const init = await this.call("initialize", { clientInfo: { name: "margincue", title: "MarginCue", version: "0.4.3" }, capabilities: null });
+    const init = await this.call("initialize", { clientInfo: { name: "margincue", title: "MarginCue", version: "0.4.4" }, capabilities: null });
     if (init.error) throw new Error(init.error.message ?? "initialize failed");
     this.notify("initialized");
     const preferred = process.env.MARGINCUE_CODEX_MODEL;

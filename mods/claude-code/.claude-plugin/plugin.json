@@ -1,6 +1,6 @@
 {
   "name": "margincue",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Shows how the agent will read your prompt, links its names to your code, gives each open choice a control, sketches the result, and lets you switch the agent’s own choices while it works.",
   "author": {
     "name": "MarginCue"

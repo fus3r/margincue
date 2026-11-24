@@ -86,7 +86,8 @@ export function layoutCard(card: MargincueCard, columns: number, budget: number,
 
   const g = grid(card, columns, words)
   const right = status(card, words, open, columns >= 110 && card.stage === 'draft' ? options.extra : [], P)
-  const head = header(card, g, right, P, words, budget >= 10 ? 3 : budget >= 6 ? 2 : 1)
+  // The reading is the card's point: on a narrow screen it takes a fourth line rather than lose its end.
+  const head = header(card, g, right, P, words, budget >= 10 ? 4 : budget >= 6 ? 2 : 1)
   head[0]!.push(...hidden)
   const room = budget - head.length
   if (room <= 0) return head
@@ -245,7 +246,8 @@ type Badge = { glyph: string; color: Color }
 
 function badge(row: MargincueRow): Badge | null {
   if (row.origin === 'lens') return { glyph: '◆', color: 'claude' }
-  if (row.origin === 'repo') return { glyph: '?', color: 'warning' }
+  // A name the code lacks asks until the person says which one it is.
+  if (row.origin === 'repo') return row.chosen ? { glyph: '✓', color: 'success' } : { glyph: '?', color: 'warning' }
   if (row.learned) return { glyph: '↺', color: 'subtle' }
   return null
 }

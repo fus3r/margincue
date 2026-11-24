@@ -63,6 +63,8 @@ const expert = atom({ plugin: 'margincue', key: 'expert' } as const, null)
 // rebuilds the core from the stored settings and the box as it stands.
 /** How long a prompt sent from an app waits on its card before it goes as it stands. */
 const HOLD_MS = 90000
+/** How long a read card waits for the app to draw the band before it is asked as the app's own dialog instead. */
+const BAND_WAIT_MS = 1200
 
 /**
  * A prompt the person wrote: Enter at the terminal, or sent from an app attached to this session (the desktop
@@ -106,6 +108,10 @@ const host = {
   interactive: false,
   /** A prompt sent from an app (desktop, VS Code, phone) waiting on its card: Send resolves it. */
   held: null as null | { resolve: (send: boolean) => void },
+  /** The band was drawn for the held card: the app shows plugin rows. */
+  bandDrawn: false,
+  /** The app running this session (the desktop app, VS Code), from the engine's entrypoint; null at a terminal or in a script. */
+  appHost: null as string | null,
   sentExpert: '',
   view: null as View | null,
   timer: null as { cancel: () => void } | null,
@@ -538,13 +544,25 @@ function holdForCard($: $, text: string): Promise<boolean> {
   run($, { type: 'draft', now: now(), text, origin: 'paste', cursor: text.length })
   const card = host.view?.card
   if (!card || card.stage !== 'draft') return Promise.resolve(true)
+  host.bandDrawn = false
   return new Promise<boolean>((resolve) => {
+    // Counted in the watcher's own ticks, so the wait holds under any clock.
+    let readTicks = 0
+    let asking = false
     const timer = $.clock.after(HOLD_MS, () => done(true))
     const watch = $.clock.every(250, () => {
       const shown = host.view?.card
       if (!shown || shown.stage !== 'draft') return done(true)
+      if (shown.reading) return
       const open = shown.rows.length > 0 || shown.mentions.some((mention) => mention.status === 'missing')
-      if (!shown.reading && !open) done(true)
+      if (!open) return done(true)
+      readTicks++
+      // The band is where the card belongs. An app that does not draw it (the desktop app as shipped) gets the
+      // same card as its own dialog: the reading and sketch in the transcript, one question per open choice.
+      if (!host.bandDrawn && !asking && readTicks * 250 >= BAND_WAIT_MS) {
+        asking = true
+        void askCard($, shown).then(() => done(true), () => done(true))
+      }
     })
     const done = (send: boolean) => {
       if (host.held !== held) return
@@ -558,6 +576,41 @@ function holdForCard($: $, text: string): Promise<boolean> {
     host.held = held
     if (host.view) publish($, host.view)
   })
+}
+
+/**
+ * The card as the app's own dialog, for an app that does not draw plugin rows: what MarginCue read (and the
+ * sketch) as a line of the transcript, then each open choice as a question. Closing a question sends the prompt
+ * with what is set so far.
+ */
+async function askCard($: $, card: NonNullable<View['card']>): Promise<void> {
+  const missing = card.mentions.filter((mention) => mention.status === 'missing')
+  const lines = [
+    `MarginCue · ${card.read ?? 'read your prompt'}`,
+    ...missing.map((mention) => `Not in the code: "${mention.phrase}"${mention.near.length ? ` (closest: ${mention.near.map((near) => near.name).join(', ')})` : ''}`),
+    ...(card.sketch?.lines.length ? ['', card.sketch.title, ...card.sketch.lines] : []),
+  ]
+  $.ui.log(lines.join('\n'))
+  for (const row of card.rows.slice(0, 4)) {
+    const options = row.options.slice(0, 4)
+    if (options.length < 2) continue
+    const question = `${row.statement.replace('{}', '…').replace(/[.:]?\s*$/, '')}?`
+    let answer: string
+    try {
+      answer = await $.ui.ask(question, { options, header: row.label.slice(0, 12), ...(row.type === 'many' && { multiSelect: true as const }) })
+    } catch {
+      return
+    }
+    const wanted = new Set(answer.split(',').map((part) => options.indexOf(part.trim())).filter((i) => i >= 0))
+    if (row.type === 'many') {
+      for (let i = 0; i < row.options.length; i++) {
+        if (wanted.has(i) !== row.selected.includes(i)) run($, { type: 'cardSet', now: now(), row: row.id, option: i })
+      }
+    } else {
+      const [first] = wanted
+      if (first !== undefined) run($, { type: 'cardSet', now: now(), row: row.id, option: first })
+    }
+  }
 }
 
 /** Under the card held at Enter: send with what is set, or as written. */
@@ -817,9 +870,11 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
   host.blankOld.clear()
   host.onboardPending = false
   if (host.settings.mode !== 'off') void readLearned($, host.root).then((picks) => run($, { type: 'learned', picks })).catch(() => {})
-  // The desktop app and VS Code drive the engine through its SDK: the session starts without a person and gains one
-  // when their client attaches. A -p run or a script never does, and is left as it would be without MarginCue.
-  if (interactive) await present($, turns)
+  // The desktop app and VS Code drive the engine through its SDK and say so in its entrypoint: a person is there.
+  // Elsewhere an SDK session gains one when an app attaches; a -p run or a script never does, and is left alone.
+  const entry = await $.env.get('CLAUDE_CODE_ENTRYPOINT').catch(() => undefined)
+  host.appHost = entry && /desktop|vscode|jetbrains|mobile/i.test(entry) ? entry : null
+  if (interactive || host.appHost) await present($, turns)
   await $.command.register({
     name: 'margincue',
     description: 'MarginCue card, sketch, blanks, decisions, expert review and session status',
@@ -1236,7 +1291,10 @@ export const register: Register = (on) => {
     host.bandChoices = e.surface === 'terminal' && focused ? focused.options.map((_, option) => ({ row: focused.id, option })) : []
     if (!rows.length) return next(e)
     if (card && !e.props.isCollapsed) run($, { type: 'cardShown', now: now(), id: card.id }, false)
-    if (host.held && card?.stage === 'draft') rows.push(heldRow())
+    if (host.held && card?.stage === 'draft') {
+      rows.push(heldRow())
+      host.bandDrawn = true
+    }
     return drawRows($, $.ui.resolve(e), rows)
   })
 
@@ -1265,7 +1323,7 @@ export const register: Register = (on) => {
           <Text bold>{`${n} choice${n === 1 ? '' : 's'} made for you`}</Text>
           <Text dimColor>{' · '}</Text>
           <Text color={accent}>{'alt↑ alt↓'}</Text>
-          <Text dimColor>{' to switch one, it keeps working'}</Text>
+          <Text dimColor>{' to switch one'}</Text>
         </Box>
       </Box>
     )

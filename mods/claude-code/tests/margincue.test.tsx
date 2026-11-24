@@ -52,7 +52,7 @@ const composer = ($: { prompt: unknown }) => $.prompt as Composer
 
 /** The engine beneath: a box that applies splices, a model that answers REPLY, a clock and a store. */
 function world(on: Engine, reply: string | ((prompt: string, system: string) => Promise<string>) = REPLY,
-  options: { git?: (args: string) => string | undefined } = {}) {
+  options: { git?: (args: string) => string | undefined; env?: Record<string, string> } = {}) {
   const clock = mock.clock(on, { now: 1000 })
   const store = new Map<string, unknown>()
   const files = new Map<string, string>()
@@ -61,7 +61,7 @@ function world(on: Engine, reply: string | ((prompt: string, system: string) => 
   const model = { name: 'largest' }
   const identity = { id: 'a-private-session-id' }
   const home = '/test-home'
-  mock.env(on, { HOME: home })
+  mock.env(on, { HOME: home, ...options.env })
   on('session.root', () => ({ value: root }))
   on('session.model', () => ({ value: model.name }))
   on('session.turns', () => ({ value: 0 }))
@@ -311,6 +311,39 @@ test('a script\'s prompt through the SDK, with no app attached, goes through unt
   await clock.settle()
   const sent = await $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'sdk' }, wait: false })
   expect(sent.text).toBe(`${DRAFT}.`)
+})
+
+test('the desktop app says so in the engine entrypoint: its prompts get the card at Enter without any attach', async ($, on) => {
+  const { clock } = world(on, replies(), { env: { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' } })
+  on('prompt.compose', () => ({ sections: [] }))
+  await $.session.start({ cwd: '/', surface: null, isInteractive: false })
+  await clock.settle()
+  expect((await $.prompt.compose(COMPOSE)).sections.some((section) => section.id === 'margincue:blanks')).toBe(true)
+  const pending = $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'sdk' }, wait: false })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  await ui.press({ key: 'card-c1-1' })
+  await ui.press({ key: 'card-send' })
+  expect((await pending).text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.`)
+  await ui.unmount()
+})
+
+test('where the app draws no band and no dialog answers, a held prompt still goes, as written', async ($, on) => {
+  const { clock } = world(on, replies(), { env: { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' } })
+  on('ui.log', () => ({ value: undefined }))
+  const asked: string[] = []
+  on('tool.call', (_, e) => {
+    asked.push(e.tool)
+    return { deny: 'no dialog in this app' }
+  })
+  await $.session.start({ cwd: '/', surface: null, isInteractive: false })
+  await clock.settle()
+  const pending = $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'sdk' }, wait: false })
+  await clock.settle()
+  await clock.advance(3000)
+  expect((await pending).text).toBe(`${DRAFT}.`)
+  // The band was never drawn, so the card was asked as the app's own dialog.
+  expect(asked).toContain('AskUserQuestion')
 })
 
 test('language defaults to English and auto persists across sessions', async ($, on) => {
