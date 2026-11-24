@@ -229,9 +229,13 @@ impl Composer {
                     && (before_width >= width || before_width + 1 + word.width() > width)
                 {
                     // Codex wraps before painting; a newline at the same
-                    // boundary would look the same.
+                    // boundary would look the same. It wraps at spaces and
+                    // drops the one it wraps at, even when the line ends flush
+                    // with the box; only a single token wider than the box is
+                    // cut mid-word.
                     approximate = true;
-                    if before_width < width && !line.starts_with(' ') {
+                    let cut_token = before_width >= width && !before.contains(' ');
+                    if !cut_token && !line.starts_with(' ') {
                         text.push(' ');
                     }
                 } else {
@@ -297,4 +301,52 @@ fn row_text(screen: &Screen, row: u16, left: u16, right: u16) -> String {
     }
     text.truncate(text.trim_end_matches(' ').len());
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A Codex prompt box at 80 columns: padding row, text rows, padding row, on one surface colour.
+    fn screen(lines: &[&str], caret: (u16, u16)) -> vt100::Parser {
+        let mut parser = vt100::Parser::new(
+            std::num::NonZeroU16::new(12).unwrap(),
+            std::num::NonZeroU16::new(80).unwrap(),
+            0,
+        );
+        let bg = "\x1b[48;2;49;49;49m";
+        let mut out = format!("\x1b[3;1H{bg}\x1b[2K");
+        for (i, line) in lines.iter().enumerate() {
+            let lead = if i == 0 { "› " } else { "  " };
+            out += &format!("\x1b[{};1H{bg}\x1b[2K{lead}{line}", 4 + i);
+        }
+        out += &format!("\x1b[{};1H{bg}\x1b[2K\x1b[m", 4 + lines.len());
+        out += &format!("\x1b[{};{}H", caret.0 + 1, caret.1 + 1);
+        parser.process(out.as_bytes());
+        parser
+    }
+
+    #[test]
+    fn a_line_flush_with_the_box_was_wrapped_at_a_space() {
+        let first = "Build a weekly activity report for team owners from the Audit Log: who signed";
+        assert_eq!(first.len(), 77);
+        let second = "in, who got invited, what changed.";
+        let parser = screen(&[first, second], (4, 2 + second.len() as u16));
+        let Draft::Visible { text, plain, at_end, .. } = Host::Codex.read(parser.screen()) else {
+            panic!("no prompt box");
+        };
+        assert_eq!(text, format!("{first} {second}"));
+        assert!(plain && at_end);
+    }
+
+    #[test]
+    fn a_token_wider_than_the_box_is_joined_without_a_space() {
+        let url = "https://example.com/".to_owned() + &"a".repeat(57);
+        assert_eq!(url.len(), 77);
+        let parser = screen(&[&url, "bcd see above"], (4, 15));
+        let Draft::Visible { text, .. } = Host::Codex.read(parser.screen()) else {
+            panic!("no prompt box");
+        };
+        assert_eq!(text, format!("{url}bcd see above"));
+    }
 }

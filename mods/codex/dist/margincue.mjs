@@ -10077,7 +10077,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.12";
+var VERSION = "0.4.13";
 
 // src/model.ts
 var LIGHT = [/luna/i, /mini/i, /nano/i, /lite/i, /small/i, /flash/i, /terra/i];
@@ -12098,7 +12098,7 @@ function serveBand(link, cwd, model) {
 
 // src/relay.ts
 var RELAY = join4(PATHS.bin, "margincue-relay");
-var RELAY_VERSION = "0.1.1";
+var RELAY_VERSION = "0.1.2";
 var SUPPORTED = process.platform === "darwin" || process.platform === "linux";
 var VALUE_OPTIONS = /* @__PURE__ */ new Set([
   "-c",
