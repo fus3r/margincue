@@ -9964,7 +9964,7 @@ var CodexModel = class {
     child.on("error", (error) => this.fail(`codex could not start: ${error.message}`));
     child.on("exit", () => this.fail("codex app-server exited"));
     createInterface({ input: child.stdout }).on("line", (line) => this.receive(line));
-    const init = await this.call("initialize", { clientInfo: { name: "margincue", title: "MarginCue", version: "0.4.0" }, capabilities: null });
+    const init = await this.call("initialize", { clientInfo: { name: "margincue", title: "MarginCue", version: "0.4.1" }, capabilities: null });
     if (init.error) throw new Error(init.error.message ?? "initialize failed");
     this.notify("initialized");
     const preferred = process.env.MARGINCUE_CODEX_MODEL;
@@ -10919,6 +10919,8 @@ function promptHook(input) {
   const settings = readSettings();
   if (settings.mode === "off") return null;
   const prompt = input.prompt ?? "";
+  const source = input.transcript_path ? sessionSource(input.transcript_path) : "unknown";
+  if (source === "exec") return null;
   const previous = readJson(PATHS.turn, null);
   if (input.turn_id && input.transcript_path && input.cwd) {
     const record = {
@@ -10928,8 +10930,8 @@ function promptHook(input) {
       cwd: input.cwd,
       startedAt: Date.now(),
       endedAt: null,
-      decisions: decisionsOf(input.prompt ?? ""),
-      source: sessionSource(input.transcript_path)
+      decisions: decisionsOf(prompt),
+      source
     };
     try {
       writeJson(PATHS.turn, record);
@@ -10948,6 +10950,7 @@ function stopHook(input) {
   if (process.env["MARGINCUE_READER"]) return null;
   const settings = readSettings();
   if (settings.mode === "off" || !input.turn_id) return null;
+  if (input.transcript_path && sessionSource(input.transcript_path) === "exec") return null;
   const record = readJson(PATHS.turn, null);
   const mine = record?.turn === input.turn_id ? record : null;
   if (mine) {

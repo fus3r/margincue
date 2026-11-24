@@ -250,6 +250,20 @@ test('the band lays out on every surface', async ($, on) => {
   }
 })
 
+const COMPOSE = {
+  model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['terminal' as const], tools: [],
+  outputStyle: { name: 'default', isKeepingCodingInstructions: true }, traits: [],
+}
+
+test('the choice-marking instruction goes to interactive sessions only, never to a scripted run', async ($, on) => {
+  world(on, replies())
+  on('prompt.compose', () => ({ sections: [] }))
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: false })
+  expect((await $.prompt.compose(COMPOSE)).sections.some((section) => section.id === 'margincue:blanks')).toBe(false)
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  expect((await $.prompt.compose(COMPOSE)).sections.some((section) => section.id === 'margincue:blanks')).toBe(true)
+})
+
 test('language defaults to English and auto persists across sessions', async ($, on) => {
   const frenchDraft = 'Crée un tableau de bord pour le club de foot'
   const english = 'read | You want a dashboard for the football club.\nkind | build\nrow | access | access | one | Open it to {} | club members | anyone'

@@ -1213,7 +1213,8 @@ export const register: Register = (on) => {
   on('prompt.compose', async ($, e, next) => {
     const result = await next(e)
     const protocol = host.assets.blanksProtocol
-    if (!protocol || !host.settings.blanks || !host.settings.sheet || host.settings.mode === 'off') return result
+    // A scripted run (claude -p) has nobody to switch a choice: its output stays exactly as it would be without MarginCue.
+    if (!protocol || !host.interactive || !host.settings.blanks || !host.settings.sheet || host.settings.mode === 'off') return result
     return { ...result, sections: [...result.sections, { id: 'margincue:blanks', text: protocol, scope: 'session' as const }] }
   })
 

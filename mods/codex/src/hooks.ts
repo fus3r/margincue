@@ -44,11 +44,14 @@ export function promptHook(input: PromptInput): object | null {
   const settings = readSettings()
   if (settings.mode === 'off') return null
   const prompt = input.prompt ?? ''
+  const source = input.transcript_path ? sessionSource(input.transcript_path) : 'unknown'
+  // A scripted run (codex exec) has nobody to switch a choice: its output stays exactly as it would be without MarginCue.
+  if (source === 'exec') return null
   const previous = readJson<TurnRecord | null>(PATHS.turn, null)
   if (input.turn_id && input.transcript_path && input.cwd) {
     const record: TurnRecord = {
       session: input.session_id ?? '', turn: input.turn_id, transcript: input.transcript_path, cwd: input.cwd,
-      startedAt: Date.now(), endedAt: null, decisions: decisionsOf(input.prompt ?? ''), source: sessionSource(input.transcript_path),
+      startedAt: Date.now(), endedAt: null, decisions: decisionsOf(prompt), source,
     }
     try {
       writeJson(PATHS.turn, record)
@@ -69,6 +72,7 @@ export function stopHook(input: StopInput): object | null {
   if (process.env['MARGINCUE_READER']) return null
   const settings = readSettings()
   if (settings.mode === 'off' || !input.turn_id) return null
+  if (input.transcript_path && sessionSource(input.transcript_path) === 'exec') return null
   const record = readJson<TurnRecord | null>(PATHS.turn, null)
   const mine = record?.turn === input.turn_id ? record : null
   if (mine) {

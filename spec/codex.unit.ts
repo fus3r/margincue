@@ -138,3 +138,15 @@ test('without the composer (the desktop app, or Enter without ctrl+g) a new task
   const follow = 'Amendment to my last prompt: for week starts, use Sunday instead of Monday.'
   assert.ok(!context(promptHook({ session_id: 'app-1', turn_id: 't-11', transcript_path: transcript, cwd: '/p', prompt: follow })).includes(READING_FIRST))
 })
+
+test('a scripted run (codex exec) is left exactly as it would be without MarginCue', () => {
+  const transcript = join(home, 'rollout-exec.jsonl')
+  writeFileSync(transcript, [
+    JSON.stringify({ type: 'session_meta', payload: { originator: 'codex_exec', source: 'exec' } }),
+    JSON.stringify({ type: 'event_msg', payload: { type: 'item_completed', turn_id: 'e-1', item: { type: 'AgentMessage', content: [{ type: 'Text', text: `${OPEN}a: b | c${CLOSE}` }] } } }),
+  ].join('\n') + '\n')
+  const before = readFileSync(PATHS.turn, 'utf8')
+  assert.equal(promptHook({ session_id: 'x', turn_id: 'e-1', transcript_path: transcript, cwd: '/p', prompt: 'Build a report page.' }), null)
+  assert.equal(readFileSync(PATHS.turn, 'utf8'), before)
+  assert.equal(stopHook({ turn_id: 'e-1', transcript_path: transcript }), null)
+})
