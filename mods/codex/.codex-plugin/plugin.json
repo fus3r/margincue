@@ -1,6 +1,6 @@
 {
   "name": "margincue",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Shows how Codex will read your prompt before you send it (ctrl+g), checks your names against the code, gives each open choice a control, sketches the result, and turns the agent's own choices into switches.",
   "hooks": "./hooks/hooks.json",
   "interface": {

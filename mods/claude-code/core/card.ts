@@ -179,6 +179,8 @@ function cut(text: string, max: number): string {
 /** "a", "a and b", "a, b and c". */
 export function joinList(items: string[]): string {
   if (items.length <= 1) return items[0] ?? ''
+  // Items that are lists themselves ("name, email, message", "company and role") are kept apart with semicolons.
+  if (items.some((item) => /,|\band\b/.test(item))) return items.join('; ')
   return `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`
 }
 

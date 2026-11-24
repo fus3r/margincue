@@ -52,7 +52,7 @@ const composer = ($: { prompt: unknown }) => $.prompt as Composer
 
 /** The engine beneath: a box that applies splices, a model that answers REPLY, a clock and a store. */
 function world(on: Engine, reply: string | ((prompt: string, system: string) => Promise<string>) = REPLY,
-  options: { git?: (args: string) => string } = {}) {
+  options: { git?: (args: string) => string | undefined } = {}) {
   const clock = mock.clock(on, { now: 1000 })
   const store = new Map<string, unknown>()
   const files = new Map<string, string>()
@@ -258,10 +258,32 @@ const COMPOSE = {
 test('the choice-marking instruction goes to interactive sessions only, never to a scripted run', async ($, on) => {
   world(on, replies())
   on('prompt.compose', () => ({ sections: [] }))
-  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: false })
-  expect((await $.prompt.compose(COMPOSE)).sections.some((section) => section.id === 'margincue:blanks')).toBe(false)
+  const marks = async () => (await $.prompt.compose(COMPOSE)).sections.some((section) => section.id === 'margincue:blanks')
+  await $.session.start({ cwd: '/project', surface: null, isInteractive: false })
+  expect(await marks()).toBe(false)
   await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
-  expect((await $.prompt.compose(COMPOSE)).sections.some((section) => section.id === 'margincue:blanks')).toBe(true)
+  expect(await marks()).toBe(true)
+})
+
+test('a session the desktop app or VS Code drives through the SDK gains a person when its client attaches', async ($, on) => {
+  const indexed: string[] = []
+  const { clock } = world(on, replies(), { git: (args) => {
+    indexed.push(args)
+    return undefined
+  } })
+  on('prompt.compose', () => ({ sections: [] }))
+  on('session.attach', (_, e) => ({ clientId: e.clientId }))
+  const marks = async () => (await $.prompt.compose(COMPOSE)).sections.some((section) => section.id === 'margincue:blanks')
+  // The SDK starts the session with no screen: until a client attaches it is a script, left alone.
+  await $.session.start({ cwd: '/project', surface: null, isInteractive: false })
+  await clock.advance(2000)
+  expect(await marks()).toBe(false)
+  expect(indexed.length).toBe(0)
+  // The desktop app connects: the project is indexed (for the names on the card) and the agent marks its choices.
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  await clock.settle()
+  expect(indexed.some((args) => args.includes('ls-files'))).toBe(true)
+  expect(await marks()).toBe(true)
 })
 
 test('language defaults to English and auto persists across sessions', async ($, on) => {

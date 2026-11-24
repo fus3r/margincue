@@ -361,6 +361,7 @@ function cut(text2, max) {
 }
 function joinList(items) {
   if (items.length <= 1) return items[0] ?? "";
+  if (items.some((item) => /,|\band\b/.test(item))) return items.join("; ");
   return `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 }
 function rowValue(row, selected) {
@@ -9964,7 +9965,7 @@ var CodexModel = class {
     child.on("error", (error) => this.fail(`codex could not start: ${error.message}`));
     child.on("exit", () => this.fail("codex app-server exited"));
     createInterface({ input: child.stdout }).on("line", (line) => this.receive(line));
-    const init = await this.call("initialize", { clientInfo: { name: "margincue", title: "MarginCue", version: "0.4.1" }, capabilities: null });
+    const init = await this.call("initialize", { clientInfo: { name: "margincue", title: "MarginCue", version: "0.4.2" }, capabilities: null });
     if (init.error) throw new Error(init.error.message ?? "initialize failed");
     this.notify("initialized");
     const preferred = process.env.MARGINCUE_CODEX_MODEL;

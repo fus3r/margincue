@@ -673,6 +673,36 @@ function drawRows($: $, ui: Elements[RenderSurface], rows: Segment[][], focus?: 
   return rows.length === 1 ? row(rows[0]!, 0) : <Box flexDirection="column">{rows.map(row)}</Box>
 }
 
+/**
+ * The part of a session's start that needs a person at the prompt: the project index, the first-run questions,
+ * the trial and the file watch. The REPL has one from the start; a session driven through the SDK (the desktop
+ * app, VS Code, a phone) gains one when its client attaches.
+ */
+async function present($: $, turns: number): Promise<void> {
+  host.interactive = true
+  // The index first: it runs in the background while the rest settles.
+  if (host.settings.mode !== 'off') void reindex($, true)
+  watch($)
+  await startTrial($, turns === 0)
+  // The arm decides whether the card shows: the core hears it.
+  if (host.arm && host.core) run($, configEvent())
+  // First run: a few questions about the person's work, once the screen is up and only into an empty prompt;
+  // someone who started typing straight away is asked in their next session instead.
+  // MARGINCUE_NO_SETUP=1 keeps them away from a session that is not the person's own (a recording, a test harness).
+  const noSetup = await $.env.get('MARGINCUE_NO_SETUP').catch(() => undefined)
+  host.onboardPending = host.settings.mode !== 'off' && host.settings.onboarded === null && turns === 0 &&
+    !(noSetup && noSetup !== '0')
+  if (host.onboardPending) {
+    const epoch = host.epoch
+    $.clock.after(1500, async () => {
+      if (epoch !== host.epoch || !host.onboardPending) return
+      host.onboardPending = false
+      const box = await $.prompt.read().catch(() => ({ text: 'unknown' }))
+      if (box.text.trim() === '' && host.activeTurn === null) void onboard($, false)
+    })
+  }
+}
+
 async function start($: $, cwd: string, interactive: boolean): Promise<void> {
   host.epoch++
   host.revision = 0
@@ -723,34 +753,18 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
     })),
   }
   await host.trialLog.stop(logIO($))
-  await startTrial($, turns === 0)
   ensure($)
   if (host.settings.mode !== 'off') await enqueue(() => refresh($, turns > 0))
   else run($, { type: 'loadState', now: now(), state: { model: null, values: [], submitted: turns > 0 } })
   if (loaded.skipped && host.settings.mode !== 'off') void $.ui.toast(`MarginCue skipped ${loaded.skipped} invalid or conflicting personal bundle(s).`)
-  if (interactive) watch($)
   host.indexedAt = -Infinity
   host.blankSeen.clear()
   host.blankOld.clear()
-  // First run: a few questions about the person's work, once the screen is up and only into an empty prompt;
-  // someone who started typing straight away is asked in their next session instead.
-  // MARGINCUE_NO_SETUP=1 keeps them away from a session that is not the person's own (a recording, a test harness).
-  const noSetup = await $.env.get('MARGINCUE_NO_SETUP').catch(() => undefined)
-  host.onboardPending = interactive && host.settings.mode !== 'off' && host.settings.onboarded === null && turns === 0 &&
-    !(noSetup && noSetup !== '0')
-  if (host.onboardPending) {
-    const epoch = host.epoch
-    $.clock.after(1500, async () => {
-      if (epoch !== host.epoch || !host.onboardPending) return
-      host.onboardPending = false
-      const box = await $.prompt.read().catch(() => ({ text: 'unknown' }))
-      if (box.text.trim() === '' && host.activeTurn === null) void onboard($, false)
-    })
-  }
-  if (host.settings.mode !== 'off') {
-    void readLearned($, host.root).then((picks) => run($, { type: 'learned', picks })).catch(() => {})
-    void reindex($, true)
-  }
+  host.onboardPending = false
+  if (host.settings.mode !== 'off') void readLearned($, host.root).then((picks) => run($, { type: 'learned', picks })).catch(() => {})
+  // The desktop app and VS Code drive the engine through its SDK: the session starts without a person and gains one
+  // when their client attaches. A -p run or a script never does, and is left as it would be without MarginCue.
+  if (interactive) await present($, turns)
   await $.command.register({
     name: 'margincue',
     description: 'MarginCue card, sketch, blanks, decisions, expert review and session status',
@@ -1288,6 +1302,13 @@ export const register: Register = (on) => {
   on('command.run', { command: 'margincue' }, async ($, e) => command($, e.args))
 
   // Only follows the theme the person picks; a failure here must never stand in the way of their setting.
+  // A client attaching (the desktop app, VS Code, a phone) means a person is at this session.
+  on('session.attach', async ($, e, next) => {
+    const result = await next(e)
+    if (!host.interactive && host.core) void present($, await $.session.turns().catch(() => 0)).catch(() => {})
+    return result
+  })
+
   on('config.set', { key: 'theme' }, async ($, e, next) => {
     const result = await next(e)
     if (!('deny' in result && result.deny)) host.palette = paletteFor(e.value)

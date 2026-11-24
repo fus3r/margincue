@@ -411,3 +411,8 @@ test('a streamed reading shows its line first and each row as it completes; the 
   const end = core.handle({ type: 'reply', now: 500, req: req!.req, text: `${rows[2]}\n`, done: true })
   assert.deepEqual(lastView(end)!.card?.rows.map((row) => row.key), ['export_rows', 'export_limit'])
 })
+
+test('picks that are lists themselves stay apart in a decision', () => {
+  assert.equal(card.joinList(['sign-ins', 'invitations', 'role changes']), 'sign-ins, invitations and role changes')
+  assert.equal(card.joinList(['name, email, message', 'company and role', 'phone number']), 'name, email, message; company and role; phone number')
+})
