@@ -9357,7 +9357,7 @@ function layoutCard(card, columns, budget, options) {
   if (card.collapsed) return [collapsed(card, columns, P2, words, open, hidden)];
   const g = grid(card, columns, words);
   const right = status(card, words, open, columns >= 110 && card.stage === "draft" ? options.extra : [], P2);
-  const head = header(card, g, right, P2, words, budget >= 10 ? 3 : budget >= 6 ? 2 : 1);
+  const head = header(card, g, right, P2, words, budget >= 10 ? 4 : budget >= 6 ? 2 : 1);
   head[0].push(...hidden);
   const room = budget - head.length;
   if (room <= 0) return head;
@@ -9492,7 +9492,7 @@ function mentionLines(card, g, width, P2, words) {
 }
 function badge(row) {
   if (row.origin === "lens") return { glyph: "\u25C6", color: "claude" };
-  if (row.origin === "repo") return { glyph: "?", color: "warning" };
+  if (row.origin === "repo") return row.chosen ? { glyph: "\u2713", color: "success" } : { glyph: "?", color: "warning" };
   if (row.learned) return { glyph: "\u21BA", color: "subtle" };
   return null;
 }
@@ -10049,7 +10049,7 @@ var CodexModel = class {
     child.on("error", (error) => this.fail(`codex could not start: ${error.message}`));
     child.on("exit", () => this.fail("codex app-server exited"));
     createInterface({ input: child.stdout }).on("line", (line) => this.receive(line));
-    const init = await this.call("initialize", { clientInfo: { name: "margincue", title: "MarginCue", version: "0.4.4" }, capabilities: null });
+    const init = await this.call("initialize", { clientInfo: { name: "margincue", title: "MarginCue", version: "0.4.5" }, capabilities: null });
     if (init.error) throw new Error(init.error.message ?? "initialize failed");
     this.notify("initialized");
     const preferred = process.env.MARGINCUE_CODEX_MODEL;
