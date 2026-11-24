@@ -305,6 +305,19 @@ test('in the desktop app the draft is unseen while typed: the card comes at Ente
   await ui.unmount()
 })
 
+test('the desktop app\'s typed prompt reaches hooks stamped composer, like the terminal\'s: it still gets the card at Enter', async ($, on) => {
+  const { clock } = world(on, replies(), { env: { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' } })
+  await $.session.start({ cwd: '/', surface: null, isInteractive: false })
+  await clock.settle()
+  const pending = $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  await ui.press({ key: 'card-c1-1' })
+  await ui.press({ key: 'card-send' })
+  expect((await pending).text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.`)
+  await ui.unmount()
+})
+
 test('a script\'s prompt through the SDK, with no app attached, goes through untouched and unheld', async ($, on) => {
   const { clock } = world(on, replies())
   await $.session.start({ cwd: '/', surface: null, isInteractive: false })

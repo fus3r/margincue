@@ -71,7 +71,9 @@ const BAND_WAIT_MS = 1200
  * app and VS Code send theirs through the SDK, a phone through the bridge). A script's prompt (claude -p, the SDK
  * with no app) is not, and is left alone.
  */
-const personal = (kind: string) => kind === 'composer' || ((kind === 'sdk' || kind === 'bridge') && host.interactive)
+const personal = (kind: string) =>
+  // The desktop app stamps what the person typed as `human`; the terminal as `composer`.
+  kind === 'composer' || kind === 'human' || ((kind === 'sdk' || kind === 'bridge') && host.interactive)
 
 const host = {
   core: null as Core | null,
@@ -112,6 +114,8 @@ const host = {
   bandDrawn: false,
   /** The app running this session (the desktop app, VS Code), from the engine's entrypoint; null at a terminal or in a script. */
   appHost: null as string | null,
+  /** MARGINCUE_NO_SETUP: no first-run questions in this session (a recording, a test harness). */
+  setupOff: false,
   sentExpert: '',
   view: null as View | null,
   timer: null as { cancel: () => void } | null,
@@ -798,8 +802,10 @@ async function present($: $, turns: number): Promise<void> {
   // someone who started typing straight away is asked in their next session instead.
   // MARGINCUE_NO_SETUP=1 keeps them away from a session that is not the person's own (a recording, a test harness).
   const noSetup = await $.env.get('MARGINCUE_NO_SETUP').catch(() => undefined)
-  host.onboardPending = host.settings.mode !== 'off' && host.settings.onboarded === null && turns === 0 &&
-    !(noSetup && noSetup !== '0')
+  host.setupOff = Boolean(noSetup && noSetup !== '0')
+  // The desktop app starts a session with its first message, so the box is never empty and idle at the start:
+  // there the questions come after the first answer instead (turn.complete).
+  host.onboardPending = !host.appHost && host.settings.mode !== 'off' && host.settings.onboarded === null && turns === 0 && !host.setupOff
   if (host.onboardPending) {
     const epoch = host.epoch
     $.clock.after(1500, async () => {
@@ -1218,7 +1224,8 @@ export const register: Register = (on) => {
     dropClear()
     // An app (desktop, VS Code, phone) never shows MarginCue the draft while it is typed: the card comes at Enter,
     // before Claude starts, and the prompt goes when the person sends it (or as written).
-    if (e.origin.kind !== 'composer' && !e.turnId && !host.activeTurn && host.view?.text !== e.text && host.settings.mode !== 'off') {
+    // The engine stamps the desktop app's typed prompts `composer` as well: the app, not the stamp, says the draft was unseen.
+    if ((host.appHost || e.origin.kind !== 'composer') && !e.turnId && !host.activeTurn && host.view?.text !== e.text && host.settings.mode !== 'off') {
       const send = await holdForCard($, e.text)
       if (!send) run($, { type: 'draft', now: now(), text: '', origin: 'type', cursor: 0 }, false)
     }
@@ -1266,6 +1273,10 @@ export const register: Register = (on) => {
       if (host.view) publish($, host.view)
       void placeReceipt($)
       void reindex($, false)
+      // In the desktop app the first-run questions wait for the first answer: the session never starts idle.
+      if (host.appHost && host.settings.onboarded === null && host.settings.mode !== 'off' && !host.setupOff && !host.onboarding) {
+        void onboard($, false)
+      }
     }
     return result
   })
