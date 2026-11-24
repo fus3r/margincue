@@ -113,6 +113,8 @@ const host = {
   interactive: false,
   /** MarginCue's card is up in an app, above Claude's own dialog, waiting for the person to send. */
   gate: false,
+  /** When the core next wants its timer, recorded so the dialog's own watcher can fire it while the card is up. */
+  timerAt: null as number | null,
   /** The app running this session (the desktop app, VS Code), from the engine's entrypoint; null at a terminal or in a script. */
   appHost: null as string | null,
   /** MARGINCUE_NO_SETUP: no first-run questions in this session (a recording, a test harness). */
@@ -212,7 +214,9 @@ function run($: $, event: Event, paint = true): Effect[] {
 function schedule($: $, at: number | null): void {
   host.timer?.cancel()
   host.timer = null
-  if (at === null) return
+  host.timerAt = at
+  // While MarginCue's card is up in an app, the dialog's watcher fires it, on a handle that outlives the drawing.
+  if (at === null || host.gate) return
   const wait = Math.max(0, Math.round(at - now()))
   host.timer = $.clock.after(wait, () => fireTimer($, at))
 }
@@ -241,6 +245,7 @@ function dropClear(): void {
 
 function fireTimer($: $, at: number): void {
   host.timer = null
+  host.timerAt = null
   timeFloor = Math.max(timeFloor, at)
   run($, { type: 'timer', now: now() })
 }
@@ -589,6 +594,16 @@ const skipped = (answer: string) => !answer.trim() || /^\s*\[[^\]]*\]\s*$/.test(
  */
 async function gateAtEnter($: $): Promise<{ how: Held; addition?: string }> {
   host.gate = true
+  // A pick on the card runs on its drawing's handle, which ends with the drawing; what the pick sets off later (the
+  // preview redrawn for the new choice) is fired here instead, on this hook's handle, alive until the person sends.
+  // Its own ticks count the time too, so it keeps pace under any clock.
+  const start = now()
+  let ticks = 0
+  const pump = $.clock.every(250, () => {
+    ticks++
+    const at = host.timerAt
+    if (at !== null && Math.max(now(), start + ticks * 250) >= at) fireTimer($, at)
+  })
   if (host.view) publish($, host.view)
   try {
     const answer = await $.ui.ask(GATE_QUESTION, { options: [GATE_SEND, GATE_RAW], header: 'MarginCue' })
@@ -598,6 +613,7 @@ async function gateAtEnter($: $): Promise<{ how: Held; addition?: string }> {
   } catch {
     return { how: 'send' }
   } finally {
+    pump.cancel()
     host.gate = false
   }
 }
@@ -655,13 +671,34 @@ function choiceChip($: $, ui: Elements[RenderSurface], row: MargincueRow) {
 }
 
 /**
+ * The preview as a picture: the sketch's lines in a monospaced face on a panel of its own, scaled to the card's
+ * width, so a line never wraps and the box drawing keeps its shape. The panel's colours follow the system's scheme.
+ */
+function sketchSvg(lines: readonly string[]): { source: string; height: number } {
+  const CHAR = 7.2
+  const LINE = 16
+  const PAD = 12
+  const width = Math.ceil(Math.max(20, ...lines.map((line) => [...line].length)) * CHAR + PAD * 2)
+  const height = lines.length * LINE + PAD * 2 - 4
+  const esc = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  const rows = lines.map((line, i) => `<text x="${PAD}" y="${PAD + 12 + i * LINE}" xml:space="preserve">${esc(line)}</text>`).join('')
+  const source = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">` +
+    '<style>rect{fill:#f4f3ef;stroke:#e2e0da}text{font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#3d3b36}' +
+    '@media (prefers-color-scheme:dark){rect{fill:#262624;stroke:#3a3936}text{fill:#d6d4cd}}</style>' +
+    `<rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" rx="8"/>${rows}</svg>`
+  return { source, height }
+}
+
+/**
  * MarginCue's card above Claude's dialog in an app: each choice Claude would make is one chip, its name and its
  * value, and a click opens the app's own menu right there. A pick-any chip's menu ticks what is set and a pick
  * toggles it. The app takes at most 48 rows there, counted at 40 columns, and draws nothing of a tree past that:
  * the card keeps under it, the preview only whole.
  */
 function drawGateCard($: $, ui: Elements[RenderSurface], card: NonNullable<MargincueBand['card']>) {
-  const { Box, Text, Code } = ui
+  const { Box, Text } = ui
+  // Drawn only in an app, whose table has a vector picture.
+  const { Svg } = ui as Elements['desktop']
   // Inside the frame: 40 columns less its padding; a Code block draws its own inset too.
   const COLS = 34
   const rowsOf = (text: string, cols = COLS) => text.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(line.length / cols)), 0)
@@ -685,7 +722,8 @@ function drawGateCard($: $, ui: Elements[RenderSurface], card: NonNullable<Margi
   }
   const left = card.rows.length - shown.length
   if (left) budget -= 1
-  const sketch = card.sketch && card.sketch.lines.length && 1 + rowsOf(card.sketch.lines.join('\n'), 28) <= budget ? card.sketch : null
+  // The picture keeps its own measure: about one row a sketch line.
+  const sketch = card.sketch && card.sketch.lines.length && card.sketch.lines.length + 3 <= budget ? card.sketch : null
   const chip = (row: MargincueRow) => choiceChip($, ui, row)
 
   return (
@@ -699,9 +737,9 @@ function drawGateCard($: $, ui: Elements[RenderSurface], card: NonNullable<Margi
       </Box>
       {left ? <Text dimColor>{`${left} more left to Claude`}</Text> : null}
       {sketch ? (
-        <Box flexDirection="column">
+        <Box flexDirection="column" rowGap={0}>
           <Text dimColor>{`Preview \u00b7 ${sketch.title}`}</Text>
-          <Code source={sketch.lines.join('\n')} />
+          <Svg source={sketchSvg(sketch.lines).source} alt={`A sketch of ${sketch.title}: ${sketch.lines.join(' ').replace(/\s+/g, ' ').slice(0, 300)}`} />
         </Box>
       ) : null}
       <Text dimColor>{hint}</Text>

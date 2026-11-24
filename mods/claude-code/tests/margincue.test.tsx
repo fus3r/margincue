@@ -414,9 +414,9 @@ test('a preview the size of a page sketch fits in the card, and the app takes th
   await ui.unmount()
 })
 
-test('a card too tall for the app leaves the preview out rather than lose the card', async ($, on) => {
-  const tall = ['title | Weekly report', ...Array.from({ length: 30 }, (_, i) => `│ row ${i} ${'·'.repeat(50)} │`)].join('\n')
-  const { clock } = world(on, replies(CARD, tall), { env: { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' } })
+test('a wide sketch is drawn as a picture scaled to the card: it never wraps, and the app takes the card', async ($, on) => {
+  const wide = ['title | Weekly report', ...Array.from({ length: 10 }, (_, i) => `\u2502 row ${i} ${'\u00b7'.repeat(70)} \u2502`)].join('\n')
+  const { clock } = world(on, replies(CARD, wide), { env: { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' } })
   const gate = heldPanel(on)
   await $.session.start({ cwd: '/', surface: null, isInteractive: false })
   await clock.settle()
@@ -424,8 +424,41 @@ test('a card too tall for the app leaves the preview out rather than lose the ca
   await clock.settle()
   await clock.advance(6000)
   const ui = await $.ui.mount({ ...DIALOG, props: { tool: 'AskUserQuestion', questions: gate.asked } })
-  expect(await ui.find({ key: 'card-c1' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /Preview ·/ })).toBeUndefined()
+  const picture = await ui.find({ type: 'Svg' })
+  expect(picture).toBeDefined()
+  expect(String(picture?.props.source)).toContain('viewBox')
+  expect(String(picture?.props.alt)).toContain('Weekly report')
+  await ui.drawn()
+  gate.answer(null)
+  await pending
+  await ui.unmount()
+})
+
+test('a pick on the card redraws the preview with the new choice', async ($, on) => {
+  const drawn: string[] = []
+  const reply = async (prompt: string, system: unknown) => {
+    const text = typeof system === 'string' ? system : JSON.stringify(system)
+    if (text.includes('Draw what the finished result')) {
+      drawn.push(prompt)
+      return SKETCH
+    }
+    return text.includes('how the agent will read it') ? CARD : REPLY
+  }
+  const { clock } = world(on, reply, { env: { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' } })
+  const gate = heldPanel(on)
+  await $.session.start({ cwd: '/', surface: null, isInteractive: false })
+  await clock.settle()
+  const pending = $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
+  await clock.settle()
+  await clock.advance(3000)
+  const ui = await $.ui.mount({ ...DIALOG, props: { tool: 'AskUserQuestion', questions: gate.asked } })
+  const first = drawn.length
+  expect(first).toBeGreaterThan(0)
+  await pick(ui, 'c1', 1)
+  await clock.advance(2000)
+  // The picture follows the card: it is drawn again for what the person picked.
+  expect(drawn.length).toBe(first + 1)
+  expect(drawn.at(-1)).toContain('Export all rows')
   gate.answer(null)
   await pending
   await ui.unmount()
