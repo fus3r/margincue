@@ -392,7 +392,8 @@ export class Band {
     const card = this.on && max > 0 ? this.shownCard() : null
     if (max > 0) {
       if (card) {
-        const budget = full ? max : 1
+        // Until its first rows arrive the card is one line; then it takes its room in one step.
+        const budget = full && (card.rows.length || (card.read && !card.reading)) ? max : 1
         lines = layoutCard(card, cols, budget, { chords: true, extra: [], palette: P })
           .slice(0, budget)
           .map((line, y) => drawLine(line, cols, y, this.hits, this.frame))
@@ -400,7 +401,11 @@ export class Band {
       } else lines = [drawLine(this.status(), cols, 0, this.hits, this.frame)]
     }
     // The card keeps its height while the prompt is written, so the box above it stays put.
-    this.height = !full || !card ? 1 : Math.max(this.height, lines.length)
+    // Each change of height resizes Codex and moves its prompt box, so the card takes all the
+    // room it may need as soon as rows start streaming in, and keeps it until the prompt is sent.
+    const streaming = Boolean(card && (card.reading || card.sketch?.drawing) && card.rows.length)
+    const want = !full || !card ? 1 : streaming ? max : lines.length
+    this.height = !full || !card ? 1 : Math.max(this.height, want)
     if (full) while (lines.length < this.height) lines.push('')
     this.emit({ t: 'band', lines })
     const decisions = this.view?.decisions.length ?? 0

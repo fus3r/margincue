@@ -167,7 +167,9 @@ fn max_band(outer: Size, full: bool) -> u16 {
     if !full {
         return 1;
     }
-    (outer.rows * 3 / 10).clamp(4, 10).min(outer.rows - MIN_CHILD_ROWS)
+    // As in Claude Code: up to 60% of the window while a prompt is written, so the sketch fits
+    // under the rows at 80 columns. The card shrinks back to one row once the prompt is sent.
+    (outer.rows * 3 / 5).clamp(4, 24).min(outer.rows - MIN_CHILD_ROWS)
 }
 
 struct Signals {
@@ -1059,8 +1061,9 @@ mod tests {
     fn card_height_limits() {
         assert_eq!(max_band(Size::cells(10, 80), true), 0);
         assert_eq!(max_band(Size::cells(30, 80), false), 1);
-        assert_eq!(max_band(Size::cells(30, 80), true), 9);
+        assert_eq!(max_band(Size::cells(30, 80), true), 18);
+        assert_eq!(max_band(Size::cells(38, 80), true), 22);
         assert_eq!(max_band(Size::cells(16, 80), true), 4);
-        assert_eq!(max_band(Size::cells(60, 80), true), 10);
+        assert_eq!(max_band(Size::cells(60, 80), true), 24);
     }
 }

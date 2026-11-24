@@ -4,7 +4,7 @@
 
 See how Claude Code or Codex will read your prompt before it starts, and steer the choices it makes while it works.
 
-<!-- Demo video goes here. -->
+![MarginCue in Claude Code: as the prompt is typed, the card checks names against the repo, offers the open choices and sketches the result](docs/demo.gif)
 
 ## What it does
 

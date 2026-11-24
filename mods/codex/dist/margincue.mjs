@@ -10077,7 +10077,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.11";
+var VERSION = "0.4.12";
 
 // src/model.ts
 var LIGHT = [/luna/i, /mini/i, /nano/i, /lite/i, /small/i, /flash/i, /terra/i];
@@ -12007,12 +12007,14 @@ var Band = class {
     const card = this.on && max > 0 ? this.shownCard() : null;
     if (max > 0) {
       if (card) {
-        const budget = full ? max : 1;
+        const budget = full && (card.rows.length || card.read && !card.reading) ? max : 1;
         lines = layoutCard(card, cols, budget, { chords: true, extra: [], palette: P2 }).slice(0, budget).map((line, y) => drawLine(line, cols, y, this.hits, this.frame));
         if (!this.shownAgent()) this.mark(this.coreText);
       } else lines = [drawLine(this.status(), cols, 0, this.hits, this.frame)];
     }
-    this.height = !full || !card ? 1 : Math.max(this.height, lines.length);
+    const streaming = Boolean(card && (card.reading || card.sketch?.drawing) && card.rows.length);
+    const want = !full || !card ? 1 : streaming ? max : lines.length;
+    this.height = !full || !card ? 1 : Math.max(this.height, want);
     if (full) while (lines.length < this.height) lines.push("");
     this.emit({ t: "band", lines });
     const decisions = this.view?.decisions.length ?? 0;
@@ -12096,7 +12098,7 @@ function serveBand(link, cwd, model) {
 
 // src/relay.ts
 var RELAY = join4(PATHS.bin, "margincue-relay");
-var RELAY_VERSION = "0.1.0";
+var RELAY_VERSION = "0.1.1";
 var SUPPORTED = process.platform === "darwin" || process.platform === "linux";
 var VALUE_OPTIONS = /* @__PURE__ */ new Set([
   "-c",
