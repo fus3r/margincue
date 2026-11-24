@@ -1,0 +1,14 @@
+{
+  "name": "margincue",
+  "owner": {
+    "name": "fus3r"
+  },
+  "description": "MarginCue for Claude Code: see how the agent will read your prompt before you send it, and steer its choices while it works.",
+  "plugins": [
+    {
+      "name": "margincue",
+      "source": "./mods/claude-code",
+      "description": "Shows how Claude Code will read your prompt before you send it, checks the names you use against your code, gives each open choice a control, sketches the result, and lets you switch the agent's own choices while it works."
+    }
+  ]
+}

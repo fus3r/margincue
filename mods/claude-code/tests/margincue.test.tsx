@@ -23,10 +23,23 @@ const BAND = {
     view: {},
   },
 } as const
-const ANSWER_PANE = {
-  plugin: 'margincue', component: 'Pane', requestId: 'margincue-sheet', surface: 'terminal',
-  props: { title: 'MarginCue', placement: 'inline', isFocused: true, bodyColumns: 98, scroll: { offset: 0, bodyRows: 7 }, view: {} },
-} as const
+/** A card reply for DRAFT: two one-of rows and a number row (a slider of ten steps, 500 by default). */
+const CARD = [
+  'read | You want a CSV export of the dashboard data, built as a separate tool.',
+  'kind | build',
+  'row | export_rows | rows | one | Export {} | the filtered rows | all rows | the selected rows | @export tool',
+  'row | runs_where | runs in | one | Run it {} | in the browser | from the terminal',
+  'row | batch_size | batch | num | Write {} per batch | 500 | 100 | 5000 | rows',
+].join('\n')
+const SKETCH = ['title | Export dialog', '┌ Export ───────────┐', '│ Rows: filtered    │', '│ [ Download CSV ]  │', '└───────────────────┘'].join('\n')
+
+/** The model as MarginCue calls it: a card reading, a sketch, or anything else. */
+function replies(card = CARD, sketch = SKETCH, other = REPLY) {
+  return async (_prompt: string, system: unknown) => {
+    const text = typeof system === 'string' ? system : JSON.stringify(system)
+    return text.includes('how the agent will read it') ? card : text.includes('Draw what the finished result') ? sketch : other
+  }
+}
 
 type Engine = On
 
@@ -38,7 +51,8 @@ type Composer = {
 const composer = ($: { prompt: unknown }) => $.prompt as Composer
 
 /** The engine beneath: a box that applies splices, a model that answers REPLY, a clock and a store. */
-function world(on: Engine, reply: string | ((prompt: string, system: string) => Promise<string>) = REPLY) {
+function world(on: Engine, reply: string | ((prompt: string, system: string) => Promise<string>) = REPLY,
+  options: { git?: (args: string) => string } = {}) {
   const clock = mock.clock(on, { now: 1000 })
   const store = new Map<string, unknown>()
   const files = new Map<string, string>()
@@ -83,7 +97,10 @@ function world(on: Engine, reply: string | ((prompt: string, system: string) => 
   })
   on('ui.close', () => ({ value: undefined }))
   on('ui.focus', () => ({}))
-  on('store.get', (_, e) => ({ value: store.get(e.key) }))
+  // Tests stand for a person who already answered the first-run questions, unless they set `onboarded` themselves.
+  on('store.get', (_, e) => ({
+    value: e.key === 'settings' ? { onboarded: 'done', ...(store.get('settings') as object ?? {}) } : store.get(e.key),
+  }))
   on('store.set', (_, e) => {
     store.set(e.key, JSON.parse(JSON.stringify(e.value)))
     return { value: undefined }
@@ -117,6 +134,11 @@ function world(on: Engine, reply: string | ((prompt: string, system: string) => 
     Object.assign(box, { text: e.text, cursor: e.cursor })
     return { text: e.text }
   })
+  // No repository unless a test gives one: git answers as outside a work tree.
+  on('process.run', (_, e) => {
+    const out = options.git?.(e.argv.join(' '))
+    return { value: { exitCode: out === undefined ? 128 : 0, stdout: out ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
   return { clock, calls, painted, store, files, writes, model, root, home, identity, box, panes }
 }
 
@@ -133,68 +155,60 @@ function edit(before: string, text: string) {
   }
 }
 
-test('the answering pane advances and restores the draft with its caret after the last answer', async ($, on) => {
-  const { clock, calls, box, panes } = world(on)
-  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+const CLEANUP = "Remove the old test databases. Don't ask."
+const PROJECT_DECISIONS = '/project/.margincue/decisions.json'
+const cli = { origin: { kind: 'composer' as const }, presentation: { isFullscreen: false, columns: 100 } }
 
-  const typed = await composer($).edit(edit(DRAFT, '.'))
-  expect(typed.text).toBe(`${DRAFT}.`)
-  expect(typed.decorations).toEqual([])
-  await clock.settle()
-  expect(calls).toEqual([`${DRAFT}.`])
+const WIDE = { ...BAND, surface: 'terminal' as const, props: { ...BAND.props, maxRows: 18, bodyColumns: 100 } }
 
-  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect((await ui.find({ key: 'sheet-question-c1' }))?.props.label).toBe('Which rows should it export?')
-  expect((await ui.find({ key: 'sheet-question-c2' }))?.props.label).toBe('Where should it run?')
-  expect(await ui.find({ key: 'sheet-c1-0' })).toBeUndefined()
-  expect((await ui.find({ key: 'sheet-open' }))?.props).toMatchObject({ label: 'Answer  Alt+↑', variant: 'primary' })
-  box.cursor = 8
-  await ui.press({ key: 'sheet-open' })
-  expect(panes.at(-1)).toMatchObject({ id: 'margincue-sheet', focus: true, closeOnEscape: true })
-  expect(box.text).toBe('')
-  const pane = await $.ui.mount(ANSWER_PANE)
-  expect(await pane.find({ type: 'Text', text: /1 of 2/ })).toBeDefined()
-  expect((await pane.find({ key: 'sheet-c1-0' }))?.props).toMatchObject({ label: 'filtered rows', autoFocus: true, hotkey: '1' })
-  expect(await pane.find({ key: 'sheet-c2-0' })).toBeUndefined()
-  await pane.press({ key: 'sheet-c1-1' })
-  expect(await pane.find({ type: 'Text', text: /2 of 2/ })).toBeDefined()
-  expect(await pane.find({ key: 'sheet-c1-1' })).toBeUndefined()
-  await pane.press({ key: 'sheet-c2-0' })
-  expect(box).toEqual({ text: DRAFT + '.', cursor: 8 })
-  expect(await ui.find({ type: 'Text', text: /2 selected/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /✓/ })).toBeDefined()
-  expect((await ui.find({ key: 'sheet-question-c1' }))?.props.label).toBe('all rows  ·  Which rows should it export?')
-  await pane.unmount()
-  await ui.unmount()
-
-  const sent = await $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
-  expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Which rows should it export? all rows.\n- Where should it run? browser.`)
-})
-
-test('pressing a band question opens that question, including after an answer', async ($, on) => {
-  const { clock, box } = world(on)
+test('the card reads a draft, shows typed controls, and attaches only what the person sets', async ($, on) => {
+  const { clock, calls } = world(on, replies())
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await composer($).edit(edit(DRAFT, '.'))
   await clock.settle()
-
-  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  const pane = await $.ui.mount(ANSWER_PANE)
-  await band.press({ key: 'sheet-question-c2' })
-  expect(await pane.find({ type: 'Text', text: /2 of 2/ })).toBeDefined()
-  await pane.press({ key: 'sheet-c2-1' })
-  expect(box.text).toBe(DRAFT + '.')
-  expect((await band.find({ key: 'sheet-question-c2' }))?.props.label).toBe('terminal  ·  Where should it run?')
-  await band.press({ key: 'sheet-question-c2' })
-  expect((await pane.find({ key: 'sheet-c2-1' }))?.props.autoFocus).toBe(true)
-  await pane.press({ key: 'sheet-c2-0' })
-  expect((await band.find({ key: 'sheet-question-c2' }))?.props.label).toBe('browser  ·  Where should it run?')
-  expect((await band.find({ key: 'sheet-question-c1' }))?.props.label).toBe('Which rows should it export?')
-  await pane.unmount()
-  await band.unmount()
+  expect(calls[0]).toContain(`Draft:\n<<<\n${DRAFT}.\n>>>`)
+  const ui = await $.ui.mount(WIDE)
+  expect(await ui.find({ type: 'Text', text: /You want a CSV export/ })).toBeDefined()
+  expect((await ui.find({ key: 'card-c1-0' }))?.props.label).toBe('● the filtered rows')
+  expect((await ui.find({ key: 'card-c1-1' }))?.props.label).toBe('○ all rows')
+  // The number row is a slider, one button per step; its value is written beside it.
+  expect(await ui.find({ type: 'Text', text: /^500 rows$/ })).toBeDefined()
+  expect((await ui.find({ key: 'card-c3-4' }))?.props.label).toContain('●')
+  // alt+↓ (the swap chord) changes the focused row; alt+↑ moves to the next.
+  await ui.press({ key: 'card-cycle' })
+  expect((await ui.find({ key: 'card-c1-1' }))?.props.label).toBe('● all rows')
+  await ui.press({ key: 'card-next' })
+  await ui.press({ key: 'card-next' })
+  await ui.press({ key: 'card-cycle' })
+  expect(await ui.find({ type: 'Text', text: /^710 rows$/ })).toBeDefined()
+  await ui.unmount()
+  const sent = await $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
+  expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.\n- Write 710 rows per batch.`)
 })
 
-test('ignoring every sheet option leaves the submitted text alone', async ($, on) => {
-  const { clock } = world(on)
+test('a click on a chip or a step sets its row; x drops a row and a newer reading leaves it out', async ($, on) => {
+  const { clock, calls } = world(on, replies())
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await composer($).edit(edit(DRAFT, '.'))
+  await clock.settle()
+  const ui = await $.ui.mount(WIDE)
+  await ui.press({ key: 'card-c2-1' })
+  expect((await ui.find({ key: 'card-c2-1' }))?.props.label).toBe('● from the terminal')
+  await ui.press({ key: 'card-c3-0' })
+  expect(await ui.find({ type: 'Text', text: /^100 rows$/ })).toBeDefined()
+  await ui.press({ key: 'card-drop' })
+  expect(await ui.find({ key: 'card-c3-0' })).toBeUndefined()
+  await composer($).edit(edit(`${DRAFT}.`, ' Keep it simple.'))
+  await clock.advance(1000)
+  expect(calls.some((call) => call.includes('Dismissed by the user (never raise again): batch_size'))).toBe(true)
+  expect(calls.some((call) => call.includes('- Run it from the terminal.'))).toBe(true)
+  expect(await ui.find({ key: 'card-c3-0' })).toBeUndefined()
+  expect((await ui.find({ key: 'card-c2-1' }))?.props.label).toBe('● from the terminal')
+  await ui.unmount()
+})
+
+test('an untouched card leaves the submitted text alone', async ($, on) => {
+  const { clock } = world(on, replies())
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await composer($).edit(edit(DRAFT, '.'))
   await clock.settle()
@@ -203,18 +217,241 @@ test('ignoring every sheet option leaves the submitted text alone', async ($, on
 })
 
 test('the clear that precedes a submit does not lose the decisions', async ($, on) => {
-  const { clock } = world(on)
+  const { clock } = world(on, replies())
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await composer($).edit(edit(DRAFT, '.'))
   await clock.settle()
-  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  await ui.press({ key: 'sheet-cycle' })
+  const ui = await $.ui.mount(WIDE)
+  await ui.press({ key: 'card-cycle' })
   await clock.settle()
   await ui.unmount()
   // Enter: the engine empties the box, then raises prompt.submit.
   await composer($).change({ text: '', cursor: 0, origin: { kind: 'clear' } })
   const sent = await $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
-  expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Which rows should it export? filtered rows.`)
+  expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.`)
+})
+
+test('the band lays out on every surface', async ($, on) => {
+  const { clock } = world(on, replies())
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await composer($).edit(edit(DRAFT, '.'))
+  await clock.settle()
+  // The desktop app's Code tab, VS Code and the phone draw the same card and take the same presses.
+  for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
+    const ui = await $.ui.mount({ ...WIDE, surface })
+    expect(await ui.find({ type: 'Text', text: /You want a CSV export/ })).toBeDefined()
+    expect(await ui.find({ key: 'card-c1-0' })).toBeDefined()
+    await ui.press({ key: 'card-c1-1' })
+    expect((await ui.find({ key: 'card-c1-1' }))?.props.label).toBe('● all rows')
+    await ui.press({ key: 'card-c1-0' })
+    await ui.unmount()
+  }
+})
+
+test('language defaults to English and auto persists across sessions', async ($, on) => {
+  const frenchDraft = 'Crée un tableau de bord pour le club de foot'
+  const english = 'read | You want a dashboard for the football club.\nkind | build\nrow | access | access | one | Open it to {} | club members | anyone'
+  const french = "read | Vous voulez un tableau de bord pour le club.\nkind | build\nrow | access | accès | one | Ouvert {} | aux membres | à tous"
+  const { clock, store } = world(on, async (prompt, system) => {
+    const text = typeof system === 'string' ? system : JSON.stringify(system)
+    if (!text.includes('how the agent will read it')) return 'NONE'
+    return text.includes("in the draft's language") ? french : english
+  })
+  const start = () => $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
+  const type = async () => {
+    await composer($).edit(edit(frenchDraft, '.'))
+    await clock.settle()
+  }
+
+  await start()
+  expect((await command('status')).text).toContain('language en')
+  await type()
+  const first = await $.ui.mount(WIDE)
+  expect(await first.find({ type: 'Text', text: /You want a dashboard/ })).toBeDefined()
+  await command('language auto')
+  expect(store.get('settings')).toMatchObject({ language: 'auto' })
+  await first.unmount()
+
+  await start()
+  expect((await command('status')).text).toContain('language auto')
+  await type()
+  const auto = await $.ui.mount(WIDE)
+  expect(await auto.find({ type: 'Text', text: /Vous voulez un tableau de bord/ })).toBeDefined()
+  expect((await auto.find({ key: 'card-c1-0' }))?.props.label).toBe('● aux membres')
+  await command('language en')
+  expect(store.get('settings')).toMatchObject({ language: 'en' })
+  await auto.unmount()
+})
+
+test('quiet keeps the card to one line and the alt keys still work', async ($, on) => {
+  const { clock, calls, store } = world(on, replies())
+  store.set('settings', { mode: 'quiet' })
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  await composer($).edit(edit(DRAFT, '.'))
+  await clock.settle()
+  const ui = await $.ui.mount(WIDE)
+  expect(await ui.find({ type: 'Text', text: /3 open/ })).toBeDefined()
+  expect(await ui.find({ key: 'card-c1-0' })).toBeUndefined()
+  await ui.press({ key: 'card-cycle' })
+  expect(await ui.find({ type: 'Text', text: /2 open/ })).toBeDefined()
+  await ui.unmount()
+
+  const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
+  expect((await command('card off')).text).toContain('off')
+  const before = calls.length
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  await composer($).edit(edit('Build a tool to help our club keep score', '.'))
+  await clock.settle()
+  expect(calls.length).toBe(before)
+  expect((await command('status')).text).toContain('card off')
+})
+
+test('grounding links names to the code, asks what a missing one means, and says where things are', async ($, on) => {
+  const files = ['src/dashboard/index.ts', 'src/dashboard/export.ts', 'src/city/canvas.ts', 'tools/runlog/analyze.mjs', 'tools/runlog/qa.mjs']
+  const { clock, calls } = world(on, replies(), {
+    git: (args) => args.includes('ls-files') ? files.join('\n')
+      : args.includes('(class|interface') ? 'src/dashboard/index.ts:1:export function Dashboard\nsrc/dashboard/export.ts:3:export class ExportTool'
+      : args.includes('grep') ? "src/city/canvas.ts:9:'South of Market'\nsrc/city/canvas.ts:12:'Maya'"
+      : '',
+  })
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const draft = 'Add a CSV button to the Dashboard so Maya can export the Old Market orders through `ExportTool`'
+  const typed = await composer($).edit(edit(draft, '.'))
+  const at = draft.indexOf('Old Market')
+  expect(typed.decorations).toContainEqual({ start: at, end: at + 10, underline: true, color: 'warning' })
+  expect(typed.decorations).toContainEqual({ start: draft.indexOf('Maya'), end: draft.indexOf('Maya') + 4, underline: true, color: 'suggestion' })
+  await clock.settle()
+  expect(calls[0]).toContain('In the code: Dashboard (src/dashboard/index.ts); Maya (src/city/canvas.ts)')
+  expect(calls[0]).toContain('Not found in the code, asked about separately (no row for these): "Old Market"')
+  const ui = await $.ui.mount(WIDE)
+  expect(await ui.find({ type: 'Text', text: /in code/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Old Market$/ })).toBeDefined()
+  const repo = await ui.find({ key: 'card-c1-0' })
+  expect(repo?.props.label).toBe('○ South of Market')
+  await ui.press({ key: 'card-c1-0' })
+  await ui.unmount()
+  const sent = await $.prompt.submit({ ...cli, text: `${draft}.`, wait: false })
+  // Only what the draft wrote as code says where things are; Dashboard and Maya stay links on screen.
+  expect(sent.text).toBe(`${draft}.\n\nDecisions:\n- "Old Market" is South of Market (src/city/canvas.ts).\n` +
+    '- Where things are: ExportTool (src/dashboard/export.ts).')
+})
+
+test('the sketch shows what done looks like and travels with the prompt once attached', async ($, on) => {
+  const { clock, calls } = world(on, replies())
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await composer($).edit(edit(DRAFT, '.'))
+  await clock.settle()
+  expect(calls.length).toBe(2)
+  expect(calls[1]).toContain('Choices:\n- Export the filtered rows.')
+  const ui = await $.ui.mount(WIDE)
+  expect((await ui.find({ key: 'sketch-title' }))?.props.label).toBe('Export dialog')
+  expect(await ui.find({ type: 'Text', text: /Download CSV/ })).toBeDefined()
+  await ui.press({ key: 'sketch-pin' })
+  expect((await ui.find({ key: 'sketch-pin' }))?.props.label).toBe('✓ goes with the prompt')
+  await ui.unmount()
+  const sent = await $.prompt.submit({ ...cli, text: `${DRAFT}.`, wait: false })
+  expect(sent.text).toBe(`${DRAFT}.\n\nTarget output, as sketched (Export dialog):\n\`\`\`text\n${SKETCH.split('\n').slice(1).join('\n')}\n\`\`\``)
+})
+
+test('choices the agent marks become switches during the turn, then a receipt and a follow-up', async ($, on) => {
+  const { clock, box } = world(on, replies())
+  const session = mock.session(on)
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('ui.toast', () => ({ value: undefined }))
+  const placed: { id: string }[] = []
+  on('ui.place', (_, e) => {
+    placed.push(e)
+    return { value: { isPlaced: true as const, requestId: e.id } }
+  })
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  const text = `${DRAFT}.`
+  await composer($).edit(edit(DRAFT, '.'))
+  await clock.settle()
+  await $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
+  await $.turn.start({ text, turnId: 'submitted' })
+  const reply = 'Each run goes to ⟦run log: one JSONL file per run | one SQLite database⟧ and a stay over ' +
+    '⟦stuck after: 45 s | 30 s | 60 s⟧ is flagged.'
+  const message = await $.ui.mount({
+    plugin: 'margincue', component: 'AssistantMessage', requestId: 'reply-1', surface: 'terminal',
+    props: { text: reply, isFirstOfReply: true },
+  })
+  expect(await message.find({ type: 'Text', text: /2 choices made for you/ })).toBeDefined()
+  for (const surface of ['desktop', 'vscode', 'mobile'] as const) {
+    const shown = await $.ui.mount({ plugin: 'margincue', component: 'AssistantMessage', requestId: `reply-${surface}`, surface, props: { text: reply, isFirstOfReply: true } })
+    expect(await shown.find({ type: 'Text', text: /2 choices made for you/ })).toBeDefined()
+    await shown.unmount()
+  }
+  await clock.settle()
+  const band = await $.ui.mount({ ...WIDE, props: { ...WIDE.props, isWorking: true } })
+  expect(await band.find({ type: 'Text', text: /The agent made 2 choices for you/ })).toBeDefined()
+  expect((await band.find({ key: 'card-c4-0' }))?.props.label).toBe('● one JSONL file per run')
+  // A bare digit in the empty composer switches the focused choice at once.
+  expect((await composer($).edit(edit('', '2'))).text).toBe('')
+  expect(session.appended()).toMatchObject([{ message: { type: 'user', content: [{ type: 'text',
+    text: 'Amendment to my last prompt: for run log, use one SQLite database instead of one JSONL file per run.' }] } }])
+  // alt+↓ waits for the last press before it sends.
+  await band.press({ key: 'card-next' })
+  await band.press({ key: 'card-cycle' })
+  expect(session.appended().length).toBe(1)
+  await clock.advance(1600)
+  expect(session.appended().at(-1)).toMatchObject({ message: { content: [{ text: 'Amendment to my last prompt: for stuck after, use 30 s instead of 45 s.' }] } })
+  await $.turn.complete({ turnId: 'submitted', reason: 'answer', answer: reply, durationMs: 1000, isAborted: false })
+  await clock.settle()
+  expect(placed).toMatchObject([{ id: 'receipt-1' }])
+  const receipt = await $.ui.mount({ plugin: 'margincue', component: 'Placed', requestId: 'receipt-1', surface: 'terminal', props: { id: 'receipt-1', plugin: 'margincue' } })
+  expect(await receipt.find({ type: 'Text', text: /the agent chose 2/ })).toBeDefined()
+  for (const surface of ['desktop', 'vscode', 'mobile'] as const) {
+    const elsewhere = await $.ui.mount({ plugin: 'margincue', component: 'Placed', requestId: `receipt-${surface}`, surface, props: { id: 'receipt-1', plugin: 'margincue' } })
+    expect(await elsewhere.find({ type: 'Text', text: /the agent chose 2/ })).toBeDefined()
+    await elsewhere.unmount()
+  }
+  expect(await receipt.find({ type: 'Text', text: /was 45 s/ })).toBeDefined()
+  // After the turn, switching a choice writes the follow-up prompt.
+  expect(await band.find({ type: 'Text', text: /Switching one writes the follow-up/ })).toBeDefined()
+  await band.press({ key: 'card-cycle' })
+  await clock.settle()
+  expect(box.text).toBe('Change run log: one JSONL file per run instead of one SQLite database. Keep everything else as it is.')
+  await band.unmount()
+  await receipt.unmount()
+  await message.unmount()
+})
+
+test('A/B logs a sticky session assignment and reads totals for each arm', async ($, on) => {
+  const { clock, calls, files, store, home, identity } = world(on, replies())
+  const start = () => $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
+  await start()
+  expect((await command('ab on')).text).toContain('new sessions')
+  expect(store.get('settings')).toMatchObject({ ab: true, sheet: true })
+
+  identity.id = 'first-trial'
+  await start()
+  await composer($).edit(edit(DRAFT, '.'))
+  await clock.settle()
+  const ui = await $.ui.mount(WIDE)
+  const status = await command('ab status')
+  const arm = status.text?.includes('in the sheet arm') ? 'sheet' : 'control'
+  expect(status.text).toContain(`in the ${arm} arm`)
+  expect(calls.length).toBe(arm === 'sheet' ? 2 : 0)
+  if (arm === 'sheet') await ui.press({ key: 'card-cycle' })
+  await $.prompt.submit({ ...cli, text: `${DRAFT}.`, wait: false })
+  expect((await command('ab status')).text).toContain('1 prompts sent')
+  const [path] = [...files.keys()].filter((file) => file.startsWith(`${home}/.margincue/ab/`))
+  const log = files.get(path!)!
+  expect(log).not.toContain(identity.id)
+  expect(log).not.toContain(DRAFT)
+  expect(log).not.toContain('filtered rows')
+  const rows = log.trim().split('\n').map((line) => JSON.parse(line))
+  expect(rows[0]).toMatchObject({ event: 'session-arm', arm })
+  expect(rows.at(-1)).toMatchObject({ event: 'card-submitted', arm, picked: arm === 'sheet' ? 1 : 0 })
+  await start()
+  expect((await command('ab status')).text).toContain(`${arm}: 1 sessions`)
+  expect((await command('ab off')).text).toContain('off')
+  expect((await command('ab status')).text).toContain(`${arm}: 1 sessions`)
+  await ui.unmount()
 })
 
 test('/margincue off sends nothing and stays off in the next session', async ($, on) => {
@@ -248,59 +485,9 @@ test('slash commands are never reviewed and draw no band', async ($, on) => {
   await ui.unmount()
 })
 
-test('the band lays out on every surface', async ($, on) => {
-  const { clock } = world(on)
-  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  await composer($).edit(edit(DRAFT, '.'))
-  await clock.settle()
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ ...BAND, surface })
-    expect(await ui.find({ key: 'sheet-question-c1' })).toBeDefined()
-    await ui.unmount()
-  }
-})
-
-test('language defaults to English and auto persists across sessions', async ($, on) => {
-  const frenchDraft = 'Crée un tableau de bord pour le club'
-  const { clock, calls, store } = world(on, async (_, system) => system.endsWith('in English.')
-    ? 'Who can view it? | club members | anyone'
-    : 'Qui peut le consulter ? | les membres du club | tout le monde')
-  const start = () => $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
-  const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
-  const type = async () => {
-    await composer($).edit(edit(frenchDraft, '.'))
-    await clock.settle()
-  }
-
-  await start()
-  expect((await command('status')).text).toContain('language en')
-  await type()
-  const english = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await english.find({ type: 'Text', text: /1 open decision/ })).toBeDefined()
-  expect((await english.find({ key: 'sheet-question-c1' }))?.props.label).toBe('Who can view it?')
-  await command('language auto')
-  expect(store.get('settings')).toMatchObject({ language: 'auto' })
-  expect(await english.find({ key: 'sheet-question-c1' })).toBeUndefined()
-  await english.unmount()
-
-  await start()
-  expect((await command('status')).text).toContain('language auto')
-  await type()
-  const auto = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await auto.find({ type: 'Text', text: /1 décision ouverte/ })).toBeDefined()
-  expect((await auto.find({ key: 'sheet-question-c1' }))?.props.label).toBe('Qui peut le consulter ?')
-  expect(calls).toEqual([`${frenchDraft}.`, `${frenchDraft}.`])
-  await command('language en')
-  expect(store.get('settings')).toMatchObject({ language: 'en' })
-  await auto.unmount()
-})
-
-const CLEANUP = "Remove the old test databases. Don't ask."
-const PROJECT_DECISIONS = '/project/.margincue/decisions.json'
-const cli = { origin: { kind: 'composer' as const }, presentation: { isFullscreen: false, columns: 100 } }
-
 test('first-touch guard is local, saves the selected project option, and repeats as a mark', async ($, on) => {
-  const { clock, calls, files, writes } = world(on)
+  const { clock, calls, files, writes, store } = world(on)
+  store.set('settings', { sheet: false })
   await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
   const typed = await composer($).edit(edit(CLEANUP.slice(0, -1), '.'))
   expect(typed.decorations?.[0]).toMatchObject({ start: 0, end: 6, color: 'warning' })
@@ -428,119 +615,3 @@ test('event log records suppressed candidates without source text and preserves 
   })
 })
 
-test('a late sheet shows numbered choices only for the matching turn and advances per answer', async ($, on) => {
-  let waitForReply: () => Promise<void>
-  const { clock, calls } = world(on, async () => {
-    await waitForReply()
-    return REPLY
-  })
-  waitForReply = () => clock.sleep(550)
-  const session = mock.session(on)
-  on('turn.start', (_, e) => ({ turnId: e.turnId }))
-  on('turn.complete', (_, e) => ({ text: e.answer }))
-  on('ui.toast', () => ({ value: undefined }))
-  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
-  const text = DRAFT + '.'
-  await composer($).edit(edit(DRAFT, '.'))
-  expect(calls.length).toBe(1)
-  await $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
-  const workingBand = { ...BAND.props, isWorking: true }
-  let ui = await $.ui.mount({ ...BAND, surface: 'terminal', props: workingBand })
-  expect(await ui.find({ type: 'Text', text: /MarginCue · thinking…/ })).toBeDefined()
-  expect(await ui.find({ key: 'sheet-c1-0' })).toBeUndefined()
-  expect((await composer($).edit(edit('', '1'))).text).toBe('1')
-  await $.turn.start({ text: 'An unrelated turn.', turnId: 'other' })
-  await clock.advance(600)
-  expect(await ui.find({ key: 'sheet-c1-0' })).toBeUndefined()
-  await $.turn.start({ text, turnId: 'submitted' })
-  await ui.unmount()
-  ui = await $.ui.mount({ ...BAND, surface: 'terminal',
-    props: { ...workingBand, maxRows: 2, scroll: { offset: 2, bodyRows: 1 } } })
-  expect((await ui.find({ key: 'sheet-c1-1' }))?.props.hotkey).toBeUndefined()
-  expect((await composer($).edit(edit('', '2'))).text).toBe('2')
-  await ui.unmount()
-  ui = await $.ui.mount({ ...BAND, surface: 'terminal', props: workingBand })
-  expect(await ui.find({ type: 'Text', text: /MarginCue · thinking…/ })).toBeUndefined()
-  expect((await ui.find({ key: 'sheet-c1-1' }))?.props.hotkey).toBe('2')
-  expect(await ui.find({ key: 'sheet-c2-0' })).toBeUndefined()
-  expect((await composer($).edit(edit('draft ', '2'))).text).toBe('draft 2')
-  expect(session.appended()).toEqual([])
-  expect((await composer($).edit(edit('', '2'))).text).toBe('')
-  await clock.settle()
-  expect(session.appended()).toMatchObject([{
-    door: 'note', message: { type: 'user', content: [{ type: 'text', text: 'Amendment to my last prompt: Which rows should it export? all rows.' }] },
-  }])
-  expect(await ui.find({ key: 'sheet-c1-0' })).toBeUndefined()
-  expect((await ui.find({ key: 'sheet-c2-0' }))?.props.hotkey).toBe('1')
-  await $.turn.complete({ turnId: 'submitted', reason: 'answer', answer: 'Done.', durationMs: 1000, isAborted: false })
-  expect(await ui.find({ key: 'sheet-c2-0' })).toBeUndefined()
-  expect((await composer($).edit(edit('', '1'))).text).toBe('1')
-  await ui.unmount()
-})
-
-test('quiet shows only a count and answers through the same pane', async ($, on) => {
-  const { clock, calls, store } = world(on)
-  store.set('settings', { mode: 'quiet' })
-  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
-  await composer($).edit(edit(DRAFT, '.'))
-  await clock.settle()
-  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect((await ui.find({ key: 'sheet-open' }))?.props.label).toBe('2 open decisions · alt↑ to open')
-  expect(await ui.find({ key: 'sheet-c1-0' })).toBeUndefined()
-  await ui.press({ key: 'sheet-open' })
-  const pane = await $.ui.mount(ANSWER_PANE)
-  await pane.press({ key: 'sheet-skip' })
-  expect((await pane.find({ key: 'sheet-c2-0' }))?.props.hotkey).toBe('1')
-  await pane.press({ key: 'sheet-back' })
-  await pane.press({ key: 'sheet-c1-0' })
-  await pane.press({ key: 'sheet-c2-1' })
-  expect(await pane.find({ key: 'sheet-c2-0' })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /^0 open decisions$/ })).toBeDefined()
-  await pane.unmount()
-
-  const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
-  expect((await command('sheet off')).text).toContain('off')
-  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
-  await composer($).edit(edit('Build a tool to help our club keep score', '.'))
-  await clock.settle()
-  expect(calls).toEqual([`${DRAFT}.`])
-  expect((await command('status')).text).toContain('sheet off')
-  await ui.unmount()
-})
-
-test('A/B logs a sticky session assignment and reads totals for each arm', async ($, on) => {
-  const { clock, calls, files, store, home, identity } = world(on)
-  const start = () => $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
-  const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
-  await start()
-  expect((await command('ab on')).text).toContain('new sessions')
-  expect(store.get('settings')).toMatchObject({ ab: true, sheet: true })
-
-  identity.id = 'first-trial'
-  await start()
-  await composer($).edit(edit(DRAFT, '.'))
-  await clock.settle()
-  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  const status = await command('ab status')
-  const arm = status.text?.includes('in the sheet arm') ? 'sheet' : 'control'
-  expect(status.text).toContain(`in the ${arm} arm`)
-  expect(calls.length).toBe(arm === 'sheet' ? 1 : 0)
-  if (arm === 'sheet') {
-    await ui.press({ key: 'sheet-cycle' })
-  }
-  await $.prompt.submit({ ...cli, text: `${DRAFT}.`, wait: false })
-  expect((await command('ab status')).text).toContain('1 prompts sent')
-  const [path] = [...files.keys()].filter((file) => file.startsWith(`${home}/.margincue/ab/`))
-  const log = files.get(path!)!
-  expect(log).not.toContain(identity.id)
-  expect(log).not.toContain(DRAFT)
-  expect(log).not.toContain('filtered rows')
-  const rows = log.trim().split('\n').map((line) => JSON.parse(line))
-  expect(rows[0]).toMatchObject({ event: 'session-arm', arm })
-  expect(rows.at(-1)).toMatchObject({ event: 'sheet-submitted', arm, picked: arm === 'sheet' ? 1 : 0 })
-  await start()
-  expect((await command('ab status')).text).toContain(`${arm}: 1 sessions`)
-  expect((await command('ab off')).text).toContain('off')
-  expect((await command('ab status')).text).toContain(`${arm}: 1 sessions`)
-  await ui.unmount()
-})

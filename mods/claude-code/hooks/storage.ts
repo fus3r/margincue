@@ -61,6 +61,34 @@ export async function saveDecision($: Engine, root: string, change: StateChange)
   await $.fs.write(path, JSON.stringify({ ...doc, decisions }, null, 2) + '\n')
 }
 
+export type Learned = Record<string, { label: string; count: number }>
+const LEARNED = 'learned:'
+const LEARNED_KEYS = 200
+
+/** Picks made on cards in this project, per row key, kept in the mod's own store (never in the repo). */
+export async function readLearned($: Engine, root: string): Promise<Learned> {
+  const value = await $.store.get(LEARNED + root).catch(() => undefined)
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const out: Learned = {}
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    const e = entry as { label?: unknown; count?: unknown }
+    if (typeof e?.label === 'string' && typeof e.count === 'number') out[key] = { label: e.label, count: e.count }
+  }
+  return out
+}
+
+/** Counts a pick; the same option twice in a row makes it the row's habit. */
+export async function saveLearned($: Engine, root: string, key: string, label: string): Promise<Learned> {
+  const picks = await readLearned($, root)
+  const prior = picks[key]
+  delete picks[key]
+  picks[key] = prior && prior.label.toLowerCase() === label.toLowerCase() ? { label, count: prior.count + 1 } : { label, count: 1 }
+  const keys = Object.keys(picks)
+  for (const old of keys.slice(0, Math.max(0, keys.length - LEARNED_KEYS))) delete picks[old]
+  await $.store.set(LEARNED + root, picks)
+  return picks
+}
+
 export async function readInstructionSlots($: Engine, root: string): Promise<string[]> {
   // An explicit marker is an assertion from the author of a project
   // instruction, with no parsing or inference about its prose.

@@ -1,197 +1,49 @@
-// The band's rows, laid out as plain segments so they can be tested without
-// a surface. register.tsx turns segments into Text and Button elements.
+// The band above the prompt: the card (card-view.ts) and the standing cues,
+// laid out as plain segments so they can be tested without a surface.
+// register.tsx turns segments into Text and Button elements.
 
-import type { MargincueBand, MargincueCue, MargincueScope, MargincueSheet } from '../types'
+import type { MargincueBand, MargincueCue, MargincueScope } from '../types'
+import { layoutCard } from './card-view'
+import { CHORD_NEXT, CHORD_SWAP, DARK, cells, segmentsWidth, spaced, text, truncate } from './segments'
+import type { Palette, Segment } from './segments'
 
-export type Style = { dim?: boolean; bold?: boolean; color?: 'warning' | 'success' | 'suggestion' | 'remember' | 'error' | 'subtle' }
-
-export type Segment =
-  | { kind: 'text'; text: string; style?: Style }
-  | { kind: 'progress'; label: string }
-  | { kind: 'button'; key: string; hotkey?: string; chord?: string; label: string; detail?: string;
-      dim?: boolean; bold?: true; primary?: true; hidden?: true; action: Action }
-
-export type Action =
-  | { type: 'pick'; cue: string; option: number }
-  | { type: 'dismiss'; cue: string }
-  | { type: 'acceptAll' }
-  | { type: 'focus'; dir: 1 }
-  | { type: 'cycle'; cue: string; option: number }
-  | { type: 'set'; slot: string; option: string }
-  | { type: 'scope'; slot: string }
-  | { type: 'why'; slot: string }
-  | { type: 'review' }
-  | { type: 'depth' }
-  | { type: 'amend'; cue: string; option: number }
-  | { type: 'sheetPane'; id: number; move: 'open' | 'back' | 'skip'; cue?: string }
-  | { type: 'sheetAnswer'; id: number; cue: string; option: number; via: 'pane' | 'composer' }
-  | { type: 'sheetCycle'; cue: string; option: number | null }
-
-/**
- * Engine keybinding actions whose chords press a band Button from the prompt
- * itself. A mod cannot declare actions of its own; these two are bound in the
- * Global context (alt+up/down, ctrl+up/down) and handled by the engine only
- * while its diff panel is open, so at the prompt they are free.
- */
-export const CHORD_SWAP = 'app:diffFileListDown'
-export const CHORD_NEXT = 'app:diffFileListUp'
+export { CHORD_NEXT, CHORD_SWAP, DARK, LIGHT, cells, paletteFor, segmentsWidth, truncate } from './segments'
+export type { Action, Color, Palette, Segment, Style } from './segments'
+export { layoutCard, tidySketch } from './card-view'
 
 const GAP = 2
 
-export function layoutBandRows(band: MargincueBand, columns: number, hint: string): Segment[][] {
-  const sheet = band.sheet
-  if (!sheet && !band.reviewPending) {
+export function layoutBandRows(band: MargincueBand, columns: number, hint: string, maxRows = 14, palette: Palette = DARK): Segment[][] {
+  const card = band.card
+  if (!card && !band.reviewPending) {
     const row = layoutBand(band, columns, hint)
     return row.length ? [row] : []
   }
-  const standing = band.first ? firstTouch(band, columns) : summary(band, columns, false)
-  const rows = standing.length ? [standing] : []
-  if (sheet?.pending || band.reviewPending) {
-    rows.push([{ kind: 'progress', label: thinkingLabel(sheet?.language ?? band.language) }])
+  const rows: Segment[][] = []
+  if (band.first) rows.push(firstTouch(band, columns))
+  else if (band.marks?.length) {
+    const marks = summary(band, columns, false)
+    if (marks.length) rows.push(marks)
   }
-  if (!sheet || sheet.pending || sheet.pane) return rows
-
-  const fr = sheet.language === 'fr'
-  const n = sheet.items.filter((item) => item.chosen === null).length
-  const count = fr ? `${n} décision${n === 1 ? ' ouverte' : 's ouvertes'}` : `${n} open decision${n === 1 ? '' : 's'}`
-  const open: Segment = {
-    kind: 'button', key: 'sheet-open', chord: CHORD_NEXT, dim: true,
-    label: fr ? 'alt+↑ pour répondre' : 'alt+↑ to answer',
-    action: { type: 'sheetPane', id: sheet.id, move: 'open' },
-  }
-  if (sheet.collapsed) {
-    rows.push(n ? [{ ...open, label: truncate(`${count} · ${fr ? 'alt↑ pour ouvrir' : 'alt↑ to open'}`, columns) }]
-      : [{ kind: 'text', text: truncate(count, columns) }])
-    return rows
-  }
-
-  if (sheet.afterSubmit) {
-    rows.push(sheetHeader(count, [{ kind: 'text', text: fr ? 'Un chiffre pour répondre' : 'Press a number', style: { dim: true } },
-      { ...open, hidden: true }], columns))
-    rows.push(...sheetQuestionRows(sheet, sheet.items[0]!, columns, 'composer'))
-    return rows
-  }
-
-  const nextQuestion = sheet.items.find((item) => item.chosen === null)
-  const current = sheet.items.find((item) => item.id === sheet.focus) ?? nextQuestion ?? sheet.items[0]!
-  const next = current.chosen === null ? 0 : current.chosen + 1
-  const selected = sheet.items.length - n
-  const selectedLabel = `${selected} ${fr ? (selected === 1 ? 'choix retenu' : 'choix retenus') : 'selected'}`
-  const answer: Segment = { ...open, label: fr ? 'Répondre  Alt+↑' : 'Answer  Alt+↑', dim: false, primary: true }
-  if (cells(`MarginCue · ${count}`) + GAP + segmentsWidth([answer]) > columns) answer.label = 'Alt+↑'
-  const action: Segment = n ? answer : { kind: 'text', text: fr ? 'Entrée pour envoyer' : 'Enter to send', style: { dim: true } }
-  rows.push(sheetHeader(n ? count : selectedLabel, [
-    action,
-    { kind: 'button', key: 'sheet-cycle', chord: CHORD_SWAP, hidden: true, label: fr ? 'Choix suivant' : 'Next option',
-      action: { type: 'sheetCycle', cue: current.id, option: next < current.options.length ? next : null } },
-  ], columns, n && selected ? selectedLabel : undefined))
-  for (const item of sheet.items) {
-    const active = item.id === nextQuestion?.id
-    if (item.chosen === null) {
-      rows.push([
-        { kind: 'text', text: active ? '  › ' : '    ', style: { color: 'suggestion' } },
-        { ...openQuestion(sheet, item.id, truncate(item.statement, columns - 4), active ? true : undefined), dim: !active },
-      ])
-    } else {
-      const choice = truncate(item.options[item.chosen] ?? '', columns - 4)
-      const room = columns - 4 - cells(choice)
-      rows.push([
-        { kind: 'text', text: '  ✓ ', style: { color: 'success' } },
-        { ...openQuestion(sheet, item.id, choice, true), ...(room >= 16 && {
-          detail: `  ·  ${truncate(item.statement, room - 5)}`,
-        }) },
-      ])
-    }
+  if (band.reviewPending) rows.push([{ kind: 'progress', label: thinkingLabel(band.language) }])
+  if (card) {
+    // One empty row keeps the open card apart from the transcript above it.
+    if (!card.collapsed && !rows.length && maxRows >= 12) rows.push([text(' ')])
+    rows.push(...layoutCard(card, columns, Math.max(3, maxRows - rows.length), {
+      // A standing guard cue holds the chords while it is shown.
+      chords: !band.first,
+      extra: [
+        ...(band.canReview ? [reviewButton(band)] : []),
+        ...(band.depth ? [depthButton(band)] : []),
+      ],
+      palette,
+    }))
   }
   return rows
-}
-
-function sheetHeader(status: string, actions: Segment[], columns: number, selected?: string): Segment[] {
-  const actionWidth = segmentsWidth(actions)
-  const room = Math.max(0, columns - actionWidth - (actionWidth ? GAP : 0))
-  const brand = truncate('MarginCue', room)
-  const rows: Segment[] = [{ kind: 'text', text: brand, style: { bold: true, color: 'remember' } }]
-  const detail = truncate(` · ${status}`, room - cells(brand))
-  if (detail) rows.push({ kind: 'text', text: detail })
-  if (selected && segmentsWidth(rows) + cells(selected) + 3 <= room) {
-    rows.push({ kind: 'text', text: ' · ' }, { kind: 'text', text: selected, style: { color: 'success' } })
-  }
-  if (actionWidth && room) rows.push({ kind: 'text', text: ' '.repeat(GAP) })
-  return [...rows, ...actions]
 }
 
 export function thinkingLabel(language: 'fr' | 'en' = 'en'): string {
   return language === 'fr' ? 'MarginCue · réflexion…' : 'MarginCue · thinking…'
-}
-
-function openQuestion(sheet: MargincueSheet, cue: string, label: string, bold?: true): Extract<Segment, { kind: 'button' }> {
-  return { kind: 'button', key: `sheet-question-${cue}`, label, bold,
-    action: { type: 'sheetPane', id: sheet.id, move: 'open', cue } }
-}
-
-export function sheetQuestionRows(
-  sheet: MargincueSheet, item: MargincueSheet['items'][number], columns: number, via: 'pane' | 'composer',
-): Segment[][] {
-  const questions: Segment[][] = via === 'composer'
-    ? [[openQuestion(sheet, item.id, truncate(item.statement, columns), true)]]
-    : wrapQuestion(item.statement, columns).map((text) => [{ kind: 'text', text, style: { bold: true } }])
-  return [
-    ...questions,
-    ...item.options.map((label, option): Segment[] => {
-      const chosen = item.chosen === option
-      return [{ kind: 'text', text: chosen ? '✓ ' : '  ', style: { color: 'success' } }, {
-        kind: 'button', key: `sheet-${item.id}-${option}`, hotkey: String(option + 1),
-        label: truncate(label, columns - 5), bold: chosen ? true : undefined,
-        action: { type: 'sheetAnswer', id: sheet.id, cue: item.id, option, via },
-      }]
-    }),
-  ]
-}
-
-export function layoutSheetPane(
-  sheet: MargincueSheet, item: MargincueSheet['items'][number], pane: NonNullable<MargincueSheet['pane']>, columns: number,
-): Segment[][] {
-  const fr = sheet.language === 'fr'
-  const rows = [
-    sheetHeader(`${pane.position} ${fr ? 'sur' : 'of'} ${pane.total}`, [], columns),
-    ...sheetQuestionRows(sheet, item, columns, 'pane'),
-  ]
-  const controls: Segment[] = [
-    ...(pane.canGoBack ? [{ kind: 'button' as const, key: 'sheet-back', hotkey: 'b', label: fr ? 'Retour' : 'Back',
-      dim: true, action: { type: 'sheetPane' as const, id: sheet.id, move: 'back' as const } },
-    { kind: 'text' as const, text: '  ' }] : []),
-    { kind: 'button', key: 'sheet-skip', hotkey: 's', label: fr ? 'Passer' : 'Skip',
-      dim: true, action: { type: 'sheetPane', id: sheet.id, move: 'skip' } },
-  ]
-  const key = fr ? 'Échap' : 'Esc'
-  const exitLabel = sheet.afterSubmit
-    ? (fr ? 'Revenir à la saisie' : 'Return to prompt')
-    : (fr ? 'Revenir au brouillon' : 'Return to draft')
-  const exit = `${key}  ${exitLabel}`
-  const room = columns - segmentsWidth(controls) - GAP
-  if (room >= cells(key)) controls.push({ kind: 'text', text: `  ${room >= cells(exit) ? exit : key}`, style: { dim: true } })
-  return [...rows, [{ kind: 'text', text: ' ' }], controls]
-}
-
-function wrapQuestion(text: string, columns: number): string[] {
-  if (columns < 2) return [truncate(text, columns)]
-  const rows: string[] = []
-  let rest = text
-  while (cells(rest) > columns) {
-    let line = ''
-    let width = 0
-    for (const ch of rest) {
-      width += cells(ch)
-      if (width > columns) break
-      line += ch
-    }
-    const space = line.lastIndexOf(' ')
-    if (space > 0 && !rest.slice(line.length).startsWith(' ')) line = line.slice(0, space)
-    rows.push(line.trimEnd())
-    rest = rest.slice(line.length).trimStart()
-  }
-  if (rest) rows.push(rest)
-  return rows
 }
 
 /** The cue the band is about: the focused one, else the first. */
@@ -418,9 +270,6 @@ function amendment(band: MargincueBand, columns: number): Segment[] {
   return spaced(shown)
 }
 
-function spaced(items: Segment[]): Segment[] {
-  return items.flatMap((item, i): Segment[] => i === 0 ? [item] : [{ kind: 'text', text: ' ' }, item])
-}
 
 function fitLabels(labels: string[], room: number): string[] {
   const widths = labels.map(cells)
@@ -439,41 +288,10 @@ const MINOR = 8
 const KEEP_ALWAYS = 12
 const MIN_PREFIX = 10
 
-/** Cuts `text` to at most `max` cells, ending in an ellipsis when cut; keeps a trailing space. */
-export function truncate(text: string, max: number): string {
-  if (max <= 0) return ''
-  if (cells(text) <= max) return text
-  const space = max > 1 && text.endsWith(' ') ? ' ' : ''
-  let out = ''
-  for (const ch of text) {
-    if (cells(out + ch) + 1 + space.length > max) break
-    out += ch
-  }
-  return `${out.trimEnd()}…${space}`
-}
 
 function quiet(band: MargincueBand): Segment[] {
   const status = band.phase === 'reviewing' ? ' …' : band.phase === 'error' ? ' · no reply' : ''
   return [{ kind: 'text', text: `· margincue${status}`, style: { dim: true } }]
 }
 
-/** Cells a segment list takes on the terminal. */
-export function segmentsWidth(segments: Segment[]): number {
-  let n = 0
-  for (const s of segments) {
-    if (s.kind === 'text') n += cells(s.text)
-    else if (s.kind === 'progress') n += cells(s.label)
-    else if (!s.hidden) n += (s.primary ? 4 : s.hotkey ? cells(s.hotkey) + 2 : 0) + cells(s.label) + cells(s.detail ?? '')
-  }
-  return n
-}
 
-/** Approximate terminal cells: wide CJK and emoji count two. */
-export function cells(text: string): number {
-  let n = 0
-  for (const ch of text) {
-    const code = ch.codePointAt(0) ?? 0
-    n += code >= 0x1100 && (code <= 0x115f || (code >= 0x2e80 && code <= 0xa4cf) || (code >= 0xac00 && code <= 0xd7a3) || (code >= 0xf900 && code <= 0xfaff) || (code >= 0xfe30 && code <= 0xfe4f) || (code >= 0xff00 && code <= 0xff60) || (code >= 0x1f300 && code <= 0x1faff)) ? 2 : 1
-  }
-  return n
-}

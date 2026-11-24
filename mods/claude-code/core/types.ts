@@ -3,6 +3,8 @@
 // milliseconds from the host's monotonic clock.
 
 import type { Depth, Language, Mode, ProfileBundle, Scope } from './bundle'
+import type { CardKind, RowType } from './card'
+import type { Mention, Vocabulary } from './grounding'
 import type { DecisionView, StateChange, StateCue, StateLoad } from './state'
 
 export type Origin = 'type' | 'paste' | 'history' | 'fill' | 'open' | 'restore'
@@ -39,8 +41,20 @@ export type Event =
       mode?: Mode
       depth?: Depth
       language?: LanguageSetting
-      /** Present for the sheet protocol. False keeps the automatic review tier silent. */
+      /** Present for the card protocol (named `sheet` before the card replaced the kick-off sheet). False keeps the automatic tier silent. */
       sheet?: boolean
+      /** Draw a sketch of the deliverable under the card (default true). */
+      sketch?: boolean
+      /** Attach where the draft's names live in the code (default true). */
+      refs?: boolean
+      /** One line about the person (their work, level per field, what they decide), from the first-run interview. */
+      user?: string
+      /** The local date (YYYY-MM-DD), so a sketch's sample dates look like this week's. */
+      today?: string
+      /** Profiles the person works in: a project needs less evidence to call for these. */
+      prefer?: string[]
+      /** Depth per profile, from the person's level in that field; `depth` applies to the rest. */
+      depths?: Record<string, Depth>
       audit?: boolean
       profile: string
       timing?: Partial<Timing>
@@ -65,9 +79,21 @@ export type Event =
   | { type: 'amend'; now: number; cue: string; option: number }
   | { type: 'turnStart'; now: number }
   | { type: 'endAmendment'; now: number }
-  | { type: 'sheetPane'; id: number; move: 'open' | 'close' | 'skip' | 'back'; cue?: string }
-  | { type: 'sheetAnswer'; now: number; id: number; cue: string; option: number; via: 'pane' | 'composer' }
-  | { type: 'sheetShown'; now: number; id: number }
+  /** The project's names, collected by the host; null when there is no index. */
+  | { type: 'vocabulary'; vocab: Vocabulary | null }
+  /** Options the person picked before, per row key, with how often. */
+  | { type: 'learned'; picks: Record<string, { label: string; count: number }> }
+  /** alt+up: the next row; a click: that row. */
+  | { type: 'cardFocus'; dir?: 1 | -1; row?: string }
+  /** alt+down: the focused (or named) row's next value. */
+  | { type: 'cardCycle'; now: number; row?: string; dir?: 1 | -1 }
+  /** A number key or a click: select option `option` (a pick-any row toggles it). */
+  | { type: 'cardSet'; now: number; row: string; option: number }
+  | { type: 'cardDismiss'; now: number; row: string }
+  | { type: 'cardShown'; now: number; id: number }
+  | { type: 'sketch'; now: number; action: 'toggle' | 'pin' | 'refresh' }
+  /** A choice the agent marked in its reply during the running turn. */
+  | { type: 'blank'; now: number; label: string; choice: string; alternatives: string[] }
 
 export type Chosen = null | number | string
 
@@ -107,19 +133,57 @@ export type View = {
   state?: DecisionView
   expert?: ExpertView
   amendment?: CueView
-  sheet?: SheetView
+  card?: CardView
+  receipt?: ReceiptView
 }
 
-export type SheetItem = Pick<CueView, 'id' | 'statement' | 'options'> & { chosen: number | null; pending: number | null }
-export type SheetView = {
+/**
+ * One row of the card. `selected` is what the row reads now: the person's pick,
+ * else an earlier habit, else the default. Only `chosen` rows travel with the prompt.
+ */
+export type CardRowView = {
+  id: string
+  key: string
+  label: string
+  type: RowType
+  statement: string
+  options: string[]
+  defaults: number[]
+  selected: number[]
+  chosen: boolean
+  origin: 'model' | 'repo' | 'lens' | 'agent'
+  unit?: string
+  lens?: string
+  learned?: true
+  start?: number
+  end?: number
+}
+
+/** Before Enter (`draft`), during the turn (`turn`, the agent's own choices), after it (`after`). */
+export type CardStage = 'draft' | 'turn' | 'after'
+
+export type CardView = {
   id: number
-  items: SheetItem[]
-  pending: boolean
+  stage: CardStage
+  /** A reading is on its way (the first, or a newer one for an edited draft). */
+  reading: boolean
+  error: boolean
+  read: string | null
+  kind: CardKind | null
+  rows: CardRowView[]
   focus: string | null
+  mentions: Mention[]
+  /** Expert profiles this reading draws on: the project's, the one picked, the draft's field. */
+  lenses: string[]
+  sketch?: { title: string; lines: string[]; drawing: boolean; pinned: boolean; open: boolean }
   language: Language
   collapsed: boolean
-  afterSubmit: boolean
-  pane?: { item: string; position: number; total: number; canGoBack: boolean }
+}
+
+export type ReceiptView = {
+  id: number
+  yours: string[]
+  agent: { label: string; value: string; was?: string; options: string[] }[]
 }
 
 export type ExpertItem = StateCue & {
@@ -133,7 +197,7 @@ export type Effect =
   | {
       type: 'request'
       req: number
-      kind: 'full' | 'plan' | 'expert' | 'sheet'
+      kind: 'full' | 'plan' | 'expert' | 'card' | 'sketch'
       tier?: 'cloud'
       system: string[]
       prompt: string
@@ -145,6 +209,10 @@ export type Effect =
   | { type: 'submit'; text: string; decisions: string[] }
   | ({ type: 'persist' } & StateChange)
   | { type: 'amend'; text: string; cue: string; option: number; ms: number }
+  /** Put a follow-up prompt in the empty composer; `replaces` is the earlier fill it may overwrite. */
+  | { type: 'fill'; text: string; replaces: string | null }
+  /** Remember a pick for this project (counted, so a habit shows after two). */
+  | { type: 'learn'; key: string; label: string }
   | ({ type: 'metric'; name: string } & Record<string, unknown>)
 
 /** The data the core turns into requests: prompts/system.md and profiles/*.md, as text. */
@@ -156,6 +224,9 @@ export type Assets = {
   personalProfiles?: string[]
   expertSystem?: string
   sheetSystem?: string
+  cardSystem?: string
+  sketchSystem?: string
+  blanksProtocol?: string
 }
 
 export type Example = { draft: string; output: string; status?: 'complete' | 'incomplete' }

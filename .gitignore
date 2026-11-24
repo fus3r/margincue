@@ -1,6 +1,9 @@
+.venv/
+__pycache__/
+.pytest_cache/
 target/
 node_modules/
+data/private/
+bench/quality/runs/
 .DS_Store
-.margincue/
-.claude-plugin/types/
-/mods/codex/bin/
+data/public/

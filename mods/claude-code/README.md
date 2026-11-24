@@ -1,43 +1,57 @@
 # MarginCue for Claude Code
 
-MarginCue shows standing decisions above the prompt while you type. Confirmed standing choices can apply to one project, everywhere, only with the current model, or only during the session. A draft that starts something new can also show a short sheet of questions and options. Your selected options travel with the prompt in a visible Decisions block. Enter sends immediately.
+While you type a prompt, MarginCue shows how the agent will read it, links the names you use to your code, lists the choices the prompt leaves open with a control for each, and sketches what the result will look like. While the agent works, the choices it makes for you become switches you can flip without stopping it. After the turn, a receipt lists who decided what, and one key turns a change into the follow-up prompt. Enter always sends at once.
 
 ## Install
 
-Download [margincue-claude-code.zip](https://github.com/fus3r/margincue/releases/download/v0.2.0/margincue-claude-code.zip). Start a signed-in Claude Code CLI that supports mods from the project where you want to use it.
+In Claude Code 2.1.275 or later, at the prompt:
 
-```sh
-claude --plugin-dir "$HOME/Downloads/margincue-claude-code.zip"
+```
+/plugin install margincue --marketplace fus3r/margincue
 ```
 
-Tested on macOS with Claude Code 2.1.330 and 2.1.331.
+Answer `y` to add the marketplace, then choose a scope. From a shell: `claude plugin install margincue --marketplace fus3r/margincue`. In the desktop app: + next to the prompt box, Plugins, Add marketplace `fus3r/margincue`, then Add plugin.
 
-If you cloned MarginCue, run Claude Code from the project you want to work in. Give `--plugin-dir` the full path to the plugin inside your checkout.
+To run a checkout while working on MarginCue itself: `claude --plugin-dir path/to/margincue/mods/claude-code`.
 
-```sh
-claude --plugin-dir "/path/to/MarginCue/mods/claude-code"
-```
+Run `/margincue status` in Claude Code to check that the mod loaded. The status line says whether the project index is ready.
 
-Run `/margincue status` in Claude Code to check that the mod loaded.
+## First run
 
-Type `Build a site to share our club's photos.` and pause. Choose **Answer** when the questions appear. Pick a number, then press Esc to return to the draft. Enter attaches the confirmed answer. To leave MarginCue out of the next session, start Claude Code without `--plugin-dir`.
+The first time MarginCue starts in an interactive session, with the prompt still empty, it asks three or four questions in Claude Code's own dialog: what you use coding agents for, your level in each field it has an expert catalog for (statistics and machine learning, system design) among those you picked, and which choices you want to make yourself. Your level sets how deep each field's catalog goes and how it is worded (plain words and the reasons for a learner, the full catalog for a researcher or an architect). Your fields need less evidence before a project calls for them. Every card reading gets one line about you, so it skips basics you settle alone and leaves the choices you hand to the agent alone. Closing the dialog skips it; `/margincue setup` asks again, `/margincue setup reset` forgets the answers, and `/margincue status` shows what MarginCue knows. The answers stay in the mod's own store on this machine.
 
-Eligible drafts go to Haiku through your existing Claude session. Run `/margincue sheet off` to turn off automatic questions or `/margincue mode off` to turn off MarginCue reviews.
+## What you see
 
-## Controls
+**The reading.** Above the prompt, one line starting "You want…" says how the agent will take your request: what it will deliver and its scope, including whether the cases you list are the whole job or examples. It appears on any prompt of six words or more, is refreshed at sentence ends while you type, and shows ⟳ while a newer reading is on its way.
 
-Press `ctrl+x tab` to focus the band. A number picks an option, `s` changes scope, `x` skips, `w` explains the choice, `d` changes depth, and `r` opens expert review. From the prompt, `alt+↓` picks the next option and `alt+↑` cycles scope when the band shows a standing choice. The band buttons also take clicks.
+**Names in the code.** As you type, names in your prompt are looked up in the project (git or ripgrep, collected once in the background). Found names are underlined in blue; a name the code does not have is underlined in yellow and, when the code has close names, becomes a row asking which one you mean. On Enter, the files behind what you wrote as code (a path, a file name, an identifier, something in backticks) go with the prompt (`Where things are: …`) so the agent skips its search; product names and plain words are never sent as places.
 
-The band shows “MarginCue · thinking…” while a sheet or on-demand review is running. When the questions arrive, MarginCue highlights the first unanswered one. Click **Answer** or press `alt+↑` to open the pane. A number picks and advances. You can also use `↑` and `↓` with Enter, `s` to skip, `b` to go back, or Escape to return to your draft with your answers. The pane also returns to the draft after the last question. Selected answers appear above the draft with a check mark. Enter sends them with the draft.
+**Choices, with a control for each.** One row per open choice: chips for one-of and pick-any choices, a slider for ordered values and numbers. The value a row reads with is a filled chip: grey-blue while it is only what the agent would do, green once you set it. Options are never cut while the terminal has room: a long row wraps, and the focused row shows every option. The focused row's words are highlighted in your prompt. ◆ marks a decision from an expert profile (ML research, system design). The profile comes from the project itself, read once in the background from its folder name, files and libraries (a challenge or a hackathon, a research repository, notebooks and data, train and test files, torch or sklearn; Dockerfiles, Terraform, Kafka or Redis), from `/margincue profile`, or from the field's vocabulary in your prompt. The project also sets the stakes: a challenge gets the decisions that matter when a held-out score counts, a research project the ones that must stand up to review. `/margincue status` says which profile the project calls for and why. ↺ marks your usual pick, learned after you chose the same option twice in this project. Only the choices you set travel with the prompt, in a Decisions block; in the transcript, your sent prompt lists them under it.
 
-During a turn, the band shows one unanswered question. A bare number in an empty composer answers it and queues the choice for Claude’s next model request. `alt+↑` is available during the turn too. In quiet mode, the band keeps the open count and `alt+↑` opens the pane.
+**The sketch.** For a request that builds or changes something, a few lines show what done will look like: a wireframe, a sample of the report or output, a request and its response, a results table. On a terminal of 140 columns or more it stands beside the rows; otherwise under them, its first lines and its frame's bottom kept when the band runs short of rows. Changing a choice redraws it. Attach it and it goes with the prompt as the target.
 
-English is the default for the interface, sheets, and decision wording. Use `/margincue language auto` to follow the draft’s language or `/margincue language en` to select English. `/margincue status` shows the saved setting.
+**During the turn.** The agent marks the choices it makes for you; its reply shows each in bold, followed by "N choices made for you", and the card lists them as blue chips. Switch one and the change reaches the agent at its next step, without stopping it.
 
-`/margincue state` lists saved decisions and `/margincue why <slot>` shows the card’s rationale and source. `/margincue forget <slot> [scope]` removes an answer, starting at the narrowest active scope when omitted. `/margincue mode auto|on|quiet|off` selects the display policy. Auto and on show questions, quiet shows a count, and off stops reviews and hides the band. `/margincue sheet on|off` switches kick-off sheets on or off. They are on by default. `/margincue review [profile]` reviews the current draft explicitly. Sheets and expert reviews use the session’s Claude credentials.
+**After the turn.** A receipt under the answer lists the choices you set and those the agent made, with what you switched. Switch one again, on the receipt or on the card, and the follow-up prompt is written into the composer for you to send.
 
-Project decisions live in `.margincue/decisions.json`. Personal bundles can be placed in `~/.margincue/bundles/`. `/margincue log <path>` starts a local event log for the session and `/margincue log off` stops it. Log rows contain decision identifiers, choices, and timings. Draft text and free-text answers are omitted.
+## Keys
 
-`/margincue ab on` assigns each new active session to the sheet or control arm and stores its sheet events in a per-session file under `~/.margincue/ab/`. `/margincue ab status` totals the saved counts per arm. `/margincue ab off` ends participation. The sheet setting also applies during the trial.
+| Key | Action |
+| --- | --- |
+| `alt+↑` (or `ctrl+↑` where the terminal keeps alt for itself) | Next row |
+| `alt+↓` (or `ctrl+↓`) | Next value of the focused row (during a turn, the change is sent 1.5 s after the last press) |
+| `ctrl+x tab`, then `1`–`9` | Pick an option of the focused row (a pick-any row toggles it) |
+| `ctrl+x tab`, then `x` | Drop the focused row; a newer reading will not bring it back |
+| `ctrl+x tab`, then `s` / `p` | Open or close the sketch / attach it to the prompt |
+| `ctrl+x tab`, then `r` / `d` | Expert review of the draft / change the depth |
+| A number in the empty composer during a turn | Switch the focused agent choice at once |
 
-Project changes refresh roughly once per second. Use a separate event log path for each concurrent writer. Claude Code’s mod filesystem limit is 4 MiB per file.
+Buttons also take clicks: a chip, a step of a slider, `+N` to open a row, the sketch's title and `attach to prompt`.
+
+## Settings
+
+`/margincue mode auto|on|quiet|off`: quiet keeps the card to one line with its open count; off stops everything. `/margincue card on|off` switches the card (the reading, rows and sketch). `/margincue sketch on|off`, `/margincue refs on|off` and `/margincue blanks on|off` switch the sketch, the `Where things are` line, and the agent's marked choices (from the next session). `/margincue language en|auto` (English by default, or the draft's language). `/margincue profile <name>`, `/margincue depth essentials|standard|research`, `/margincue review [profile]` for the on-demand expert review.
+
+Standing decisions are unchanged: `/margincue state`, `/margincue why <slot>` and `/margincue forget <slot> [scope]`. Project decisions live in `.margincue/decisions.json`; learned picks stay in the mod's own store, never in your repository. `/margincue log <path>` writes a local event log without draft text, and `/margincue ab on|off|status` runs the card and control arms.
+
+Readings and sketches are one Haiku call each through your Claude Code session, at low effort. Claude Code's mod filesystem limit is 4 MiB per file.

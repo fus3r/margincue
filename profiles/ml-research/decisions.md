@@ -56,7 +56,7 @@ settled: The draft or protocol fixes the evaluation partition or status of the c
 plain: The headline result is {} | a fresh-data estimate | an exploratory tuning-set score
 expert: Headline evaluation uses {} | untouched labeled holdout | tuning validation, explicitly exploratory
 why: Selection on validation favors lucky candidates, so the reused score has a different interpretation.
-source: [ESL 2nd ed., §7.2, separate training, validation and test sets](https://mcube.lab.nycu.edu.tw/~cfung/docs/books/hastie2009elements_of_statistical_learning.pdf#page=241); [Kapoor and Narayanan, L1.1](https://arxiv.org/html/2207.07048#S2.SS4)
+source: [ESL 2nd ed., §7.2, separate training, validation and test sets](https://hastie.su.domains/ElemStatLearn/); [Kapoor and Narayanan, L1.1](https://arxiv.org/html/2207.07048#S2.SS4)
 opens:
 pair:
   open: Validation picked our best checkpoint. Logs and an untouched labeled holdout are ready. Give me a headline number for the note, which can be an exploratory update or a final estimate.

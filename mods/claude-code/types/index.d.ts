@@ -35,15 +35,54 @@ export type MargincueExpert = {
   model: boolean
 }
 
-export type MargincueSheet = {
+export type MargincueMention = {
+  phrase: string
+  start: number
+  end: number
+  status: 'found' | 'missing'
+  match?: string
+  kind?: 'symbol' | 'name' | 'path'
+  files: string[]
+  near: { name: string; file: string }[]
+}
+
+export type MargincueRow = {
+  id: string
+  key: string
+  label: string
+  type: 'one' | 'many' | 'range'
+  statement: string
+  options: string[]
+  defaults: number[]
+  selected: number[]
+  chosen: boolean
+  origin: 'model' | 'repo' | 'lens' | 'agent'
+  unit?: string
+  lens?: string
+  learned?: true
+  start?: number
+  end?: number
+}
+
+export type MargincueCard = {
   id: number
-  items: (Pick<MargincueCue, 'id' | 'statement' | 'options'> & { chosen: number | null; pending: number | null })[]
-  pending: boolean
+  stage: 'draft' | 'turn' | 'after'
+  reading: boolean
+  error: boolean
+  read: string | null
+  kind: 'build' | 'change' | 'fix' | 'explore' | 'ask' | 'other' | null
+  rows: MargincueRow[]
   focus: string | null
+  mentions: MargincueMention[]
+  sketch?: { title: string; lines: string[]; drawing: boolean; pinned: boolean; open: boolean }
   language: 'en' | 'fr'
   collapsed: boolean
-  afterSubmit: boolean
-  pane?: { item: string; position: number; total: number; canGoBack: boolean }
+}
+
+export type MargincueReceipt = {
+  id: number
+  yours: string[]
+  agent: { label: string; value: string; was?: string; options: string[] }[]
 }
 
 export type MargincueBand = {
@@ -63,7 +102,7 @@ export type MargincueBand = {
   first?: MargincueStateCue | null
   open?: number
   amendment?: MargincueCue
-  sheet?: MargincueSheet
+  card?: MargincueCard
   reviewPending?: boolean
   canReview?: boolean
 }

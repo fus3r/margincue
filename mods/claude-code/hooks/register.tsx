@@ -6,23 +6,29 @@
 // band above the prompt; the `submit` effect rewrites the sent text.
 
 import { atom, read } from 'claude-code'
-import type { Elements, EngineInterface, PromptBox, PromptDecoration, Register, RenderSurface } from 'claude-code'
+import type { Elements, EngineInterface, PromptDecoration, Register, RenderSurface } from 'claude-code'
 
 import { createCore, DEPTHS, isHostCommand, MODES, SCOPES } from '../core/index'
 import type { Assets, Core, Depth, Effect, Event, LanguageSetting, Mode, Origin, Scope, StateLoad, Timing, View } from '../core/index'
-import type { MargincueBand, MargincueExpert } from '../types'
+import type { MargincueBand, MargincueExpert, MargincueReceipt } from '../types'
+import { BLANK_OPEN, parseBlanks, renderBlanks } from '../core/card'
+import type { ParsedBlank } from '../core/card'
+import { nameKey } from '../core/grounding'
 import { ASSETS } from './assets'
-import { currentOption, layoutBandRows, layoutSheetPane, scopeLabel, thinkingLabel } from './band'
-import type { Action, Segment } from './band'
+import { DARK, currentOption, layoutBandRows, paletteFor, scopeLabel, thinkingLabel } from './band'
+import type { Action, Palette, Segment } from './band'
+import { layoutReceipt, layoutSent, splitSent } from './card-view'
 import { EventLog, loggedArm, trialCounts } from './event-log'
 import type { Arm, LogIO } from './event-log'
-import { optionalText, personalAssets, readAccount, readInstructionSlots, readProject, saveDecision } from './storage'
+import { depthFor, describeUser, interview, preferredProfiles, readUser } from './onboarding'
+import type { UserProfile } from './onboarding'
+import { collectVocabulary } from './repo-index'
+import { optionalText, personalAssets, readAccount, readInstructionSlots, readLearned, readProject, saveDecision, saveLearned } from './storage'
 
 type $ = EngineInterface
 type RequestEffect = Extract<Effect, { type: 'request' }>
 type MetricEffect = Extract<Effect, { type: 'metric' }>
 type SubmitEffect = Extract<Effect, { type: 'submit' }>
-type SheetAnswerAction = Extract<Action, { type: 'sheetAnswer' }>
 
 const MODEL = 'haiku'
 /** Measured (bench/latency/claude-mod.md): `low` keeps the model from thinking first. */
@@ -35,13 +41,20 @@ const TIMING: Partial<Timing> = { idleMs: 280, minGapMs: 300, settleMs: 700, hol
 /** The parallel capped `plan` request: off, measured not to help with this transport. */
 const EAGER_PLAN = false
 
-type Settings = { mode: Mode; profile: string; language: LanguageSetting; inline: boolean; sheet: boolean; ab: boolean; depths: Record<string, Depth> }
-const DEFAULTS: Settings = { mode: 'auto', profile: 'general', language: 'en', inline: false, sheet: true, ab: false, depths: {} }
+type Settings = {
+  mode: Mode; profile: string; language: LanguageSetting; inline: boolean; sheet: boolean; ab: boolean; depths: Record<string, Depth>
+  sketch: boolean; refs: boolean; blanks: boolean
+  /** The first-run interview's answers, and whether it ran (or was closed, which is not asked again). */
+  user: UserProfile | null; onboarded: 'done' | 'skipped' | null
+}
+const DEFAULTS: Settings = {
+  mode: 'auto', profile: 'general', language: 'en', inline: false, sheet: true, ab: false, depths: {},
+  sketch: true, refs: true, blanks: true, user: null, onboarded: null,
+}
+/** Re-read the project's names after a turn at most this often. */
+const REINDEX_MS = 45000
 const POLL_MS = 1200
 const REVIEW_PANE = 'margincue-review'
-const ANSWER_PANE = 'margincue-sheet'
-
-type AnswerPane = { id: number; draft?: PromptBox; opening: boolean; closing?: true }
 
 const band = atom({ plugin: 'margincue', key: 'band' } as const, null)
 const expert = atom({ plugin: 'margincue', key: 'expert' } as const, null)
@@ -63,9 +76,20 @@ const host = {
   scopes: new Map<string, Scope>(),
   lastDraft: '',
   restoring: false,
-  answerPane: null as AnswerPane | null,
-  /** Numbered choices currently visible in the terminal band. */
-  bandChoices: [] as SheetAnswerAction[],
+  /** During a turn: the focused agent choice's options, which a bare digit in the empty composer picks. */
+  bandChoices: [] as { row: string; option: number }[],
+  receipts: new Map<number, MargincueReceipt>(),
+  placed: new Set<number>(),
+  blankSeen: new Set<string>(),
+  /** Choices marked in replies from before the running turn: drawn again later, they are not this turn's. */
+  blankOld: new Set<string>(),
+  indexedAt: -Infinity,
+  indexing: false,
+  /** The follow-up text MarginCue last put in the composer; only that (or an empty box) is ever replaced. */
+  lastFill: '',
+  /** The first-run interview waits for the prompt to be drawn, then runs once. */
+  onboardPending: false,
+  onboarding: false,
   /** Only an amendment tied to this exact main turn is offered. */
   turn: null as { text: string; id: string | null } | null,
   activeTurn: null as string | null,
@@ -88,10 +112,14 @@ const host = {
   trialLog: new EventLog(),
   arm: null as Arm | null,
   stats: { first: [] as number[], full: [] as number[], requests: 0, failures: 0, submits: 0, attached: 0 },
+  /** The card's colours, from the person's theme (dark unless it is a light one). */
+  palette: DARK as Palette,
 }
 
+/** A fired timer moves time to at least its due point: real timers fire late, never early, and a test's clock jumps. */
+let timeFloor = 0
 function now(): number {
-  return typeof performance !== 'undefined' ? performance.now() : Date.now()
+  return Math.max(timeFloor, typeof performance !== 'undefined' ? performance.now() : Date.now())
 }
 
 function currentDepth(): Depth {
@@ -100,6 +128,11 @@ function currentDepth(): Depth {
 
 function enabled(): boolean { return host.settings.mode !== 'off' }
 
+function localDate(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 function configEvent(): Event {
   return {
     type: 'config',
@@ -107,6 +140,11 @@ function configEvent(): Event {
     mode: host.settings.mode,
     language: host.settings.language,
     sheet: host.settings.sheet && host.arm !== 'control',
+    sketch: host.settings.sketch,
+    refs: host.settings.refs,
+    today: localDate(),
+    ...(host.settings.user && { user: describeUser(host.settings.user), prefer: preferredProfiles(host.settings.user) }),
+    depths: host.settings.depths,
     depth: currentDepth(),
     audit: host.eventLog.active,
     profile: host.settings.profile,
@@ -132,8 +170,6 @@ function run($: $, event: Event, paint = true): Effect[] {
     host.view = view.view
     publish($, view.view)
     if (paint) repaint($)
-    const pane = host.answerPane
-    if (pane && !pane.opening && !pane.closing && !view.view.sheet?.pane) void closeAnswerPane($, pane).catch(() => {})
   }
   for (const fx of effects) {
     if (fx.type === 'request') request($, fx)
@@ -144,6 +180,8 @@ function run($: $, event: Event, paint = true): Effect[] {
     else if (fx.type === 'metric') metric($, fx)
     else if (fx.type === 'persist') save($, fx)
     else if (fx.type === 'amend') void deliverAmendment($, fx)
+    else if (fx.type === 'fill') void fillComposer($, fx.text, fx.replaces)
+    else if (fx.type === 'learn') learn($, fx.key, fx.label)
   }
   return effects
 }
@@ -153,7 +191,7 @@ function schedule($: $, at: number | null): void {
   host.timer = null
   if (at === null) return
   const wait = Math.max(0, Math.round(at - now()))
-  host.timer = $.clock.after(wait, () => fireTimer($))
+  host.timer = $.clock.after(wait, () => fireTimer($, at))
 }
 
 /** Enter empties the box (prompt.change `clear`) before prompt.submit is raised. The core
@@ -178,8 +216,9 @@ function dropClear(): void {
   host.clear = null
 }
 
-function fireTimer($: $): void {
+function fireTimer($: $, at: number): void {
   host.timer = null
+  timeFloor = Math.max(timeFloor, at)
   run($, { type: 'timer', now: now() })
 }
 
@@ -194,7 +233,7 @@ function request($: $, fx: RequestEffect): void {
   host.inflight.set(fx.req, abort)
   host.stats.requests++
   const requestedAt = now()
-  log($, 'request', { req: fx.req, tier: fx.kind === 'expert' || fx.kind === 'sheet' ? fx.kind : 'cloud' })
+  log($, 'request', { req: fx.req, tier: fx.kind === 'full' || fx.kind === 'plan' ? 'cloud' : fx.kind })
   // The fixed system text is the same on every call: mark its end for the prompt cache.
   const system = fx.system.map((text, i) => (i === fx.system.length - 1 ? { text, cache: true as const } : { text }))
   void $.model
@@ -253,7 +292,7 @@ function logIO($: $): LogIO {
 
 function log($: $, event: string, entry: Record<string, unknown> = {}): void {
   if (host.settings.mode === 'off') return
-  const trial = host.arm && host.trialLog.active && (event === 'session-arm' || event.startsWith('sheet-'))
+  const trial = host.arm && host.trialLog.active && (event === 'session-arm' || /^(?:card|sketch|blank|receipt)/.test(event))
   if (!host.eventLog.active && !trial) return
   const row = {
     event, mode: host.settings.mode, profile: host.settings.profile,
@@ -328,7 +367,7 @@ function publish($: $, v: View): void {
     first: first ? { ...first, scope: selectedScope(first.slot, first.scope) } : null,
     open: v.state?.open,
     ...(canAmend && v.amendment && { amendment: v.amendment }),
-    ...(v.sheet && (!v.sheet.afterSubmit || v.sheet.pending || canAmend) && { sheet: v.sheet }),
+    ...(v.card && (v.card.stage !== 'turn' || host.activeTurn !== null) && { card: v.card }),
     ...(v.expert?.phase === 'reviewing' && { reviewPending: true }),
     canReview: (host.assets.bundles ?? []).some((bundle) => bundle.profile === v.profile),
   }
@@ -352,6 +391,18 @@ function publish($: $, v: View): void {
 function decorate(v: View | null, text: string): PromptDecoration[] {
   if (!v || !v.enabled || v.text !== text) return []
   const out: PromptDecoration[] = []
+  for (const mention of v.card?.mentions ?? []) {
+    out.push({ start: mention.start, end: mention.end, underline: true, color: mention.status === 'found' ? 'suggestion' : 'warning' })
+  }
+  for (const row of v.card?.rows ?? []) {
+    if (row.start === undefined || row.end === undefined || row.origin === 'repo') continue
+    const focused = row.id === v.card?.focus
+    out.push({
+      start: row.start, end: row.end, underline: true,
+      ...(row.chosen ? { color: 'success' } : focused ? {} : { dimColor: true }),
+      ...(focused && { backgroundColor: host.palette.focus }),
+    })
+  }
   if (v.state?.first?.span) out.push({ ...v.state.first.span, underline: true, color: 'warning' })
   for (const mark of v.state?.marks ?? []) {
     if (mark.span) out.push({ ...mark.span, underline: true, color: 'success' })
@@ -373,8 +424,8 @@ function decorate(v: View | null, text: string): PromptDecoration[] {
 }
 
 async function saveSettings($: $): Promise<void> {
-  const { mode, profile, language, inline, sheet, ab, depths } = host.settings
-  await $.store.set('settings', { mode, enabled: mode !== 'off', profile, language, inline, sheet, ab, depths })
+  const { mode, profile, language, inline, sheet, ab, depths, sketch, refs, blanks, user, onboarded } = host.settings
+  await $.store.set('settings', { mode, enabled: mode !== 'off', profile, language, inline, sheet, ab, depths, sketch, refs, blanks, user, onboarded })
 }
 
 function enqueue(work: () => Promise<void>): Promise<void> {
@@ -468,15 +519,12 @@ function cycleScope(slot: string, fallback: Scope): void {
 
 function act($: $, action: Action): void | Promise<void> {
   const t = now()
-  if (action.type === 'sheetPane') {
-    if (action.move === 'open') return openAnswerPane($, action.id, action.cue)
-    run($, action)
-    focusAnswer($)
-  } else if (action.type === 'sheetAnswer') {
-    if (action.via === 'composer' && (!host.turn?.id || host.turn.id !== host.activeTurn)) return
-    run($, { ...action, now: t })
-    if (action.via === 'pane') focusAnswer($)
-  } else if (action.type === 'sheetCycle') run($, { type: 'pick', now: t, cue: action.cue, option: action.option, cycle: true })
+  if (action.type === 'cardFocus') run($, { type: 'cardFocus', dir: action.dir, row: action.row })
+  else if (action.type === 'cardCycle') run($, { type: 'cardCycle', now: t, row: action.row })
+  else if (action.type === 'cardSet') run($, { type: 'cardSet', now: t, row: action.row, option: action.option })
+  else if (action.type === 'cardDismiss') run($, { type: 'cardDismiss', now: t, row: action.row })
+  else if (action.type === 'sketch') run($, { type: 'sketch', now: t, action: action.action })
+  else if (action.type === 'receiptPick') return followUp($, action.receipt, action.item, action.option)
   else if (action.type === 'pick' || action.type === 'cycle') {
     run($, { type: 'pick', now: t, cue: action.cue, option: action.option })
     if (action.type === 'cycle') run($, { type: 'focus', cue: action.cue })
@@ -511,61 +559,91 @@ function act($: $, action: Action): void | Promise<void> {
   }
 }
 
-async function openAnswerPane($: $, id: number, cue?: string): Promise<void> {
-  if (host.answerPane || host.view?.sheet?.id !== id || host.shell) return
-  const pane: AnswerPane = { id, opening: true }
-  host.answerPane = pane
+/** Puts a follow-up in the composer: only into an empty box or over MarginCue's own earlier fill. */
+async function fillComposer($: $, text: string, replaces: string | null): Promise<void> {
+  const box = await $.prompt.read()
+  if (box.text !== '' && box.text !== replaces && box.text !== host.lastFill) return
+  if (text === '' && box.text === '') return
+  host.lastFill = text
+  await $.prompt.fill({ text, mode: 'replace' }).catch(() => {})
+}
+
+/** A choice switched on a receipt in the transcript: the follow-up prompt that asks for it. */
+async function followUp($: $, receiptId: number, item: number, option: number): Promise<void> {
+  const choice = host.receipts.get(receiptId)?.agent[item]
+  const value = choice?.options[option]
+  if (!choice || value === undefined || value === choice.value) return
+  log($, 'receipt-pick', { receipt: receiptId, item, option })
+  await fillComposer($, `Change ${choice.label}: ${value} instead of ${choice.value}. Keep everything else as it is.`, host.lastFill)
+}
+
+function learn($: $, key: string, label: string): void {
+  const root = host.root
+  void enqueue(async () => {
+    const picks = await saveLearned($, root, key, label)
+    if (root === host.root) run($, { type: 'learned', picks })
+  }).catch(() => {})
+}
+
+/** The project's names, collected in the background: at start, then after turns (throttled). */
+async function reindex($: $, force: boolean): Promise<void> {
+  if (host.indexing || host.settings.mode === 'off' || !host.settings.sheet || !host.interactive) return
+  if (!force && now() - host.indexedAt < REINDEX_MS) return
+  host.indexing = true
+  const epoch = host.epoch
   try {
-    // Claude Code only grants pane focus over an empty composer. Temporarily
-    // hold the draft and caret, without reporting this fill as a draft edit.
-    const draft = await $.prompt.read()
-    if (draft.text) {
-      pane.draft = draft
-      if (!(await $.prompt.fill({ text: '' })).isFilled) return
-    }
-    run($, { type: 'sheetPane', id, move: 'open', cue }, false)
-    if (!host.view?.sheet?.pane) return
-    const opened = await $.ui.open({ id: ANSWER_PANE, title: 'MarginCue', focus: true, closeOnEscape: true, rows: 9 })
-    if (opened.isPlaced && host.view?.sheet?.pane) {
-      pane.opening = false
-    }
+    const vocab = await collectVocabulary($, host.root)
+    if (epoch !== host.epoch) return
+    host.indexedAt = now()
+    run($, { type: 'vocabulary', vocab })
+    log($, 'indexed', { files: vocab?.files.length ?? 0, names: vocab?.entries.length ?? 0 })
+  } catch {
+    // No index: the card still reads the draft, without names from the code.
   } finally {
-    if (pane.opening && !pane.closing) {
-      run($, { type: 'sheetPane', id, move: 'close' }, false)
-      await closeAnswerPane($, pane)
-    }
+    host.indexing = false
   }
 }
 
-async function restoreAnswerDraft($: $, pane: AnswerPane): Promise<void> {
-  try {
-    const draft = pane.draft
-    if (!draft) return
-    const current = await $.prompt.read()
-    if (current.text === draft.text) return
-    // A key can reach the prompt just as the engine returns the focus.
-    const text = draft.text.slice(0, draft.cursor) + current.text + draft.text.slice(draft.cursor)
-    const cursor = draft.cursor + current.cursor
-    const restored = await $.prompt.fill({ text, cursor, decorations: decorate(host.view, text) })
-    if (restored.isFilled && text !== host.view?.text) rememberDraft($, text, 'restore', cursor)
-  } finally {
-    if (host.answerPane === pane) host.answerPane = null
+const blankKey = (blank: Pick<ParsedBlank, 'label' | 'choice' | 'alternatives'>) =>
+  `${blank.label}|${blank.choice}|${blank.alternatives.join('|')}`
+
+/**
+ * When a turn starts, the choices already marked in the conversation (this
+ * session's earlier turns, or a resumed one's) are noted as old, so a reply
+ * drawn again while the turn runs (scrolling back) adds nothing to its card.
+ */
+async function markTurnStart($: $, turn: string): Promise<void> {
+  const found = await $.session.messages({ last: 400 }).catch(() => null)
+  if (!found || 'deny' in found || host.activeTurn !== turn) return
+  for (const entry of found) {
+    if (entry.role === 'assistant') for (const blank of parseBlanks(entry.text)) host.blankOld.add(blankKey(blank))
   }
 }
 
-async function closeAnswerPane($: $, pane: AnswerPane): Promise<void> {
-  pane.closing = true
-  try {
-    await $.ui.close({ id: ANSWER_PANE })
-  } finally {
-    await restoreAnswerDraft($, pane)
-  }
+/** A choice the agent marked in a reply of the running turn, once per wording. */
+function noteBlank($: $, blank: Pick<ParsedBlank, 'label' | 'choice' | 'alternatives'>): void {
+  const seen = blankKey(blank)
+  if (host.blankSeen.has(seen) || host.blankOld.has(seen)) return
+  host.blankSeen.add(seen)
+  run($, { type: 'blank', now: now(), label: blank.label, choice: blank.choice, alternatives: blank.alternatives })
 }
 
-function focusAnswer($: $): void {
-  const sheet = host.view?.sheet
-  const item = sheet?.items.find((entry) => entry.id === sheet.pane?.item)
-  if (item) void $.ui.focus({ requestId: ANSWER_PANE, key: `sheet-${item.id}-${item.chosen ?? 0}` }).catch(() => {})
+/** What a blank reads now: the person's switch, during or after the turn. */
+function blankValue(blank: ParsedBlank): string | undefined {
+  const card = host.view?.card
+  const key = `blank_${nameKey(blank.label)}`.slice(0, 40)
+  const row = card?.rows.find((entry) => entry.key === key)
+  if (!card || !row) return undefined
+  return row.options[(card.stage === 'turn' ? row.selected : row.defaults)[0] ?? 0]
+}
+
+async function placeReceipt($: $): Promise<void> {
+  const receipt = host.view?.receipt
+  if (!receipt || host.placed.has(receipt.id)) return
+  host.placed.add(receipt.id)
+  host.receipts.set(receipt.id, receipt)
+  if (host.receipts.size > 20) host.receipts.delete(host.receipts.keys().next().value!)
+  await $.ui.place({ id: `receipt-${receipt.id}` }).catch(() => {})
 }
 
 function drawRows($: $, ui: Elements[RenderSurface], rows: Segment[][], focus?: string) {
@@ -573,12 +651,19 @@ function drawRows($: $, ui: Elements[RenderSurface], rows: Segment[][], focus?: 
   const draw = (s: Segment) => {
     if (s.kind === 'progress') return <Progress label={s.label} valueText="" />
     if (s.kind === 'text') {
-      return <Text dimColor={s.style?.dim} bold={s.style?.bold} color={s.style?.color} wrap="truncate-end">{s.text}</Text>
+      const style = s.style
+      return <Text dimColor={style?.dim} bold={style?.bold} italic={style?.italic} underline={style?.underline}
+        color={style?.color} backgroundColor={style?.bg} wrap="truncate-end">{s.text}</Text>
     }
+    const style = s.style
+    // A chip draws its face (padding included) in its own colours; the label still names the control.
+    const face = s.face !== undefined
+      ? <Text dimColor={s.dim || style?.dim} bold={style?.bold} italic={style?.italic} color={style?.color} backgroundColor={style?.bg}>{s.face}</Text>
+      : (s.bold || s.color) ? <Text bold={s.bold} color={s.color}>{s.label}</Text> : null
     const button = <Button key={s.key} plain={s.primary ? undefined : true} variant={s.primary ? 'primary' : undefined}
       hotkey={s.hotkey} action={s.chord} label={s.label + (s.detail ?? '')} dimColor={s.dim}
       autoFocus={focus === s.key ? true : undefined} onPress={() => act($, s.action)}>
-      {s.bold && <Text bold>{s.label}</Text>}
+      {face}
       {s.detail && <Text dimColor>{s.detail}</Text>}
     </Button>
     return s.hidden ? <Box key={s.key} display="none">{button}</Box> : button
@@ -618,6 +703,7 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
     $.session.turns().catch(() => 0),
   ])
   host.assets = loaded.assets
+  void $.config.list().then((rows) => { host.palette = paletteFor(rows.find((row) => row.key === 'theme')?.value) }).catch(() => {})
   host.settings = {
     ...DEFAULTS,
     mode: stored?.mode && MODES.includes(stored.mode) ? stored.mode : stored?.enabled === false ? 'off' : DEFAULTS.mode,
@@ -626,6 +712,11 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
     inline: stored?.inline === true,
     sheet: stored?.sheet !== false,
     ab: stored?.ab === true,
+    sketch: stored?.sketch !== false,
+    refs: stored?.refs !== false,
+    blanks: stored?.blanks !== false,
+    user: readUser(stored?.user),
+    onboarded: stored?.onboarded === 'done' || stored?.onboarded === 'skipped' ? stored.onboarded : null,
     depths: Object.fromEntries(Object.keys(host.assets.profiles).flatMap((profile) => {
       const depth = stored?.depths?.[profile] ?? (profile === stored?.profile ? stored?.depth : undefined)
       return depth && DEPTHS.includes(depth) ? [[profile, depth]] : []
@@ -638,10 +729,32 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
   else run($, { type: 'loadState', now: now(), state: { model: null, values: [], submitted: turns > 0 } })
   if (loaded.skipped && host.settings.mode !== 'off') void $.ui.toast(`MarginCue skipped ${loaded.skipped} invalid or conflicting personal bundle(s).`)
   if (interactive) watch($)
+  host.indexedAt = -Infinity
+  host.blankSeen.clear()
+  host.blankOld.clear()
+  // First run: a few questions about the person's work, once the screen is up and only into an empty prompt;
+  // someone who started typing straight away is asked in their next session instead.
+  // MARGINCUE_NO_SETUP=1 keeps them away from a session that is not the person's own (a recording, a test harness).
+  const noSetup = await $.env.get('MARGINCUE_NO_SETUP').catch(() => undefined)
+  host.onboardPending = interactive && host.settings.mode !== 'off' && host.settings.onboarded === null && turns === 0 &&
+    !(noSetup && noSetup !== '0')
+  if (host.onboardPending) {
+    const epoch = host.epoch
+    $.clock.after(1500, async () => {
+      if (epoch !== host.epoch || !host.onboardPending) return
+      host.onboardPending = false
+      const box = await $.prompt.read().catch(() => ({ text: 'unknown' }))
+      if (box.text.trim() === '' && host.activeTurn === null) void onboard($, false)
+    })
+  }
+  if (host.settings.mode !== 'off') {
+    void readLearned($, host.root).then((picks) => run($, { type: 'learned', picks })).catch(() => {})
+    void reindex($, true)
+  }
   await $.command.register({
     name: 'margincue',
-    description: 'MarginCue decisions, kick-off sheets, expert review and session status',
-    argumentHint: '[state|mode|language en|auto|sheet on|off|ab on|off|status|review [profile]|profile|status]',
+    description: 'MarginCue card, sketch, blanks, decisions, expert review and session status',
+    argumentHint: '[setup [reset]|state|mode|language en|auto|card on|off|sketch on|off|refs on|off|blanks on|off|ab on|off|status|review [profile]|profile|status]',
     immediate: true,
   })
   await reopen($)
@@ -776,13 +889,34 @@ ${slot.source}` : 'Use /margincue why <slot>.')
         await saveSettings($)
         return done(language === 'en' ? 'MarginCue uses English.' : 'MarginCue follows the draft’s language.')
       }
+      case 'setup':
+        if (arg.toLowerCase() === 'reset') {
+          Object.assign(settings, { user: null, onboarded: null })
+          run($, configEvent())
+          await saveSettings($)
+          return done('MarginCue forgot your answers. The questions come back in the next new session, or now with /margincue setup.')
+        }
+        return done(await onboard($, true))
+      case 'card':
       case 'sheet': {
         const setting = arg.toLowerCase()
-        if (setting !== 'on' && setting !== 'off') return done('Use /margincue sheet on|off.')
+        if (setting !== 'on' && setting !== 'off') return done('Use /margincue card on|off.')
         settings.sheet = setting === 'on'
         run($, configEvent())
+        if (settings.sheet) void reindex($, true)
         await saveSettings($)
-        return done(`MarginCue sheet is ${setting}.`)
+        return done(`MarginCue card is ${setting}.`)
+      }
+      case 'sketch':
+      case 'refs':
+      case 'blanks': {
+        const setting = arg.toLowerCase()
+        if (setting !== 'on' && setting !== 'off') return done(`Use /margincue ${verb} on|off.`)
+        settings[verb as 'sketch' | 'refs' | 'blanks'] = setting === 'on'
+        run($, configEvent())
+        await saveSettings($)
+        const note = verb === 'blanks' ? ' It applies from the next session.' : ''
+        return done(`MarginCue ${verb} ${setting}.${note}`)
       }
       case 'ab': {
         const setting = arg.toLowerCase()
@@ -814,20 +948,68 @@ ${slot.source}` : 'Use /margincue why <slot>.')
         const { stats } = host
         const med = (list: number[]) => list.length ? `${median(list)} ms` : '–'
         return done([
-          `MarginCue is ${settings.mode} · profile ${settings.profile} · language ${settings.language} · depth ${currentDepth()} · sheet ${settings.sheet ? 'on' : 'off'}`,
+          `MarginCue is ${settings.mode} · profile ${settings.profile} · language ${settings.language} · depth ${currentDepth()} · card ${settings.sheet ? 'on' : 'off'} · sketch ${settings.sketch ? 'on' : 'off'} · refs ${settings.refs ? 'on' : 'off'} · blanks ${settings.blanks ? 'on' : 'off'}`,
           `This session: ${stats.requests} model calls, ${stats.failures} failed · median first ${med(stats.first)} · median reply ${med(stats.full)}`,
           `${stats.submits} prompts sent, ${stats.attached} with decisions attached.`,
-          'On a sheet, alt+↑ opens the answering pane. Press a number to answer and advance, or use ↑/↓ and Enter.',
-          'Press s to skip, b to go back, or Escape to return to your draft. During a turn, answer with a number in the empty composer.',
-          'On a standing cue, alt+↑ cycles scope when the sheet is absent.',
-          'Use ctrl+x tab to focus the band, then a number to pick, s for scope, x to skip, w for why, d for depth, or r for expert review.',
-          'Use /margincue sheet on|off and /margincue ab on|off|status to control the sheet and the trial.',
+          `Project index: ${host.indexing ? 'reading…' : host.indexedAt > 0 ? 'ready' : 'none (not a git repository, or off)'}.`,
+          ...profileLines(),
+          host.settings.user ? `You: ${describeUser(host.settings.user)} (/margincue setup changes this.)`
+            : 'You: not set up yet (/margincue setup asks three or four questions).',
+          'On the card, alt+↑ moves to the next row and alt+↓ changes its value, without leaving the prompt.',
+          'ctrl+x tab focuses the card: a number picks, x drops the row, s opens or closes the sketch, p attaches it to the prompt.',
+          'During a turn the card lists the choices the agent marked; switch one and it reaches the agent at its next step.',
+          'After the turn, switching one writes the follow-up prompt into the composer.',
+          'Use /margincue card|sketch|refs|blanks on|off, and /margincue ab on|off|status for the trial.',
         ].join('\n'))
       }
     }
   } catch {
     return done('MarginCue could not complete the command. Check the file path or Claude Code mod permissions.')
   }
+}
+
+/**
+ * The first-run interview, in Claude Code's own question dialog. Closing it is an answer too: the
+ * questions are not asked again unasked (/margincue setup asks them). Only counts are logged.
+ */
+async function onboard($: $, asked: boolean): Promise<string> {
+  if (host.onboarding) return 'The MarginCue questions are already open.'
+  host.onboarding = true
+  try {
+    const user = await interview((question, options) => $.ui.ask(question, options))
+    host.settings.user = user
+    host.settings.onboarded = 'done'
+    for (const [profile, level] of Object.entries(user.levels)) host.settings.depths[profile] = depthFor(level)
+    run($, configEvent())
+    await saveSettings($)
+    log($, 'onboarded', { work: user.work.length, levels: Object.keys(user.levels).length, decide: user.decide.length })
+    if (!asked) void $.ui.toast('Thanks. MarginCue fits its cards to this; /margincue setup changes it.')
+    return `MarginCue knows: ${describeUser(user)}`
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    // A session that cannot show the dialog (no AskUserQuestion tool, nobody at the terminal) is not an answer:
+    // the questions wait for a session that can. Only the person closing them counts as skipping.
+    if (/no tool named|not available|unavailable|no surface|headless|no one to ask|-p run/i.test(reason)) {
+      return 'The question dialog is not available in this session (Claude Code has no AskUserQuestion tool here); ' +
+        'the questions will come in a session that has it.'
+    }
+    if (host.settings.onboarded === null) {
+      host.settings.onboarded = 'skipped'
+      await saveSettings($).catch(() => {})
+    }
+    if (!asked) void $.ui.toast('Skipped. /margincue setup asks these questions whenever you like.')
+    return 'The questions were closed; nothing changed.'
+  } finally {
+    host.onboarding = false
+  }
+}
+
+/** Which expert profiles the project calls for, read from its files, and why. */
+function profileLines(): string[] {
+  if (!(host.indexedAt > 0)) return []
+  const lenses = host.core?.projectProfiles() ?? []
+  if (!lenses.length) return ['Profiles from this project: none detected (/margincue profile <name> adds one).']
+  return [`Profiles from this project: ${lenses.map((lens) => `${lens.profile}, ${lens.rigor} (${lens.reasons.join(', ')})`).join('; ')}.`]
 }
 
 function median(list: number[]): number {
@@ -875,7 +1057,7 @@ export const register: Register = (on) => {
     if (!host.shell && e.text === '' && key && !key.ctrl && !key.meta && !key.shift && key.key === e.inputText &&
         host.turn?.id && host.turn.id === host.activeTurn) {
       const answer = host.bandChoices.find((choice) => String(choice.option + 1) === key.key)
-      if (answer && run($, { ...answer, now: started }, false).some((effect) => effect.type === 'amend')) {
+      if (answer && run($, { type: 'amend', now: started, cue: answer.row, option: answer.option }, false).some((effect) => effect.type === 'amend')) {
         return next({ ...e, inputText: '' })
       }
     }
@@ -893,7 +1075,6 @@ export const register: Register = (on) => {
 
   on('prompt.change', ($, e, next) => {
     const kind = e.origin.kind
-    if (host.answerPane?.draft && kind === 'plugin' && e.origin.name === 'margincue') return next(e)
     if (kind === 'clear' && e.text === '') {
       holdClear($, e.cursor)
       return next(e)
@@ -938,20 +1119,25 @@ export const register: Register = (on) => {
     if (e.agentId === undefined) {
       host.activeTurn = e.turnId
       if (host.turn?.text === e.text) host.turn.id = e.turnId
+      void markTurnStart($, e.turnId)
       run($, { type: 'turnStart', now: now() })
       if (host.view) publish($, host.view)
     }
     return next(e)
   })
 
-  on('turn.complete', ($, e, next) => {
+  on('turn.complete', async ($, e, next) => {
+    const result = await next(e)
     if (e.agentId === undefined && host.activeTurn === e.turnId) {
+      for (const blank of parseBlanks(result?.text ?? '')) noteBlank($, blank)
       host.activeTurn = null
       host.turn = null
       run($, { type: 'endAmendment', now: now() })
       if (host.view) publish($, host.view)
+      void placeReceipt($)
+      void reindex($, false)
     }
-    return next(e)
+    return result
   })
 
   on('session.stop', ($, e, next) => {
@@ -963,51 +1149,72 @@ export const register: Register = (on) => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.surface === 'terminal' && (e.props.hasSurvey || e.props.isCollapsed)) host.bandChoices = []
-    if (e.props.hasSurvey) return next(e)
-    const state = await read($, band)
-    const rows = state?.enabled && (state.hasDraft || state.amendment || state.sheet || state.reviewPending)
-      ? layoutBandRows(state, e.props.bodyColumns, 'ctrl+x tab') : []
-    if (e.surface === 'terminal' && !e.props.isCollapsed) {
-      const fits = rows.length <= e.props.maxRows
-      const offset = fits ? 0 : e.props.scroll.offset
-      const end = fits ? rows.length : offset + e.props.scroll.bodyRows
-      const firstOption = rows.findIndex((row) => row.some((segment) => segment.kind === 'button' && segment.action.type === 'sheetAnswer'))
-      host.bandChoices = firstOption > offset ? rows.slice(firstOption, end).flatMap((row) =>
-        row.flatMap((segment) => segment.kind === 'button' && segment.action.type === 'sheetAnswer' ? [segment.action] : [])) : []
-      if (firstOption >= 0 && firstOption <= offset) {
-        // Keep the numbers readable when scrolled past the question,
-        // but leave the composer's keys alone.
-        for (const segment of rows.slice(firstOption).flat()) {
-          if (segment.kind === 'button' && segment.hotkey) {
-            segment.label = `${segment.hotkey}: ${segment.label}`
-            delete segment.hotkey
-          }
-        }
-      }
+    if (e.props.hasSurvey) {
+      host.bandChoices = []
+      return next(e)
     }
+    const state = await read($, band)
+    const card = state?.card
+    const rows = state?.enabled && (state.hasDraft || state.amendment || card || state.reviewPending)
+      ? layoutBandRows(state, e.props.bodyColumns, 'ctrl+x tab', e.props.maxRows, host.palette) : []
+    const focused = card?.stage === 'turn' && !e.props.isCollapsed ? card.rows.find((row) => row.id === card.focus) : undefined
+    host.bandChoices = e.surface === 'terminal' && focused ? focused.options.map((_, option) => ({ row: focused.id, option })) : []
     if (!rows.length) return next(e)
-    if (state?.sheet && !e.props.isCollapsed) run($, { type: 'sheetShown', now: now(), id: state.sheet.id }, false)
+    if (card && !e.props.isCollapsed) run($, { type: 'cardShown', now: now(), id: card.id }, false)
     return drawRows($, $.ui.resolve(e), rows)
   })
 
-  on('ui.render', { component: 'Pane', requestId: ANSWER_PANE }, async ($, e, next) => {
-    const sheet = (await read($, band))?.sheet
-    const pane = sheet?.pane
-    const item = sheet?.items.find((entry) => entry.id === pane?.item)
-    if (!sheet || !pane || !item) return next(e)
-    const rows = layoutSheetPane(sheet, item, pane, e.props.bodyColumns)
-    return drawRows($, $.ui.resolve(e), rows, `sheet-${item.id}-${item.chosen ?? 0}`)
+  // The agent's marked choices: drawn as their value in bold, registered as levers while the turn runs.
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    const text = e.props.text
+    if (!text.includes(BLANK_OPEN) || host.settings.mode === 'off') return next(e)
+    const blanks = parseBlanks(text)
+    if (!blanks.length) return next(e)
+    const live = host.activeTurn !== null
+    if (live) $.clock.after(0, () => { if (host.activeTurn !== null) for (const blank of blanks) noteBlank($, blank) })
+    const drawn = await next({ ...e, props: { ...e.props, text: renderBlanks(text, blankValue) } })
+    if (!live) return drawn
+    const { Box, Text } = $.ui.resolve(e)
+    const n = blanks.length
+    const accent = host.palette.accent
+    return (
+      <Box flexDirection="column">
+        {drawn}
+        <Box flexDirection="row" flexWrap="wrap">
+          <Text color={accent} bold>{'  ◆ '}</Text>
+          <Text bold>{`${n} choice${n === 1 ? '' : 's'} made for you`}</Text>
+          <Text dimColor>{' · '}</Text>
+          <Text color={accent}>{'alt↑ alt↓'}</Text>
+          <Text dimColor>{' to switch one, it keeps working'}</Text>
+        </Box>
+      </Box>
+    )
   })
 
-  on('ui.close', { id: ANSWER_PANE }, async ($, e, next) => {
-    const pane = host.answerPane
-    if (!pane || pane.closing) return next(e)
-    pane.closing = true
-    run($, { type: 'sheetPane', id: pane.id, move: 'close' }, false)
+  // The receipt: what travelled with the prompt, what the agent chose, and one press to ask for another.
+  on('ui.render', { component: 'Placed' }, async ($, e, next) => {
+    const id = /^receipt-(\d+)$/.exec(e.props.id)?.[1]
+    const receipt = e.props.plugin === 'margincue' && id ? host.receipts.get(Number(id)) : undefined
+    if (!receipt) return next(e)
+    return drawRows($, $.ui.resolve(e), layoutReceipt(receipt, e.viewport?.columns ?? 100, host.palette))
+  })
+
+  // The prompt as sent: what MarginCue attached is listed under it rather than shown as raw text.
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    if (e.props.isExpanded || e.props.origin.kind !== 'composer' || host.settings.mode === 'off') return next(e)
+    const sent = splitSent(e.props.text)
+    if (!sent) return next(e)
+    const drawn = await next({ ...e, props: { ...e.props, text: sent.body } })
+    const { Box } = $.ui.resolve(e)
+    return <Box flexDirection="column">{drawn}{drawRows($, $.ui.resolve(e), layoutSent(sent, e.viewport?.columns ?? 100, host.palette))}</Box>
+  }).catch(($, e, next) => next(e))
+
+  // The agent learns to mark its own choices, so the person can switch them while it works.
+  on('prompt.compose', async ($, e, next) => {
     const result = await next(e)
-    await restoreAnswerDraft($, pane)
-    return result
+    const protocol = host.assets.blanksProtocol
+    if (!protocol || !host.settings.blanks || !host.settings.sheet || host.settings.mode === 'off') return result
+    return { ...result, sections: [...result.sections, { id: 'margincue:blanks', text: protocol, scope: 'session' as const }] }
   })
 
   on('ui.render', { component: 'Pane', requestId: REVIEW_PANE }, async ($, e) => {
@@ -1017,33 +1224,53 @@ export const register: Register = (on) => {
     if (checklist.phase === 'reviewing') return <Progress label={thinkingLabel(checklist.language)} valueText="" />
     if (checklist.phase === 'error') return <Text>Claude Code did not return a review.</Text>
     if (!checklist.items.length) return <Text>No open decisions found.</Text>
+    const P = host.palette
+    const open = checklist.items.filter((item) => item.chosen === undefined).length
     return (
       <Box flexDirection="column">
+        <Box flexDirection="row">
+          <Text color={P.tag.color} backgroundColor={P.tag.bg} bold>{' MarginCue '}</Text>
+          <Text dimColor>{`  ${checklist.profile} review · ${open} open of ${checklist.items.length}`}</Text>
+        </Box>
         {checklist.items.map((item) => {
           const options = item.persistent && !item.guard
             ? [...item.options, { id: 'delegated', label: checklist.language === 'fr' ? 'tu décides' : 'you decide' }]
             : item.options
+          const picked = options.find((option) => option.id === item.chosen)
           return (
-            <Box key={item.key} flexDirection="column">
-              <Text bold>{item.chosen !== undefined ? '✓ ' : item.guard ? '◆ ' : '◇ '}{item.statement.replace('{}', '…')}</Text>
-              {item.chosen !== undefined ? <Text color="success">{options.find((option) => option.id === item.chosen)?.label}</Text> : (
+            <Box key={item.key} flexDirection="column" marginTop={1}>
+              <Box flexDirection="row">
+                <Text color={picked ? 'success' : item.guard ? 'warning' : P.accent} bold>{picked ? '✓ ' : item.guard ? '◆ ' : '◇ '}</Text>
+                <Text bold>{item.statement.replace('{}', '…')}</Text>
+              </Box>
+              {picked ? (
+                <Box flexDirection="row">
+                  <Text>{'  '}</Text>
+                  <Text color={P.yours.color} backgroundColor={P.yours.bg} bold>{` ${picked.label} `}</Text>
+                </Box>
+              ) : (
                 <Box flexDirection="row" flexWrap="wrap">
-                  {options.map((option) => (
-                    <Button key={`${item.key}-${option.id}`} label={option.label} onPress={() => run($, {
+                  <Text>{'  '}</Text>
+                  {options.map((option, i) => (
+                    <Button key={`${item.key}-${option.id}`} plain label={option.label} onPress={() => run($, {
                       type: 'expertPick', now: now(), at: Date.now(), review: checklist.id, key: item.key,
                       option: option.id, scope: selectedScope(item.slot, item.scope),
-                    })} />
+                    })}>
+                      <Text {...(i === 0 ? { color: P.suggested.color, backgroundColor: P.suggested.bg } : {})}>{` ${option.label} `}</Text>
+                    </Button>
                   ))}
                   {item.persistent && (
-                    <Button key={`${item.key}-scope`} label={scopeLabel(item.scope, checklist.language)} onPress={() => {
+                    <Button key={`${item.key}-scope`} plain dimColor label={scopeLabel(item.scope, checklist.language)} onPress={() => {
                       cycleScope(item.slot, item.scope)
                       if (host.view) publish($, host.view)
-                    }} />
+                    }}>
+                      <Text dimColor>{`  · ${scopeLabel(item.scope, checklist.language)}`}</Text>
+                    </Button>
                   )}
                 </Box>
               )}
-              {item.why && <Text dimColor>{item.why}</Text>}
-              {item.source && <Text dimColor>{item.source}</Text>}
+              {item.why && <Text dimColor>{`  ${item.why}`}</Text>}
+              {item.source && <Text dimColor italic>{`  ${item.source}`}</Text>}
             </Box>
           )
         })}
@@ -1058,4 +1285,11 @@ export const register: Register = (on) => {
   })
 
   on('command.run', { command: 'margincue' }, async ($, e) => command($, e.args))
+
+  // Only follows the theme the person picks; a failure here must never stand in the way of their setting.
+  on('config.set', { key: 'theme' }, async ($, e, next) => {
+    const result = await next(e)
+    if (!('deny' in result && result.deny)) host.palette = paletteFor(e.value)
+    return result
+  }).catch(($, e, next) => next.called ? next(e) : next(e))
 }

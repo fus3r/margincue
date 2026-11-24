@@ -3,16 +3,23 @@ import type { Span } from './anchor'
 import { applyDecisions, attachDecisions, decisionLine } from './decisions'
 import { DecisionDraft, DecisionState, decisionFor, eligibleSlot, stateCue } from './state'
 import type { SlotResult, StateChange } from './state'
-import type { Depth, Language, Mode, Scope } from './bundle'
+import type { Depth, Language, Mode, Rigor, Scope } from './bundle'
 import { expertPrompt, MAX_EXPERT_CUES, parseExpert } from './expert'
-import { startsSomethingNew } from './kickoff'
 import { Lru } from './lru'
 import { normalize, parseReply } from './parse'
 import { parseProfile } from './profile'
 import { buildPrompt, buildSystem, isTerminated, lastSentenceStart } from './request'
-import { parseSheet, SHEET_MAX_TOKENS } from './sheet'
+import { CARD_MAX_TOKENS, cycleSelection, parseCard, parseSketch, rowValue, sameSelection, SKETCH_MAX_TOKENS, toggleSelection } from './card'
+import type { CardKind, ParsedCard, ParsedRow, ParsedSketch, RowType } from './card'
+import { ground, indexVocabulary, nameKey, relatedFolders } from './grounding'
+import type { GroundIndex, Mention } from './grounding'
+import { detectLenses } from './project'
+import type { ProjectLens } from './project'
 import type {
   Assets,
+  CardRowView,
+  CardStage,
+  CardView,
   Chosen,
   CueView,
   Decision,
@@ -24,8 +31,7 @@ import type {
   Origin,
   ParsedCue,
   Profile,
-  SheetItem,
-  SheetView,
+  ReceiptView,
   Splice,
   Timing,
   View,
@@ -71,20 +77,82 @@ type Review = {
 
 type Dismissed = { anchor: string; statement: string; options: string[] }
 
-type Sheet = {
+type CardRow = {
+  id: string
+  key: string
+  label: string
+  type: RowType
+  statement: string
+  options: string[]
+  defaults: number[]
+  unit?: string
+  anchor?: string
+  /** Repo rows: the file behind each option, attached with the pick. */
+  hints?: string[]
+  origin: 'model' | 'repo' | 'lens' | 'agent'
+  lens?: string
+  /** The person's selection; null while untouched (the row then reads its habit or default). */
+  picked: number[] | null
+  learned?: number[]
+  /** Agent rows: the selection last sent to the agent. */
+  sent?: number[]
+}
+
+type Sketch = { key: string; req: number | null; buffer: string; title: string; lines: string[]; pinned: boolean; open: boolean }
+
+type Card = {
   id: number
-  startedAt: number
-  pending: boolean
-  buffer: string
-  items: SheetItem[]
+  stage: CardStage
+  read: string | null
+  kind: CardKind | null
+  rows: CardRow[]
   focus: string | null
-  language: Language
-  pane: { ids: string[]; at: number } | null
+  dismissed: Set<string>
+  req: number | null
+  reqText: string
+  reqKey: string
+  reqAt: number
+  buffer: string
+  /** The draft the applied reading was for. */
+  readFor: string | null
+  /** The draft changed while a reading was on its way. */
+  dirty: boolean
+  error: boolean
   shownAt: number | null
+  sketch: Sketch | null
+  sketchDue: number | null
+  amendDue: number | null
   submittedAt: number | null
+  /** The decision lines that travelled with the prompt. */
+  sent: string[]
+  /** The follow-up text this card last put in the composer. */
+  fill: string | null
 }
 
 const AMEND_MS = 3500
+/** A reading starts at a sentence end at most this often, or after this long without an edit. */
+const CARD_GAP_MS = 3000
+const CARD_IDLE_MS = 900
+const CARD_MIN_WORDS = 6
+const SKETCH_DELAY_MS = 700
+/** alt+down during a turn waits this long for the next press before the change is sent. */
+const AMEND_DELAY_MS = 1500
+const LEARNED_AFTER = 2
+/** Characters of a draft a card reading looks at. */
+const DRAFT_MAX = 8000
+const REFS_MAX = 4
+/** A sketch draws what it can know: something new, or an analysis. A change to existing code or screens it has not seen is not drawn. */
+const SKETCH_KINDS = new Set<CardKind>(['build', 'explore'])
+/** How a project's stakes are put to the reader. */
+const STAKES: Record<Rigor, string> = {
+  explore: 'exploring', build: 'building something to use', compete: 'a challenge or competition, scored on held-out data',
+  study: 'research meant to stand up to review',
+}
+/** Words that bring an expert profile's decisions into the card, two or more needed. */
+const LENS_WORDS: [string, RegExp][] = [
+  ['ml-research', /\b(?:train(?:ing)?|dataset|accuracy|auc|cross-?valid\w*|overfit\w*|leak\w*|regression|classif\w*|features?|labels?|benchmark\w*|baselines?|hyperparam\w*|predict\w*|evaluat\w*|metrics?|test set|validation|fine-?tun\w*|embedding\w*)\b/gi],
+  ['system-design', /\b(?:services?|queues?|cach\w+|databases?|scal(?:e|ing|ability)|latency|throughput|replica\w*|shard\w*|load balanc\w*|microservices?|kafka|redis|postgres\w*|consistency|availability|rate limit\w*|backpressure|idempoten\w*|retries|webhooks?)\b/gi],
+]
 
 const EMPTY_PROFILE: Profile = { name: 'general', description: '', maxCues: 3, rubric: '', examples: [] }
 
@@ -128,9 +196,32 @@ export class Core {
   private readonly expertPicks = new Map<string, Decision>()
   private late: { review: Review; submittedAt: number; expires: number } | null = null
   private amendment: { cue: CueView; submittedAt: number; expires: number } | null = null
+  /** Undefined under the original conformance protocol; otherwise whether the card runs. */
   private sheetEnabled: boolean | undefined
-  private sheet: Sheet | null = null
-  private readonly sheetRequested = new Set<string>()
+  private sketchEnabled = true
+  private refsEnabled = true
+  /** The card on screen: the draft's, or the running turn's while the prompt box is empty. */
+  private card: Card | null = null
+  /** The running turn's card (the agent's own choices), kept while a follow-up is being written over it. */
+  private turnCard: Card | null = null
+  /** Decisions of a message typed during a turn: the engine queues it, so they belong to the turn that runs it. */
+  private pendingSent: string[] = []
+  private nextCard = 1
+  private readonly cardCache = new Lru<ParsedCard>(24)
+  private readonly sketchCache = new Lru<ParsedSketch | null>(16)
+  private lastCardAt: number | null = null
+  private index: GroundIndex | null = null
+  private mentions: Mention[] = []
+  /** Profiles the project calls for, read from its files when it is indexed. */
+  private projectLenses: ProjectLens[] = []
+  /** Who the person is, from the first-run interview: a line for the reader, their fields, their depth per field. */
+  private userLine: string | undefined
+  private today: string | undefined
+  private prefer: string[] = []
+  private depths: Record<string, Depth> = {}
+  private learned: Record<string, { label: string; count: number }> = {}
+  private receipt: ReceiptView | null = null
+  private nextReceipt = 1
   private turnRunning = false
 
   private now = 0
@@ -184,7 +275,7 @@ export class Core {
         break
       case 'pick':
         this.note = null
-        this.onPick(event.cue, event.option, event.cycle)
+        this.onPick(event.cue, event.option)
         break
       case 'dismiss':
         this.note = null
@@ -229,26 +320,57 @@ export class Core {
       case 'turnStart':
         if (this.sheetEnabled !== undefined && !this.turnRunning) {
           this.turnRunning = true
-          this.clearSheet()
-          this.reviewAt = null
+          this.turnCard = this.newCard('turn')
+          this.turnCard.submittedAt = this.now
+          this.turnCard.sent = this.pendingSent
+          this.pendingSent = []
+          if (this.card?.stage !== 'draft') {
+            this.reviewAt = null
+            this.clearCard()
+            this.card = this.turnCard
+          }
         }
         break
       case 'endAmendment':
         this.dropAmendment('turn-ended')
         if (this.turnRunning) {
           this.turnRunning = false
-          this.clearSheet()
-          if (this.sheetAllowed()) this.schedule('type', null)
+          this.endTurnCard()
+          if (this.cardAllowed()) this.schedule('type', null)
         }
         break
-      case 'sheetPane':
-        this.onSheetPane(event)
+      case 'vocabulary':
+        this.index = event.vocab ? indexVocabulary(event.vocab) : null
+        this.projectLenses = event.vocab ? detectLenses(event.vocab, this.prefer) : []
+        if (this.sheetEnabled !== undefined && !this.turnRunning) this.onCardDraft(this.text)
         break
-      case 'sheetAnswer':
-        this.onSheetAnswer(event)
+      case 'learned':
+        this.learned = { ...event.picks }
         break
-      case 'sheetShown':
-        this.onSheetShown(event.id)
+      case 'cardFocus':
+        this.onCardFocus(event.dir, event.row)
+        break
+      case 'cardCycle':
+        this.onCardChange(event.row, (row, current) => cycleSelection(row, current, event.dir ?? 1), false)
+        break
+      case 'cardSet':
+        this.onCardChange(event.row, (row, current) =>
+          row.options[event.option] === undefined ? null : toggleSelection(row, current, event.option), true)
+        break
+      case 'cardDismiss':
+        this.onCardDismiss(event.row)
+        break
+      case 'cardShown':
+        if (this.card?.id === event.id && this.card.shownAt === null && this.card.rows.length) {
+          this.card.shownAt = this.now
+          this.metric('card-shown', { card: event.id, rows: this.card.rows.length, stage: this.card.stage })
+        }
+        break
+      case 'sketch':
+        this.onSketch(event.action)
+        break
+      case 'blank':
+        this.onBlank(event.label, event.choice, event.alternatives)
         break
     }
     this.flush()
@@ -257,10 +379,13 @@ export class Core {
 
   storedDecisions() { return this.state.list() }
 
+  /** The profiles the project calls for and why (for /margincue status). */
+  projectProfiles(): ProjectLens[] { return this.projectLenses.filter((lens) => this.state.forProfile(lens.profile).length > 0) }
+
   /** The view as it stands at the last event's time, without emitting anything. */
   currentView(): View {
     const state = this.mode === undefined ? undefined : this.decisionView()
-    const sheet = this.sheetView()
+    const card = this.cardView()
     const cues: CueView[] = state && (state.first || this.mode === 'quiet' || this.stateDraft?.directive === 'delegate')
       ? [] : this.cues.map((cue) => viewCue(cue, this.isHeld(cue)))
     const shown = (id: string | null) => cues.some((c) => c.id === id && !c.held)
@@ -282,7 +407,8 @@ export class Core {
       ...(state && { state }),
       ...(this.expert && { expert: this.expert }),
       ...(this.amendment && { amendment: this.amendment.cue }),
-      ...(sheet && { sheet }),
+      ...(card && { card }),
+      ...(this.receipt && this.sheetEnabled === true && { receipt: this.receipt }),
     }
   }
 
@@ -297,6 +423,20 @@ export class Core {
     const sheetEnabled = this.mode === undefined ? undefined : e.sheet
     const sheetChanged = sheetEnabled !== this.sheetEnabled
     this.sheetEnabled = sheetEnabled
+    this.sketchEnabled = e.sketch !== false
+    this.refsEnabled = e.refs !== false
+    this.userLine = e.user?.trim() || undefined
+    this.today = e.today
+    this.depths = { ...(e.depths ?? {}) }
+    const prefer = [...(e.prefer ?? [])].sort()
+    if (prefer.join() !== this.prefer.join()) {
+      this.prefer = prefer
+      this.projectLenses = this.index ? detectLenses(this.index.vocab, this.prefer) : []
+    }
+    if (!this.sketchEnabled && this.card?.sketch) {
+      if (this.card.sketch.req !== null) this.out.push({ type: 'cancel', req: this.card.sketch.req })
+      this.card.sketch = null
+    }
     const depthChanged = this.depth !== (e.depth ?? 'standard')
     this.depth = e.depth ?? 'standard'
     const language = e.language ?? 'en'
@@ -346,8 +486,8 @@ export class Core {
       this.reviewAt = null
     }
     if (languageChanged) this.expertPicks.clear()
-    if (!enabled || sheetEnabled !== true || languageChanged || (profileChanged || depthChanged) && this.sheet?.submittedAt === null) {
-      this.clearSheet()
+    if (!enabled || sheetEnabled !== true || languageChanged || (profileChanged || depthChanged) && this.card?.stage === 'draft') {
+      this.clearCard()
     }
     if (!this.enabled) {
       this.cancelAll()
@@ -371,10 +511,7 @@ export class Core {
     if (text !== before) {
       this.textAt = this.now
       this.note = null
-      if (this.sheetEnabled !== undefined && !this.turnRunning) {
-        this.clearSheet()
-        this.reviewAt = null
-      }
+      if (this.sheetEnabled !== undefined) this.onCardDraft(text)
       this.clearExpert()
       if (text.trim() !== '') this.dropAmendment('new-draft')
       const kept: Cue[] = []
@@ -409,14 +546,24 @@ export class Core {
     }
     if (this.reviewAt !== null && this.now >= this.reviewAt) {
       this.reviewAt = null
-      if (this.sheetEnabled === undefined ? this.cloudAllowed() : this.sheetAllowed()) this.fireScheduled()
+      if (this.sheetEnabled === undefined ? this.cloudAllowed() : this.cardAllowed()) this.fireScheduled()
     }
+    const card = this.card
+    if (card?.sketchDue != null && this.now >= card.sketchDue) {
+      card.sketchDue = null
+      this.fireSketch()
+    }
+    if (this.turnCard?.amendDue != null && this.now >= this.turnCard.amendDue) this.sendAgentChanges()
     // A held cue past its settle point is released by the view this flush computes.
   }
 
   private onReply(req: number, chunk: string, done: boolean, ok: boolean): void {
-    if (this.sheet?.id === req && this.sheet.pending) {
-      this.onSheetReply(chunk, done, ok)
+    if (this.card && req === this.card.req) {
+      this.onCardReply(chunk, done, ok)
+      return
+    }
+    if (this.card?.sketch && req === this.card.sketch.req) {
+      this.onSketchReply(chunk, done, ok)
       return
     }
     if (req === this.expertReq) {
@@ -479,10 +626,10 @@ export class Core {
     if (this.mode !== undefined) this.auditCloud(parsed.cues, this.latencyMs)
   }
 
-  private onPick(id: string, option: number | string | null, cycle = false): void {
-    const item = this.sheet?.items.find((item) => item.id === id)
-    if (item && this.sheet) {
-      this.onSheetPick(this.sheet, item, option, cycle)
+  private onPick(id: string, option: number | string | null): void {
+    const row = this.card?.rows.find((entry) => entry.id === id)
+    if (row && typeof option === 'number') {
+      this.onCardChange(id, (r, current) => r.options[option] === undefined ? null : toggleSelection(r, current, option), true)
       return
     }
     const cue = this.cues.find((c) => c.id === id)
@@ -513,14 +660,8 @@ export class Core {
   }
 
   private onDismiss(id: string): void {
-    const sheet = this.sheet
-    if (sheet && (id === `sheet-${sheet.id}` || sheet.items.some((item) => item.id === id))) {
-      const all = id === `sheet-${sheet.id}`
-      this.metric('sheet-dismissed', {
-        req: sheet.id, ...(all ? {} : { item: id }), items: all ? sheet.items.length : 1, afterSubmit: sheet.submittedAt !== null,
-      })
-      if (all) this.clearSheet()
-      else this.removeSheetItem(sheet, id)
+    if (this.card?.rows.some((row) => row.id === id)) {
+      this.onCardDismiss(id)
       return
     }
     if (this.mode !== undefined && this.decisionView().first?.slot === id) {
@@ -557,14 +698,8 @@ export class Core {
   }
 
   private onFocus(dir: 1 | -1 | undefined, id: string | undefined): void {
-    const sheet = this.sheet
-    if (sheet?.items.length && (id === undefined || sheet.items.some((item) => item.id === id))) {
-      if (id !== undefined) sheet.focus = id
-      else {
-        const index = sheet.items.findIndex((item) => item.id === sheet.focus)
-        const next = index === -1 && dir === -1 ? sheet.items.length - 1 : index + (dir ?? 1)
-        sheet.focus = sheet.items[next]?.id ?? null
-      }
+    if (this.card?.rows.length && (id === undefined ? this.sheetEnabled !== undefined : this.card.rows.some((row) => row.id === id))) {
+      this.onCardFocus(dir, id)
       return
     }
     const visible = this.cues.filter((c) => !this.isHeld(c))
@@ -584,8 +719,11 @@ export class Core {
     if (this.mode !== undefined && text !== this.text) this.refreshState(text)
     const exact = text === this.text
     const decisions = isPrompt ? this.decisions(exact) : []
-    const { text: sent, added } = attachDecisions(text, decisions)
-    if (this.sheetEnabled !== undefined) this.onSheetSubmit(prompt, exact, amendable)
+    const attached = attachDecisions(text, decisions)
+    const added = attached.added
+    const target = isPrompt && exact ? this.pinnedSketch() : null
+    const sent = target ? `${attached.text.replace(/\s+$/, '')}\n\n${target}` : attached.text
+    if (this.sheetEnabled !== undefined) this.onCardSubmit(prompt, exact, amendable, added)
     if (this.mode !== undefined) {
       this.dropAmendment('new-submit')
       if (isPrompt && amendable && text === this.text && this.cloudAllowed() &&
@@ -633,8 +771,10 @@ export class Core {
 
   private onReset(): void {
     this.dropAmendment('session-reset')
-    this.clearSheet()
-    this.sheetRequested.clear()
+    this.clearCard()
+    this.turnCard = null
+    this.pendingSent = []
+    this.receipt = null
     this.turnRunning = false
     this.resetDraft()
     this.state.reset()
@@ -858,167 +998,569 @@ export class Core {
     this.expertBuffer = ''
   }
 
-  // ---- kick-off sheet -----------------------------------------------------
+  // ---- the card ------------------------------------------------------------
+  //
+  // Before Enter the card shows how the agent will read the draft, the names it
+  // found (or not) in the code, and the choices left open, each with a control
+  // shaped like its value. After Enter it holds the choices the agent marks as
+  // it works (blanks), which the person can switch without stopping it; after
+  // the turn, a receipt and one-key follow-ups.
 
-  private sheetAllowed(): boolean {
-    return this.enabled && this.sheetEnabled === true && Boolean(this.assets.sheetSystem) && !this.turnRunning &&
-      !this.sheetRequested.has(this.text) && !isHostCommand(this.text) &&
-      startsSomethingNew(this.text, { firstOfSession: !this.submitted })
+  private cardText(text = this.text): boolean {
+    return !isHostCommand(text) && wordCount(text) >= CARD_MIN_WORDS
   }
 
-  private fireSheet(): void {
-    this.reviewAt = null
-    const req = this.nextReq++
-    const language = this.wordingLanguage()
-    const instruction = this.language === 'en' ? 'in English' : 'in the language of the request'
-    const reminder = this.language === 'en' && this.stateDraft?.language === 'fr'
-      ? 'Write every question and option in English, even when the draft is in French.\n\n' : ''
-    const system = [reminder + this.assets.sheetSystem!.replace('{language}', instruction)]
-    if (this.profileName !== 'general') {
-      const cards = this.state.forProfile(this.profileName).slice(0, 12).map((slot) => {
-        const cue = stateCue({ slot, options: slot.options }, language, this.depth)
-        return `- ${cue.statement.replace('{}', '…')} (${cue.options.map((option) => option.label).join(' / ')})`
-      })
-      if (cards.length) system.push(`\n\nPrefer these profile decisions when the request touches them.\n${cards.join('\n')}`)
-    }
-    this.sheetRequested.add(this.text)
-    this.sheet = {
-      id: req, startedAt: this.now, pending: true, buffer: '', items: [], focus: null, language,
-      pane: null, shownAt: null, submittedAt: null,
-    }
-    this.lastFireAt = this.now
-    this.out.push({ type: 'request', req, kind: 'sheet', system, prompt: this.text, maxTokens: SHEET_MAX_TOKENS })
-    this.metric('sheet-requested', { req })
+  private cardAllowed(): boolean {
+    // A draft written while the agent works is read too: a follow-up deserves its card as much as an opening.
+    return this.enabled && this.sheetEnabled === true && Boolean(this.assets.cardSystem) &&
+      this.card?.stage === 'draft' && this.cardText()
   }
 
-  private onSheetReply(chunk: string, done: boolean, ok: boolean): void {
-    const sheet = this.sheet!
-    sheet.buffer += chunk
-    if (ok && !done) return
-    sheet.pending = false
-    sheet.items = ok ? parseSheet(sheet.buffer).map((item) => ({ ...item, id: this.newId(), chosen: null, pending: null })) : []
-    sheet.buffer = ''
-    this.metric('sheet-reply', { req: sheet.id, items: sheet.items.length, ms: this.now - sheet.startedAt, empty: !sheet.items.length, ok })
-  }
-
-  private sheetView(): SheetView | undefined {
-    const sheet = this.sheet
-    if (!sheet || (!sheet.pending && !sheet.items.length)) return
-    const pane = sheet.pane
+  private newCard(stage: CardStage): Card {
     return {
-      id: sheet.id, items: sheet.items, pending: sheet.pending, focus: sheet.focus, language: sheet.language,
-      afterSubmit: sheet.submittedAt !== null, collapsed: this.mode === 'quiet',
-      ...(pane && { pane: {
-        item: pane.ids[pane.at]!, position: pane.at + 1, total: pane.ids.length,
-        canGoBack: pane.ids.slice(0, pane.at).some((id) => sheet.items.some((item) => item.id === id)),
-      } }),
+      id: this.nextCard++, stage, read: null, kind: null, rows: [], focus: null, dismissed: new Set(),
+      req: null, reqText: '', reqKey: '', reqAt: 0, buffer: '', readFor: null, dirty: false, error: false,
+      shownAt: null, sketch: null, sketchDue: null, amendDue: null, submittedAt: null, sent: [], fill: null,
     }
   }
 
-  private onSheetPane({ id, move, cue }: Extract<Event, { type: 'sheetPane' }>): void {
-    const sheet = this.sheet
-    if (sheet?.id !== id) return
-    if (move === 'open') {
-      const at = sheet.items.findIndex((item) => cue === undefined ? item.chosen === null : item.id === cue)
-      if (at < 0 || sheet.pane) return
-      sheet.pane = { ids: sheet.items.map((item) => item.id), at }
-      this.metric('sheet-pane-opened', { req: id, afterSubmit: sheet.submittedAt !== null })
-    } else if (move === 'close') this.closeSheetPane(sheet)
-    else this.moveSheetPane(sheet, move === 'back' ? -1 : 1)
+  private clearCard(): void {
+    const card = this.card
+    if (!card) return
+    if (card.req !== null) this.out.push({ type: 'cancel', req: card.req })
+    if (card.sketch && card.sketch.req !== null) this.out.push({ type: 'cancel', req: card.sketch.req })
+    if (card === this.turnCard) this.turnCard = null
+    this.card = null
+    if (this.sheetEnabled !== undefined) this.reviewAt = null
   }
 
-  private moveSheetPane(sheet: Sheet, direction: -1 | 1): void {
-    const pane = sheet.pane
-    if (!pane) return
-    for (let i = pane.at + direction; i >= 0 && i < pane.ids.length; i += direction) {
-      const item = sheet.items.find((entry) => entry.id === pane.ids[i])
-      if (item && (direction < 0 || item.chosen === null)) {
-        pane.at = i
-        return
+  /** Drops the card on screen unless it is the running turn's, which only steps aside. */
+  private setAside(): void {
+    if (this.card && this.card === this.turnCard) this.card = null
+    else this.clearCard()
+  }
+
+  private onCardDraft(text: string): void {
+    const card = this.card
+    if (card?.stage === 'after' && (text === card.fill || text.trim() === '')) {
+      this.mentions = []
+      return
+    }
+    const eligible = this.enabled && this.sheetEnabled === true && this.cardText(text)
+    this.mentions = eligible ? ground(text, this.index) : []
+    if (!eligible) {
+      // During a turn an empty (or too short) box gives the place back to the agent's choices.
+      if (card !== this.turnCard || !this.turnRunning) this.setAside()
+      if (this.turnRunning && !this.card && this.turnCard) this.card = this.turnCard
+      return
+    }
+    if (!card || card.stage !== 'draft') {
+      this.setAside()
+      this.card = this.newCard('draft')
+    }
+    this.syncRepoRows()
+  }
+
+  /** A name the draft uses that the code lacks becomes a row: which of the code's names it means. */
+  private syncRepoRows(): void {
+    const card = this.card!
+    const rows: CardRow[] = []
+    for (const mention of this.mentions) {
+      if (mention.status !== 'missing' || !mention.near.length || rows.length >= 2) continue
+      const key = `name_${nameKey(mention.phrase)}`.slice(0, 40)
+      if (card.dismissed.has(key)) continue
+      const options = [...mention.near.map((near) => near.name), 'new, to be added']
+      const hints = [...mention.near.map((near) => near.file), '']
+      const old = card.rows.find((row) => row.origin === 'repo' && row.key === key)
+      rows.push(old && sameOptions(old.options, options) ? old : {
+        id: old?.id ?? this.newId(), key, label: cutLabel(mention.phrase), type: 'one',
+        statement: `"${mention.phrase}" is {}`, options, hints, defaults: [], origin: 'repo', picked: null,
+        anchor: mention.phrase,
+      })
+    }
+    card.rows = [...rows, ...card.rows.filter((row) => row.origin !== 'repo')]
+    this.fixCardFocus()
+  }
+
+  private scheduleCard(origin: Origin, splice: Splice | null): void {
+    const sentenceEnd = splice !== null && /[.?!\n][)"'”’\]]*[ \t]*$/.test(splice.text)
+    const last = this.lastCardAt
+    if ((origin !== 'type' || sentenceEnd) && (origin !== 'type' || last === null || this.now - last >= CARD_GAP_MS)) {
+      this.fireCard()
+      return
+    }
+    const at = this.textAt + CARD_IDLE_MS
+    if (at <= this.now) this.fireCard()
+    else this.reviewAt = at
+  }
+
+  private fireCard(): void {
+    this.reviewAt = null
+    const card = this.card
+    if (!card || !this.cardAllowed()) return
+    if (card.req !== null) {
+      card.dirty = card.reqText !== this.text
+      return
+    }
+    if (card.readFor === this.text) return
+    const { system, prompt } = this.cardRequest(card)
+    const key = `${this.profileName}\n${this.language}\n${this.userLine ?? ''}\n${system.length}\n${prompt}`
+    const cached = this.cardCache.get(key)
+    if (cached) {
+      this.applyCard(card, cached, this.text)
+      return
+    }
+    const req = this.nextReq++
+    Object.assign(card, { req, reqText: this.text, reqKey: key, reqAt: this.now, buffer: '', dirty: false })
+    this.lastCardAt = this.now
+    this.out.push({ type: 'request', req, kind: 'card', tier: 'cloud', system, prompt, maxTokens: CARD_MAX_TOKENS })
+    this.metric('card-requested', { req, card: card.id, words: wordCount(this.text), mentions: this.mentions.length })
+  }
+
+  private cardRequest(card: Card): { system: string[]; prompt: string } {
+    const english = this.wordingLanguage() === 'en'
+    const system = [this.assets.cardSystem!.replace('{language}', english ? 'in English, even when the draft is not' : "in the draft's language")]
+    if (this.userLine) system.push(`About the developer: ${this.userLine}`)
+    if (this.index?.vocab.map) system.push(`Repository outline (folders with code, most files first):\n${this.index.vocab.map}`)
+    const lenses = this.lensBlocks()
+    // The project's profiles are the same for every prompt in it: they sit with the cached system text.
+    if (lenses.project) system.push(lenses.project)
+    // A pasted wall of text is read from its start and its end: that is where requests and their limits sit.
+    const draft = this.text.length > DRAFT_MAX ? `${this.text.slice(0, DRAFT_MAX * 0.7)}\n[…]\n${this.text.slice(-DRAFT_MAX * 0.3)}` : this.text
+    const lines = ['Draft:', '<<<', draft, '>>>']
+    const found = this.mentions.filter((m) => m.status === 'found').slice(0, 8)
+    if (found.length) lines.push(`In the code: ${found.map((m) => `${m.phrase} (${m.files[0] ?? m.match})`).join('; ')}`)
+    const missing = this.mentions.filter((m) => m.status === 'missing')
+    if (missing.length) lines.push(`Not found in the code, asked about separately (no row for these): ${missing.map((m) => `"${m.phrase}"`).join(', ')}`)
+    const folders = this.index ? relatedFolders(this.text, this.index) : []
+    if (folders.length) lines.push(`Folders that may already do part of this: ${folders.map((f) => `${f.dir}/ (${f.files.join(', ')})`).join('; ')}`)
+    const settled = [
+      ...this.decisions(false).map(decisionLine),
+      ...card.rows.filter((row) => row.picked !== null).map((row) => decisionLine({ statement: row.statement, option: this.rowText(row, row.picked!) })),
+    ]
+    if (settled.length) lines.push(`Already decided (no row for these):\n${settled.map((line) => `- ${line}`).join('\n')}`)
+    const open = card.rows.filter((row) => (row.origin === 'model' || row.origin === 'lens') && row.picked === null)
+    if (open.length) lines.push(`Rows on screen now (keep a key while its choice is still open): ${open.map((row) => row.key).join(', ')}`)
+    if (card.dismissed.size) lines.push(`Dismissed by the user (never raise again): ${[...card.dismissed].join(', ')}`)
+    if (this.stateDraft?.directive === 'delegate') lines.push('The user leaves the choices to the agent: reply with the read and kind lines only.')
+    if (lenses.draft) lines.push(lenses.draft)
+    return { system, prompt: lines.join('\n') }
+  }
+
+  /** A profile's depth: the person's level in that field when they gave it, else the depth in force. */
+  private depthOf(profile: string): Depth {
+    return this.depths[profile] ?? this.depth
+  }
+
+  /** Profiles for this reading: the project's, the one the person picked, and any the draft's own words call for. */
+  private lensProfiles(): string[] {
+    const profiles = new Set<string>()
+    for (const lens of this.projectLenses) if (this.state.forProfile(lens.profile).length) profiles.add(lens.profile)
+    if (this.profileName !== 'general' && this.state.forProfile(this.profileName).length) profiles.add(this.profileName)
+    for (const [profile, words] of LENS_WORDS) {
+      const hits = new Set((this.text.match(words) ?? []).map((word) => word.toLowerCase()))
+      if (hits.size >= 2 && this.state.forProfile(profile).length) profiles.add(profile)
+    }
+    return [...profiles]
+  }
+
+  /**
+   * The catalogs of the profiles in play, as candidate rows. A project's profile carries the stakes read from
+   * the project (a challenge competes, a paper studies) and sits in the system text; the others in the prompt.
+   * Only decisions worth raising at that rigor and at the person's depth are offered, essentials first.
+   */
+  private lensBlocks(): { project: string; draft: string } {
+    const language = this.wordingLanguage()
+    const tiers = ['essential', 'standard', 'research']
+    const block = (profile: string, rigor: Rigor, stakes: string) => {
+      const depth = this.depthOf(profile)
+      const slots = this.state.forProfile(profile)
+        .filter((slot) => !this.state.resolve(slot.id) && eligibleSlot(slot, depth, rigor))
+        .sort((a, b) => tiers.indexOf(a.tier) - tiers.indexOf(b.tier) || b.cost - a.cost).slice(0, 10)
+      const lines = slots.map((slot) => {
+        const cue = stateCue({ slot, options: slot.options }, language, depth)
+        return `${slot.id} | when: ${slot.when} | ${cue.statement} | ${cue.options.map((option) => option.label).join(' | ')}`
+      })
+      return lines.length
+        ? `Expert decisions (${profile}${stakes}). When the draft touches one and leaves it open, add it as a row with this exact key, type one and these options:\n${lines.join('\n')}`
+        : ''
+    }
+    const fromProject = new Map(this.projectLenses.map((lens) => [lens.profile, lens]))
+    const project: string[] = []
+    const draft: string[] = []
+    for (const profile of this.lensProfiles()) {
+      const lens = fromProject.get(profile)
+      if (lens) project.push(block(profile, lens.rigor, `; this project: ${STAKES[lens.rigor]}`))
+      else draft.push(block(profile, this.stateDraft?.rigor ?? 'build', ''))
+    }
+    return { project: project.filter(Boolean).join('\n'), draft: draft.filter(Boolean).join('\n') }
+  }
+
+  private onCardReply(chunk: string, done: boolean, ok: boolean): void {
+    const card = this.card!
+    card.buffer += chunk
+    if (ok && !done) return
+    const req = card.req
+    card.req = null
+    if (ok) {
+      const parsed = parseCard(card.buffer)
+      this.cardCache.set(card.reqKey, parsed)
+      this.applyCard(card, parsed, card.reqText)
+      this.metric('card-reply', { req, card: card.id, ok, ms: this.now - card.reqAt, rows: parsed.rows.length, kind: parsed.kind, read: parsed.read !== null })
+    } else {
+      card.error = card.readFor === null
+      this.metric('card-reply', { req, card: card.id, ok, ms: this.now - card.reqAt })
+    }
+    card.buffer = ''
+    if (card.dirty || ok && card.readFor !== this.text) {
+      card.dirty = false
+      if (this.now - this.textAt >= CARD_IDLE_MS) this.fireCard()
+      else this.reviewAt = this.textAt + CARD_IDLE_MS
+    }
+  }
+
+  private applyCard(card: Card, parsed: ParsedCard, text: string): void {
+    card.read = parsed.read ?? card.read
+    card.kind = parsed.kind ?? card.kind
+    card.readFor = text
+    card.error = false
+    // A question is answered, not built: its card is the reading alone.
+    const fresh = this.stateDraft?.directive === 'delegate' || card.kind === 'ask' ? [] : parsed.rows.filter((row) => !card.dismissed.has(row.key))
+    const old = card.rows.filter((row) => row.origin === 'model' || row.origin === 'lens')
+    const used = new Set<string>()
+    const next: CardRow[] = []
+    for (const parsedRow of fresh) {
+      const row = this.lensRow(parsedRow) ?? { ...parsedRow, origin: 'model' as const }
+      const match = old.find((entry) => !used.has(entry.id) && (entry.key === row.key || normalize(entry.statement) === normalize(row.statement)))
+      if (match) used.add(match.id)
+      if (match && match.picked !== null) next.push(row.anchor ? { ...match, anchor: row.anchor } : match)
+      else next.push(this.withLearned({ ...row, id: match?.id ?? this.newId(), picked: null }))
+    }
+    // A choice the person made stands until they dismiss it, whatever a newer reading says.
+    for (const row of old) if (!used.has(row.id) && row.picked !== null) next.push(row)
+    card.rows = [...card.rows.filter((row) => row.origin === 'repo'), ...next]
+    this.fixCardFocus()
+    // A reading for the draft as it stands means the draft has rested since it was asked: sketch at once.
+    if (this.sketchEnabled && this.assets.sketchSystem && card.kind && SKETCH_KINDS.has(card.kind) && text === this.text) {
+      card.sketchDue = this.now
+    }
+  }
+
+  /** A row whose key names a decision of an active expert profile takes the catalog's wording. */
+  private lensRow(row: ParsedRow): Omit<CardRow, 'id' | 'picked'> | null {
+    const slot = this.state.slot(row.key)
+    const profile = slot && this.lensProfiles().find((name) => this.state.forProfile(name).includes(slot))
+    if (!slot || !profile) return null
+    const cue = stateCue({ slot, options: slot.options }, this.wordingLanguage(), this.depthOf(profile))
+    return {
+      key: slot.id, label: cutLabel(cue.label.toLowerCase()), type: 'one', statement: cue.statement,
+      options: cue.options.map((option) => option.label), defaults: [0], origin: 'lens', lens: profile,
+      ...(row.anchor && { anchor: row.anchor }),
+    }
+  }
+
+  private withLearned(row: CardRow): CardRow {
+    const habit = this.learned[row.key]
+    if (!habit || habit.count < LEARNED_AFTER || row.type === 'many') return row
+    const at = row.options.findIndex((option) => normalize(option) === normalize(habit.label))
+    return at === -1 || sameSelection([at], row.defaults) ? row : { ...row, learned: [at] }
+  }
+
+  private rowText(row: CardRow, selected: number[]): string {
+    if (row.hints) {
+      const i = selected[0] ?? 0
+      return row.hints[i] ? `${row.options[i]} (${row.hints[i]})` : row.options[i] ?? ''
+    }
+    return rowValue(row, selected)
+  }
+
+  private fixCardFocus(): void {
+    const card = this.card
+    if (!card) return
+    if (card.focus !== null && card.rows.some((row) => row.id === card.focus)) return
+    card.focus = (card.rows.find((row) => row.picked === null) ?? card.rows[0])?.id ?? null
+  }
+
+  private onCardFocus(dir: 1 | -1 | undefined, rowId: string | undefined): void {
+    const card = this.card
+    if (!card?.rows.length) return
+    if (rowId !== undefined) {
+      if (card.rows.some((row) => row.id === rowId)) card.focus = rowId
+      return
+    }
+    const at = card.rows.findIndex((row) => row.id === card.focus)
+    const n = card.rows.length
+    card.focus = card.rows[((at + (dir === -1 ? -1 : 1)) % n + n) % n]!.id
+  }
+
+  private onCardChange(rowId: string | undefined, change: (row: CardRow, current: number[]) => number[] | null, commit: boolean): void {
+    const card = this.card
+    const row = card?.rows.find((entry) => entry.id === (rowId ?? card.focus))
+    if (!card || !row) return
+    const next = change(row, row.picked ?? row.learned ?? row.defaults)
+    if (!next) return
+    card.focus = row.id
+    // Cycling back onto the default leaves nothing to attach; a direct pick always counts.
+    row.picked = !commit && card.stage === 'draft' && sameSelection(next, row.learned ?? row.defaults) ? null : next
+    this.actionAt = this.now
+    this.metric('card-pick', {
+      card: card.id, row: row.key, origin: row.origin, stage: card.stage, option: next.join('+'), commit,
+      ms: card.shownAt === null ? null : this.now - card.shownAt,
+    })
+    if (card.stage === 'turn') {
+      if (commit) this.sendAgentChanges()
+      else card.amendDue = this.now + AMEND_DELAY_MS
+    } else if (card.stage === 'after') this.fillFollowUp()
+    else if (card.sketch && card.kind && SKETCH_KINDS.has(card.kind)) card.sketchDue = this.now + SKETCH_DELAY_MS
+  }
+
+  private onCardDismiss(rowId: string): void {
+    const card = this.card
+    const row = card?.rows.find((entry) => entry.id === rowId)
+    if (!card || !row) return
+    card.dismissed.add(row.key)
+    card.rows = card.rows.filter((entry) => entry !== row)
+    this.fixCardFocus()
+    this.metric('card-dismissed', { card: card.id, row: row.key, origin: row.origin, stage: card.stage })
+    if (card.stage === 'after') this.fillFollowUp()
+  }
+
+  private cardDecisions(): Decision[] {
+    const card = this.card!
+    const out: Decision[] = card.rows.filter((row) => row.picked !== null)
+      .map((row) => ({ statement: row.statement, option: this.rowText(row, row.picked!) }))
+    if (this.refsEnabled) {
+      // Only what the draft wrote as code (a path, a file, an identifier, backticks): a product name or a
+      // plain word that happens to match a file would send the agent to the wrong place.
+      const refs = this.mentions.filter((m) => m.status === 'found' && m.files.length > 0 && m.as === 'code').slice(0, REFS_MAX)
+      if (refs.length) out.push({ statement: 'Where things are: {}', option: refs.map((m) => `${m.phrase} (${m.files[0]})`).join(', ') })
+    }
+    return out
+  }
+
+  private cardView(): CardView | undefined {
+    const card = this.card
+    if (!card || !this.enabled || this.sheetEnabled !== true) return
+    const draft = card.stage === 'draft'
+    const rows = card.rows.map((row) => this.rowView(row, draft))
+    const reading = card.req !== null
+    if (draft ? !rows.length && !card.read && !reading && !this.mentions.length && !card.error : !rows.length) return
+    const sketch = card.sketch && (card.sketch.lines.length || card.sketch.req !== null) ? card.sketch : null
+    return {
+      id: card.id, stage: card.stage, reading, error: card.error, read: card.read, kind: card.kind, rows,
+      focus: card.focus, mentions: draft ? this.mentions : [], lenses: draft ? this.lensProfiles() : [],
+      ...(sketch && { sketch: { title: sketch.title, lines: sketch.lines, drawing: sketch.req !== null, pinned: sketch.pinned, open: sketch.open } }),
+      language: this.wordingLanguage(), collapsed: this.mode === 'quiet',
+    }
+  }
+
+  private rowView(row: CardRow, draft: boolean): CardRowView {
+    const span = draft && row.anchor ? resolveAnchor(this.text, row.anchor) : null
+    return {
+      id: row.id, key: row.key, label: row.label, type: row.type, statement: row.statement, options: [...row.options],
+      defaults: [...row.defaults], selected: [...(row.picked ?? row.learned ?? row.defaults)], chosen: row.picked !== null,
+      origin: row.origin, ...(row.unit && { unit: row.unit }), ...(row.lens && { lens: row.lens }),
+      ...(row.learned && row.picked === null && { learned: true as const }),
+      ...(span && { start: span.start, end: span.end }),
+    }
+  }
+
+  // ---- the sketch: what done looks like ----------------------------------------
+
+  private onSketch(action: 'toggle' | 'pin' | 'refresh'): void {
+    const card = this.card
+    if (!card || card.stage !== 'draft') return
+    if (action === 'refresh') {
+      if (card.sketch) card.sketch.key = ''
+      this.fireSketch()
+      return
+    }
+    const sketch = card.sketch
+    if (!sketch || !sketch.lines.length) return
+    if (action === 'toggle') sketch.open = !sketch.open
+    else sketch.pinned = !sketch.pinned
+    this.metric(`sketch-${action}`, { card: card.id, value: action === 'toggle' ? sketch.open : sketch.pinned })
+  }
+
+  private fireSketch(): void {
+    const card = this.card
+    const system = this.assets.sketchSystem
+    if (!card || card.stage !== 'draft' || !system || !this.sketchEnabled || !this.enabled || !this.cardText()) return
+    const prompt = this.sketchPrompt(card)
+    const key = `${this.language}\n${prompt}`
+    const prior = card.sketch
+    if (prior && prior.key === key) return
+    if (prior && prior.req !== null) this.out.push({ type: 'cancel', req: prior.req })
+    const base = { key, buffer: '', title: prior?.title ?? '', lines: prior?.lines ?? [], pinned: prior?.pinned ?? false, open: prior?.open ?? true }
+    const cached = this.sketchCache.get(key)
+    if (cached !== undefined) {
+      card.sketch = cached ? { ...base, req: null, title: cached.title, lines: cached.lines } : null
+      return
+    }
+    const req = this.nextReq++
+    card.sketch = { ...base, req }
+    const english = this.wordingLanguage() === 'en'
+    this.out.push({
+      type: 'request', req, kind: 'sketch', tier: 'cloud', maxTokens: SKETCH_MAX_TOKENS, prompt,
+      system: [system.replace('{language}', english ? 'in English' : "in the draft's language")],
+    })
+    this.metric('sketch-requested', { req, card: card.id })
+  }
+
+  private sketchPrompt(card: Card): string {
+    const choices = card.rows.filter((row) => row.origin !== 'repo' || row.picked !== null).map((row) =>
+      `- ${decisionLine({ statement: row.statement, option: this.rowText(row, row.picked ?? row.learned ?? row.defaults) })}`)
+    const found = this.mentions.filter((m) => m.status === 'found').slice(0, 8)
+    return [
+      'Draft:', '<<<', this.text, '>>>',
+      ...(card.read ? [`Read as: ${card.read}`] : []),
+      ...(choices.length ? ['Choices:', ...choices] : []),
+      ...(found.length ? [`Names in the code: ${found.map((m) => m.match ?? m.phrase).join(', ')}`] : []),
+      ...(this.today ? [`Today is ${this.today}: sample dates are recent.`] : []),
+    ].join('\n')
+  }
+
+  private onSketchReply(chunk: string, done: boolean, ok: boolean): void {
+    const card = this.card!
+    const sketch = card.sketch!
+    sketch.buffer += chunk
+    if (ok && !done) return
+    const req = sketch.req
+    sketch.req = null
+    const parsed = ok ? parseSketch(sketch.buffer) : null
+    sketch.buffer = ''
+    if (ok) this.sketchCache.set(sketch.key, parsed)
+    if (parsed) Object.assign(sketch, { title: parsed.title, lines: parsed.lines })
+    else if (ok || !sketch.lines.length) card.sketch = null
+    this.metric('sketch-reply', { req, card: card.id, ok, lines: parsed?.lines.length ?? 0 })
+  }
+
+  private pinnedSketch(): string | null {
+    const sketch = this.card?.stage === 'draft' ? this.card.sketch : null
+    if (!sketch?.pinned || !sketch.lines.length) return null
+    return `Target output, as sketched (${sketch.title}):\n\`\`\`text\n${sketch.lines.join('\n')}\n\`\`\``
+  }
+
+  // ---- after Enter: the agent's own choices, then the receipt ----------------------
+
+  private onCardSubmit(prompt: boolean, exact: boolean, amendable: boolean, added: string[]): void {
+    const card = exact && this.card?.stage === 'draft' ? this.card : null
+    if (prompt && this.enabled) {
+      this.metric('card-submitted', {
+        ...(card && { card: card.id }), rows: card?.rows.length ?? 0,
+        picked: card?.rows.filter((row) => row.picked !== null).length ?? 0,
+        reading: card ? card.req !== null : false, sketch: card?.sketch?.pinned ?? false,
+      })
+      for (const row of card?.rows ?? []) {
+        if (row.picked !== null && row.origin !== 'repo' && row.type !== 'many') {
+          this.out.push({ type: 'learn', key: row.key, label: rowValue(row, row.picked) })
+        }
       }
     }
-    if (direction > 0) this.closeSheetPane(sheet)
-  }
-
-  private closeSheetPane(sheet: Sheet): void {
-    if (!sheet.pane) return
-    sheet.pane = null
-    const open = sheet.items.filter((item) => item.chosen === null).length
-    if (open) this.metric('sheet-pane-closed', { req: sheet.id, open, afterSubmit: sheet.submittedAt !== null })
-  }
-
-  private onSheetAnswer(event: Extract<Event, { type: 'sheetAnswer' }>): void {
-    const sheet = this.sheet
-    if (sheet?.id !== event.id) return
-    const afterSubmit = sheet.submittedAt !== null
-    const pane = sheet.pane
-    const current = event.via === 'pane' ? pane?.ids[pane.at]
-      : !pane && afterSubmit && this.mode !== 'quiet' ? sheet.items[0]?.id : undefined
-    if (current !== event.cue) return
-    const item = sheet.items.find((entry) => entry.id === current)
-    if (item?.options[event.option] === undefined) return
-    this.onSheetPick(sheet, item, event.option, false)
-    this.metric(event.via === 'pane' ? 'sheet-pane-answer' : 'sheet-composer-answer',
-      { req: sheet.id, item: item.id, option: event.option, afterSubmit })
-    if (pane) this.moveSheetPane(sheet, 1)
-  }
-
-  private onSheetShown(id: number): void {
-    const sheet = this.sheet
-    if (sheet?.id !== id || !sheet.items.length || sheet.shownAt !== null) return
-    sheet.shownAt = this.now
-    this.metric('sheet-shown', { req: id, items: sheet.items.length, afterSubmit: sheet.submittedAt !== null })
-  }
-
-  private onSheetPick(sheet: Sheet, item: SheetItem, option: Chosen, cycle: boolean): void {
-    if (option !== null && (typeof option !== 'number' || item.options[option] === undefined)) return
-    const afterSubmit = sheet.submittedAt !== null
-    if (afterSubmit && !cycle) {
-      if (option !== null) this.onAmend(item.id, option)
+    if (this.turnRunning) {
+      // A message typed while the agent works is queued by the engine: its decisions wait for the turn that
+      // runs it, and meanwhile the agent's own choices come back on screen.
+      if (this.card?.stage === 'draft') this.clearCard()
+      this.pendingSent.push(...added.filter((line) => !line.startsWith('Where things are:')))
+      if (this.turnCard) this.card = this.turnCard
       return
     }
-    const selection = afterSubmit ? 'pending' : 'chosen'
-    sheet.focus = item.id
-    if (item[selection] === option) return
-    sheet.items = sheet.items.map((entry) => entry === item ? { ...entry, [selection]: option } : entry)
-    if (!afterSubmit) this.sheetPickMetric(sheet, item.id, option)
-  }
-
-  private sheetPickMetric(sheet: Sheet, item: string, option: number | null): void {
-    this.metric('sheet-pick', { req: sheet.id, item, option, afterSubmit: sheet.submittedAt !== null,
-      ms: sheet.shownAt === null ? null : this.now - sheet.shownAt })
-  }
-
-  private onSheetSubmit(prompt: boolean, exact: boolean, amendable: boolean): void {
-    if (prompt && exact && amendable && this.sheetAllowed()) this.fireSheet()
-    const sheet = exact && !this.turnRunning ? this.sheet : null
-    if (prompt && this.enabled) {
-      const picked = sheet?.items.filter((item) => item.chosen !== null).length ?? 0
-      this.metric('sheet-submitted', { ...(sheet && { req: sheet.id }), picked,
-        open: (sheet?.items.length ?? 0) - picked, pending: sheet?.pending ?? false })
-    }
-    if (this.turnRunning) return
     this.turnRunning = prompt && amendable
-    if (!this.turnRunning || !sheet) {
-      this.clearSheet()
+    this.clearCard()
+    if (!this.turnRunning) return
+    this.card = this.turnCard = this.newCard('turn')
+    this.card.submittedAt = this.now
+    // The receipt lists the choices that travelled; where names live in the code is not one.
+    this.card.sent = added.filter((line) => !line.startsWith('Where things are:'))
+  }
+
+  private onBlank(label: string, choice: string, alternatives: string[]): void {
+    if (!this.enabled || this.sheetEnabled !== true || !this.turnRunning) return
+    if (!this.turnCard) {
+      this.turnCard = this.newCard('turn')
+      this.turnCard.submittedAt = this.now
+      if (this.card?.stage !== 'draft') {
+        this.setAside()
+        this.card = this.turnCard
+      }
+    }
+    const card = this.turnCard
+    const key = `blank_${nameKey(label)}`.slice(0, 40)
+    const options = [choice, ...alternatives.filter((alt) => normalize(alt) !== normalize(choice))].slice(0, 5)
+    const row = card.rows.find((entry) => entry.key === key)
+    if (row) {
+      if (normalize(row.options[0] ?? '') === normalize(choice)) return
+      // The agent restated the choice with another value: its newer word stands.
+      Object.assign(row, { options, defaults: [0], picked: null, sent: undefined })
+    } else {
+      if (card.rows.length >= 8 || card.dismissed.has(key)) return
+      card.rows.push({
+        id: this.newId(), key, label: cutLabel(label), type: 'one', statement: `${label}: {}`,
+        options, defaults: [0], origin: 'agent', picked: null,
+      })
+    }
+    if (card.focus === null || !card.rows.some((row) => row.id === card.focus)) card.focus = card.rows[0]?.id ?? null
+    this.metric('blank', { card: card.id, row: key, options: options.length })
+  }
+
+  private sendAgentChanges(): void {
+    const card = this.turnCard
+    if (!card) return
+    card.amendDue = null
+    for (const row of card.rows) {
+      if (row.origin !== 'agent' || row.picked === null) continue
+      const before = row.sent ?? row.defaults
+      if (sameSelection(row.picked, before)) continue
+      const i = row.picked[0] ?? 0
+      row.sent = [i]
+      this.sendAmendment(row.id, i, `for ${row.label}, use ${row.options[i]} instead of ${row.options[before[0] ?? 0]}.`, card.submittedAt ?? this.now)
+    }
+  }
+
+  private endTurnCard(): void {
+    const card = this.turnCard
+    this.turnCard = null
+    const drafting = this.card?.stage === 'draft'
+    if (!card) {
+      if (!drafting) this.clearCard()
       return
     }
-    sheet.submittedAt = this.now
-    this.closeSheetPane(sheet)
-    sheet.items = sheet.items.filter((item) => item.chosen === null)
-    sheet.focus = null
+    const agent = card.rows.filter((row) => row.origin === 'agent')
+    if (card.sent.length || agent.length) {
+      this.receipt = {
+        id: this.nextReceipt++, yours: card.sent,
+        agent: agent.map((row) => {
+          const now = (row.sent ?? row.defaults)[0] ?? 0
+          return { label: row.label, value: row.options[now]!, ...(now !== 0 && { was: row.options[0]! }), options: [...row.options] }
+        }),
+      }
+      this.metric('receipt', { id: this.receipt.id, yours: card.sent.length, agent: agent.length, changed: agent.filter((row) => row.sent).length })
+    }
+    // Someone already writing their next message keeps their draft's card; the receipt holds the switches.
+    if (drafting) return
+    this.card = null
+    if (!agent.length) return
+    const after = this.newCard('after')
+    after.rows = agent.map((row) => {
+      const current = row.sent ?? row.defaults
+      const pending = row.picked !== null && !sameSelection(row.picked, current) ? row.picked : null
+      return { ...row, defaults: [...current], picked: pending, sent: undefined }
+    })
+    this.card = after
+    this.fixCardFocus()
+    if (after.rows.some((row) => row.picked !== null)) this.fillFollowUp()
   }
 
-  private removeSheetItem(sheet: Sheet, id: string): void {
-    const at = sheet.items.findIndex((item) => item.id === id)
-    sheet.items = sheet.items.filter((item) => item.id !== id)
-    if (sheet.focus === id) sheet.focus = (sheet.items[at] ?? sheet.items[0])?.id ?? null
-  }
-
-  private clearSheet(): void {
-    if (this.sheet?.pending) this.out.push({ type: 'cancel', req: this.sheet.id })
-    if (this.sheet) this.closeSheetPane(this.sheet)
-    this.sheet = null
+  /** After the turn, a switched choice becomes a follow-up prompt waiting in the composer. */
+  private fillFollowUp(): void {
+    const card = this.card
+    if (!card || card.stage !== 'after') return
+    const lines = card.rows.filter((row) => row.picked !== null && !sameSelection(row.picked, row.defaults))
+      .map((row) => `Change ${row.label}: ${row.options[row.picked![0] ?? 0]} instead of ${row.options[row.defaults[0] ?? 0]}.`)
+    const text = lines.length ? `${lines.join(' ')} Keep everything else as it is.` : ''
+    if (text === (card.fill ?? '')) return
+    this.out.push({ type: 'fill', text, replaces: card.fill })
+    card.fill = text || null
   }
 
   // ---- amendments --------------------------------------------------------
@@ -1051,13 +1593,11 @@ export class Core {
   }
 
   private onAmend(id: string, option: number): void {
-    const sheet = this.sheet
-    const item = sheet?.items.find((item) => item.id === id)
-    const choice = item?.options[option]
-    if (sheet && sheet.submittedAt !== null && item && choice !== undefined) {
-      this.sendAmendment(id, option, decisionLine({ statement: item.statement, option: choice, question: true }), sheet.submittedAt)
-      this.sheetPickMetric(sheet, id, option)
-      this.removeSheetItem(sheet, id)
+    const row = this.turnCard?.rows.find((entry) => entry.id === id)
+    if (row) {
+      if (row.options[option] === undefined) return
+      row.picked = [option]
+      this.sendAgentChanges()
       return
     }
     const pending = this.amendment
@@ -1084,8 +1624,9 @@ export class Core {
 
   private schedule(origin: Origin, splice: Splice | null): void {
     if (!this.enabled) return
-    if (this.sheetEnabled !== undefined && !this.sheetAllowed()) {
-      this.reviewAt = null
+    if (this.sheetEnabled !== undefined) {
+      if (this.cardAllowed()) this.scheduleCard(origin, splice)
+      else this.reviewAt = null
       return
     }
     if (this.sheetEnabled === undefined && !this.cloudAllowed()) {
@@ -1114,7 +1655,7 @@ export class Core {
 
   private fireScheduled(): void {
     if (this.sheetEnabled === undefined) this.fire()
-    else this.fireSheet()
+    else this.fireCard()
   }
 
   private requestText(): { prompt: string; key: string } {
@@ -1315,7 +1856,7 @@ ${prompt}` }
     return null
   }
 
-  private decisions(includeSheet = true): Decision[] {
+  private decisions(includeCard = true): Decision[] {
     const out: Decision[] = []
     for (const cue of this.cues) {
       if (cue.provisional || cue.chosen === null) continue
@@ -1323,11 +1864,7 @@ ${prompt}` }
       if (option !== undefined) out.push({ statement: cue.statement, option })
     }
     if (this.mode === undefined) return out
-    if (includeSheet && this.sheet?.submittedAt === null) {
-      for (const item of this.sheet.items) {
-        if (item.chosen !== null) out.push({ statement: item.statement, option: item.options[item.chosen]!, question: true })
-      }
-    }
+    if (includeCard && this.card?.stage === 'draft') out.push(...this.cardDecisions())
     const standing: Decision[] = []
     const draft = this.stateDraft
     if (draft && this.enabled) {
@@ -1398,6 +1935,9 @@ ${prompt}` }
     }
     const expiry = this.late?.expires ?? this.amendment?.expires
     if (expiry !== undefined) at = at === null ? expiry : Math.min(at, expiry)
+    for (const due of [this.card?.sketchDue, this.turnCard?.amendDue]) {
+      if (due != null) at = at === null ? due : Math.min(at, due)
+    }
     return at
   }
 
@@ -1462,4 +2002,13 @@ function viewCue(cue: Cue, held: boolean): CueView {
   out.provisional = cue.provisional
   out.held = held
   return out
+}
+
+function wordCount(text: string): number {
+  return text.trim() === '' ? 0 : text.trim().split(/\s+/).length
+}
+
+function cutLabel(text: string): string {
+  const label = text.trim().toLowerCase().replace(/\s+/g, ' ')
+  return label.length <= 16 ? label : `${label.slice(0, 15).trimEnd()}\u2026`
 }

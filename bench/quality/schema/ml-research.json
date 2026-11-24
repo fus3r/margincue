@@ -160,7 +160,7 @@
           "catalog_when": "Request a headline result after tuning on validation data, with a separate untouched labeled set actually available. Both a quick exploratory result from tuning data and an independent final estimate are useful and permitted.",
           "catalog_settled": "The draft or protocol fixes the evaluation partition or status of the claim. A demand for a final unbiased estimate with no independent data is a limitation to handle during the work.",
           "why": "Selection on validation favors lucky candidates, so the reused score has a different interpretation.",
-          "source": "[ESL 2nd ed., §7.2, separate training, validation and test sets](https://mcube.lab.nycu.edu.tw/~cfung/docs/books/hastie2009elements_of_statistical_learning.pdf#page=241); [Kapoor and Narayanan, L1.1](https://arxiv.org/html/2207.07048#S2.SS4)",
+          "source": "[ESL 2nd ed., §7.2, separate training, validation and test sets](https://hastie.su.domains/ElemStatLearn/); [Kapoor and Narayanan, L1.1](https://arxiv.org/html/2207.07048#S2.SS4)",
           "opens": [],
           "anchor_terms": [
             "headline",

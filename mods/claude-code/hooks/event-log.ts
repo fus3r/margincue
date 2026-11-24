@@ -90,7 +90,10 @@ export class EventLog {
 
 export type Arm = 'sheet' | 'control'
 
-type TrialEvent = { event: string; arm: Arm; empty?: boolean; option?: number | null; afterSubmit?: boolean; picked?: number; open?: number }
+type TrialEvent = {
+  event: string; arm: Arm; empty?: boolean; option?: number | string | null; afterSubmit?: boolean; picked?: number; open?: number
+  rows?: number; stage?: string
+}
 
 function eventRows(text: string): TrialEvent[] {
   return text.split('\n').filter(isObjectLine).map((line) => JSON.parse(line))
@@ -121,6 +124,17 @@ export function trialCounts(logs: string[]): string[] {
           counts.submitted++
           counts.picked += row.picked ?? 0
           counts.open += row.open ?? 0
+          break
+        // The card replaced the sheet; both are counted so older logs still read.
+        case 'card-requested': counts.requested++; break
+        case 'card-reply': counts.replies++; counts.empty += Number(row.rows === 0); break
+        case 'card-shown': counts.shown++; break
+        case 'card-pick': counts[row.stage === 'draft' ? 'before' : 'after']++; break
+        case 'card-dismissed': counts.dismissed++; break
+        case 'card-submitted':
+          counts.submitted++
+          counts.picked += row.picked ?? 0
+          counts.open += Math.max(0, (row.rows ?? 0) - (row.picked ?? 0))
           break
       }
     }
