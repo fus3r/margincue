@@ -77,3 +77,24 @@ jobs:
         run: npm install -g @openai/codex && codex --version
       - name: The relay against it
         run: cargo test --release --locked --manifest-path crates/margincue-relay/Cargo.toml --test live -- --ignored --test-threads=1
+
+  setup:
+    # Once a day, setup as a user runs it: the relay downloaded from the release of the version on main.
+    if: github.event_name != 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Codex CLI
+        run: npm install -g @openai/codex && codex --version
+      - name: Setup in a fresh home, with the released relay
+        run: bash .github/scripts/setup-check.sh
