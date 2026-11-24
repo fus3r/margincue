@@ -1,9 +1,11 @@
 // margincue: the composer Codex opens on ctrl+g, the Codex hooks, and setup.
 //
-//   margincue setup           install for Codex: plugin, first-run questions, the composer on ctrl+g
-//   margincue codex [args]    start Codex with the composer as its ctrl+g editor
+//   margincue setup           install for Codex: plugin, first-run questions, the card under Codex's prompt
+//   margincue codex [args]    start Codex with the card under its prompt (the relay), and the composer on ctrl+g
 //   margincue compose FILE    the composer (Codex runs it)
 //   margincue hook prompt|stop|start   the Codex hooks (they read JSON on stdin)
+//   margincue mcp             the desktop card's stdio server
+//   margincue prefetch ID     read a desktop card in the background (the prompt hook starts it)
 //   margincue status          what MarginCue knows about you
 
 import { spawn, spawnSync } from 'node:child_process'
@@ -15,6 +17,9 @@ import { fileURLToPath } from 'node:url'
 import { describeUser, interview } from '../../claude-code/hooks/onboarding'
 import { compose } from './compose'
 import { promptHook, stopHook } from './hooks'
+import { serveMcp } from './mcp'
+import { findRelay, installRelay, startRelay } from './relay'
+import { runPrefetch } from './prefetch'
 import { PATHS, readSettings, saveSettings } from './store'
 
 const SELF = fileURLToPath(import.meta.url)
@@ -27,10 +32,12 @@ async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv
   if (command === 'compose' && rest[0]) return compose(rest[0])
   if (command === 'hook') return hook(rest[0] ?? '')
+  if (command === 'mcp') return serveMcp()
+  if (command === 'prefetch' && rest[0]) return runPrefetch(rest[0])
   if (command === 'codex') return launch(rest)
   if (command === 'setup') return setup()
   if (command === 'status') return status()
-  process.stdout.write('margincue setup | codex [args] | compose FILE | hook prompt|stop|start | status\n')
+  process.stdout.write('margincue setup | codex [args] | compose FILE | hook prompt|stop|start | mcp | status\n')
 }
 
 // ---- hooks: never in the way of the person's prompt --------------------------------------
@@ -70,13 +77,19 @@ function stdin(): Promise<string> {
 
 // ---- the launcher --------------------------------------------------------------------
 
-/** Codex picks its ctrl+g editor from VISUAL alone: this runs Codex with the composer there, and the person's editor behind ctrl+e. */
+/**
+ * Codex under the relay: the card sits under its prompt box as the prompt is typed. Codex picks
+ * its ctrl+g editor from VISUAL alone: the composer goes there, the person's editor behind ctrl+e.
+ * Without the relay (Windows, no binary, MARGINCUE_RELAY=off) Codex starts bare and ctrl+g opens the card.
+ */
 function launch(args: string[]): void {
   const own = process.env['MARGINCUE_EDITOR'] || process.env['VISUAL'] || process.env['EDITOR'] || ''
   const visual = `${quote(process.execPath)} ${quote(existsSync(STABLE) ? STABLE : SELF)} compose`
+  const env = { ...process.env, VISUAL: visual, ...(own && !own.includes('margincue') && { MARGINCUE_EDITOR: own }) }
+  const relay = findRelay(env)
+  if (relay && startRelay(relay, args, env)) return
   const child = spawn('codex', args, {
-    stdio: 'inherit', shell: process.platform === 'win32',
-    env: { ...process.env, VISUAL: visual, ...(own && !own.includes('margincue') && { MARGINCUE_EDITOR: own }) },
+    stdio: 'inherit', shell: process.platform === 'win32', env,
   })
   child.on('exit', (code) => process.exit(code ?? 0))
   child.on('error', (error) => {
@@ -156,13 +169,16 @@ async function setup(): Promise<void> {
     }
     say()
   }
-  say('3. The card while you type: Codex opens MarginCue on ctrl+g when started through it.')
+  say(`3. The card under Codex's prompt, as you type.`)
+  await installRelay(say)
   const line = aliasLine()
-  if (line) {
+  if (line && existsSync(line.file) && readFileSync(line.file, 'utf8').includes(line.text)) {
+    say(`   The codex alias is already in ${line.file}.`)
+  } else if (line) {
     const answer = ((await rl.question(`   Add this to ${line.file}?\n     ${line.text}\n   [Y/n] `)) ?? 'n').trim().toLowerCase()
     if (answer === '' || answer === 'y' || answer === 'yes') {
-      appendFileSync(line.file, `\n# MarginCue: Codex opens the MarginCue composer on ctrl+g\n${line.text}\n`)
-      say('   Added. Open a new terminal, run codex, and press ctrl+g in the prompt.')
+      appendFileSync(line.file, `\n# MarginCue: Codex with MarginCue's card under its prompt\n${line.text}\n`)
+      say('   Added. Open a new terminal and run codex: the card shows under the prompt as you type.')
     } else say(`   Not added. Start Codex with: node ${quote(STABLE)} codex`)
   }
   rl.close()

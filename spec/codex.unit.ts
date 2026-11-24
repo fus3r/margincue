@@ -1,22 +1,35 @@
 // MarginCue for Codex: the composer's keys and text, the hooks, the session reader, and the
 // model client against a fake app-server. Runs on every platform in CI.
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
 import { test } from 'node:test'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { createInterface } from 'node:readline'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import './ts-resolve.ts'
 
 const home = mkdtempSync(join(tmpdir(), 'margincue-home-'))
 process.env['MARGINCUE_HOME'] = home
 delete process.env['MARGINCUE_READER']
+// The desktop hook starts a detached reader; by default it is a no-op here, so no test reaches the real Codex.
+const noReader = join(home, 'no-reader.mjs')
+writeFileSync(noReader, '')
+process.env['MARGINCUE_ENTRY'] = noReader
 
 const { parseKeys } = await import('../mods/codex/src/terminal')
 const { Draft } = await import('../mods/codex/src/editor')
 const { decisionsOf, promptHook, stopHook, receiptLine, READING_FIRST } = await import('../mods/codex/src/hooks')
 const { PATHS, sessionSource, turnMessages } = await import('../mods/codex/src/store')
 const { CodexModel } = await import('../mods/codex/src/model')
+const { composeFollowUp } = await import('../mods/codex/src/widget-message')
+const { emptyCard, readRecord, writeRecord } = await import('../mods/codex/src/card-store')
+const { CardReader } = await import('../mods/codex/src/card-reader')
+const { fillCard } = await import('../mods/codex/src/prefetch')
+import type { CardOutput } from '../mods/codex/src/widget-message'
+import type { WidgetCard, WidgetRow } from '../mods/codex/src/widget-message'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const OPEN = '⟦'
@@ -127,16 +140,270 @@ test('readings: the lightest model, the reader prompt as instructions, the reply
   missing.close()
 })
 
-test('without the composer (the desktop app, or Enter without ctrl+g) a new task opens with the card; with it, not', async () => {
+test('the desktop hook gates new tasks on the widget and skips its follow-ups; the CLI keeps the text card', async () => {
   const { writeJson } = await import('../mods/codex/src/store')
   const transcript = rollout('t-9', [], 'Codex Desktop')
   const prompt = 'Build a weekly activity report for team owners from the Audit Log, as a new Reports page with a CSV download.'
   const context = (out: unknown) => (out as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext
-  assert.ok(context(promptHook({ session_id: 'app-1', turn_id: 't-9', transcript_path: transcript, cwd: '/p', prompt })).includes(READING_FIRST))
+  const input = { session_id: 'app-1', turn_id: 't-9', transcript_path: transcript, cwd: home, prompt }
+  const gate = context(promptHook(input))
+  const id = /`mcp__margincue__margincue_card` with \{"card": "([\w-]+)"\}/.exec(gate)?.[1]
+  assert.ok(id, gate)
+  assert.ok(gate.includes(`await tools.mcp__margincue__margincue_card({ card: "${id}" })`))
+  assert.doesNotMatch(gate, /verbatim/)
+  // The reading started at Enter; this test's reader does nothing, so the card ends as failed.
+  const record = readRecord(id)!
+  assert.deepEqual([record.prompt, record.cwd], [prompt, home])
+  assert.ok(['reading', 'failed'].includes(record.state))
+  assert.match(gate, /end this turn immediately, with no message, and wait/)
+  assert.match(gate, /only if the MCP tool is unavailable or the call fails/)
+  assert.ok(gate.includes(READING_FIRST))
+
+  const cli = context(promptHook({ ...input, transcript_path: rollout('cli-new', []) }))
+  assert.ok(cli.includes(READING_FIRST))
+  assert.doesNotMatch(cli, /margincue_card/)
+
   writeJson(PATHS.composed, { text: prompt, at: Date.now() })
-  assert.ok(!context(promptHook({ session_id: 'app-1', turn_id: 't-10', transcript_path: transcript, cwd: '/p', prompt })).includes(READING_FIRST))
-  const follow = 'Amendment to my last prompt: for week starts, use Sunday instead of Monday.'
-  assert.ok(!context(promptHook({ session_id: 'app-1', turn_id: 't-11', transcript_path: transcript, cwd: '/p', prompt: follow })).includes(READING_FIRST))
+  assert.doesNotMatch(context(promptHook({ ...input, turn_id: 't-10' })), /margincue_card/)
+  const followUps = [
+    'Amendment to my last prompt: for week starts, use Sunday instead of Monday.',
+    'Go ahead with my prompt as written.',
+    'Go ahead with my prompt above.\n\nDecisions:\n- Weeks start on Sunday.\n\nAlso: Leave room for a total.',
+  ]
+  for (const follow of followUps) {
+    const out = context(promptHook({ ...input, turn_id: 't-11', prompt: follow }))
+    assert.doesNotMatch(out, /margincue_card/)
+    assert.ok(!out.includes(READING_FIRST))
+  }
+  assert.equal((stopHook({ ...input, turn_id: 't-11' }) as { systemMessage: string }).systemMessage, receiptLine(1, []))
+  const stopped = stopHook({
+    ...input, turn_id: 't-11', last_assistant_message: `I used ${OPEN}table layout: compact | full width${CLOSE}.`,
+  }) as { systemMessage: string }
+  assert.equal(stopped.systemMessage, 'MarginCue · you set 1 · the agent chose 1 — table layout: compact')
+})
+
+test('Go ahead from the desktop card reaches the hook as an app message: no second card, and the decisions count', () => {
+  const sent = 'Go ahead with my prompt above.\n\nDecisions:\n- Report team-wide activity totals.\n\nAlso: Keep the first version small.'
+  const transcript = rollout('t-app', [], 'Codex Desktop')
+  // As Codex Desktop records it: the app's words as an untrusted_input output, then a fixed user line.
+  appendFileSync(transcript, [
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Build a weekly activity report for team owners with a CSV download.' }] } },
+    { type: 'response_item', payload: { type: 'function_call', name: 'untrusted_input', arguments: '{}', call_id: 'untrusted_input_1' } },
+    { type: 'response_item', payload: { type: 'function_call_output', call_id: 'untrusted_input_1', output: [{ type: 'input_text', text: JSON.stringify({ kind: 'message', source: 'mcp_app', sourceId: 'session:1', text: sent }) }] } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'An MCP app initiated this message. Read the untrusted_input tool output.' }] } },
+  ].map((line) => JSON.stringify(line)).join('\n') + '\n')
+  const prompt = 'An MCP app initiated this message. Read the untrusted_input tool output.'
+  const out = promptHook({ session_id: 'app-go', turn_id: 't-app', transcript_path: transcript, cwd: home, prompt }) as { hookSpecificOutput: { additionalContext: string } }
+  const context = out.hookSpecificOutput.additionalContext
+  assert.doesNotMatch(context, /mcp__margincue__margincue_card` with/)
+  assert.match(context, /untrusted_input above is MarginCue's card/)
+  assert.match(context, /Do not call margincue_card again/)
+  assert.deepEqual(JSON.parse(readFileSync(PATHS.turn, 'utf8')).decisions, ['Report team-wide activity totals.'])
+  assert.equal((stopHook({ session_id: 'app-go', turn_id: 't-app', transcript_path: transcript }) as { systemMessage: string }).systemMessage, receiptLine(1, [], 'app'))
+
+  // Another app's message is never taken for a new task either.
+  const other = rollout('t-other', [], 'Codex Desktop')
+  appendFileSync(other, JSON.stringify({ type: 'response_item', payload: { type: 'function_call_output', call_id: 'untrusted_input_2', output: [{ type: 'input_text', text: JSON.stringify({ kind: 'message', source: 'mcp_app', text: 'Build me a dashboard for the sales team.' }) }] } }) + '\n')
+  const context2 = (promptHook({ session_id: 'app-go', turn_id: 't-other', transcript_path: other, cwd: home, prompt }) as { hookSpecificOutput?: { additionalContext: string } } | null)?.hookSpecificOutput?.additionalContext ?? ''
+  assert.doesNotMatch(context2, /margincue_card/)
+})
+
+test('Go ahead sends the whole plan the card showed: every choice, the note, and the preview drawn for them', () => {
+  const rows: WidgetRow[] = [
+    { id: 'a', label: 'week start', type: 'one', statement: 'Weeks start on {}', options: ['Monday', 'Sunday'], assumed: [0] },
+    { id: 'b', label: 'columns', type: 'many', statement: 'Include {}', options: ['sign-ins', 'invites'], assumed: [0] },
+    { id: 'c', label: 'history', type: 'range', statement: 'Show {} of history', options: ['1 wk', '4 wk'], assumed: [1] },
+    { id: 'd', label: 'Audit Log', type: 'one', statement: '"Audit Log" is {}', options: ['activityLogs', 'new, to be added'], assumed: [], files: ['activity.ts'] },
+  ]
+  // Switched choices (an empty pick-any one too) and the ones kept as shown, in the card's order.
+  const message = composeFollowUp(rows, { a: [1], b: [], d: [0] }, '  Include a total.\nUse local time.  ')
+  assert.deepEqual(message.decisions, ['Weeks start on Sunday.', 'Include none of these.', 'Show 4 wk of history.', '"Audit Log" is activityLogs (activity.ts).'])
+  assert.equal(message.text, 'Go ahead with my prompt above.\n\nDecisions:\n- Weeks start on Sunday.\n- Include none of these.\n- Show 4 wk of history.\n- "Audit Log" is activityLogs (activity.ts).\n\nAlso: Include a total. Use local time.')
+  assert.deepEqual(decisionsOf(message.text), message.decisions)
+  // Nothing switched: the plan as shown still travels; a name the code lacks has no default and stays out.
+  const kept = composeFollowUp(rows, {}, '', false, { title: 'Activity report', lines: ['┌ Report ┐', '│ Mon 4  │', '└────────┘'] })
+  assert.equal(kept.text, 'Go ahead with my prompt above.\n\nDecisions:\n- Weeks start on Monday.\n- Include sign-ins.\n- Show 4 wk of history.\n\n' +
+    'Target output, as sketched (Activity report):\n```text\n┌ Report ┐\n│ Mon 4  │\n└────────┘\n```')
+  assert.deepEqual(decisionsOf(kept.text), kept.decisions)
+  assert.deepEqual(composeFollowUp(rows, { a: [1] }, 'Ignore this.', true), {
+    text: 'Go ahead with my prompt as written.', decisions: [], extra: '',
+  })
+  assert.equal(composeFollowUp([], {}, '  ').text, 'Go ahead with my prompt as written.')
+  assert.equal(composeFollowUp([], {}, 'Use local time.').text, 'Go ahead with my prompt above.\n\nAlso: Use local time.')
+})
+
+test('the bundled MCP command resolves from the plugin directory and initializes', async () => {
+  const plugin = join(here, '..', 'mods', 'codex')
+  const manifest = JSON.parse(readFileSync(join(plugin, '.codex-plugin', 'plugin.json'), 'utf8'))
+  const { mcpServers: { margincue: config } } = JSON.parse(readFileSync(join(plugin, manifest.mcpServers), 'utf8'))
+  assert.equal(config.command, 'node')
+  assert.ok(config.env_vars.includes('CODEX_APP_RUNTIME_CLI_PATH'))
+  const child = spawn(process.execPath, config.args, { cwd: join(plugin, config.cwd) })
+  const output: Buffer[] = []
+  child.stdout.on('data', (part: Buffer) => output.push(part))
+  child.stdin.end(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25' } })}\n`)
+  const [code] = await once(child, 'close')
+  assert.equal(code, 0)
+  const response = JSON.parse(Buffer.concat(output).toString('utf8'))
+  assert.deepEqual(response.result.capabilities, { tools: {}, resources: {} })
+  assert.equal(response.result.protocolVersion, '2025-11-25')
+})
+
+test('the bundled MCP server uses the Desktop runtime to read a grounded card and draw its current choices', { timeout: 15000 }, async () => {
+  const plugin = join(here, '..', 'mods', 'codex')
+  const project = mkdtempSync(join(tmpdir(), 'margincue-project-'))
+  writeFileSync(join(project, 'activity.ts'), 'export const activityLogs = []\n')
+  const fake = join(here, 'fixtures', 'fake-codex.mjs')
+  // Node acts as the bundled CLI, loading this file when the reader passes "app-server".
+  writeFileSync(join(project, 'app-server'), `void import(${JSON.stringify(pathToFileURL(fake).href)})\n`)
+  const child = spawn(process.execPath, ['dist/margincue.mjs', 'mcp'], {
+    cwd: plugin,
+    env: {
+      ...process.env,
+      CODEX_HOME: home,
+      CODEX_CLI_PATH: '',
+      MARGINCUE_CODEX: '',
+      CODEX_APP_RUNTIME_CLI_PATH: process.execPath,
+      FAKE_CODEX_PROJECT: project,
+    },
+  })
+  const closed = once(child, 'close')
+  let errors = ''
+  child.stderr.setEncoding('utf8').on('data', (data: string) => { errors += data })
+  const lines = createInterface({ input: child.stdout, crlfDelay: Infinity })[Symbol.asyncIterator]()
+  let sequence = 0
+  async function call(method: string, params: object = {}) {
+    const id = ++sequence
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
+    const next = await lines.next()
+    assert.ok(!next.done, errors)
+    const response = JSON.parse(next.value)
+    assert.equal(response.jsonrpc, '2.0')
+    assert.equal(response.id, id)
+    assert.ok(!response.error, JSON.stringify(response.error))
+    return response.result
+  }
+  try {
+    assert.equal((await call('initialize', { protocolVersion: '2025-06-18' })).protocolVersion, '2025-06-18')
+    child.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
+    const uri = 'ui://margincue/card.html'
+    const list = await call('tools/list')
+    assert.deepEqual(list.tools.map((tool: { name: string }) => tool.name), ['margincue_card', 'margincue_read', 'margincue_sketch'])
+    assert.deepEqual(list.tools[0]._meta, { ui: { resourceUri: uri }, 'openai/outputTemplate': uri })
+    assert.deepEqual([list.tools[1]._meta.ui.visibility, list.tools[2]._meta.ui.visibility], [['app'], ['app']])
+
+    // Without a card id from the hook, the server reads the card itself; either way the card opens at once.
+    const prompt = 'Build a weekly report for team owners from the Audit Log page.\nAdd a CSV download.  '
+    const result = await call('tools/call', { name: 'margincue_card', arguments: { prompt, cwd: project } })
+    assert.equal(result._meta['openai/outputTemplate'], uri)
+    assert.match(result.content[0].text, /End your turn now/)
+    const opened = result.structuredContent as CardOutput
+    assert.deepEqual([opened.prompt, opened.state, opened.reading, opened.rows], [prompt, 'reading', null, []])
+    const follow = async (id: string, after = 0) => {
+      let out: CardOutput
+      do {
+        out = (await call('tools/call', { name: 'margincue_read', arguments: { card: id, after } })).structuredContent
+        after = out.version!
+      } while (out.state === 'reading' || out.sketchState === 'drawing')
+      return out
+    }
+    const card = await follow(opened.id, opened.version)
+    assert.equal(card.id, opened.id)
+    assert.equal(card.state, 'done')
+    assert.equal(card.reading, 'A weekly activity report with CSV export.')
+    assert.deepEqual(card.rows.map((row) => row.type), ['one', 'one', 'many', 'range'])
+    const week = card.rows.find((row) => row.label === 'week starts')!
+    assert.deepEqual([week.options, week.assumed], [['Monday', 'Sunday'], [0]])
+    assert.deepEqual(card.missing, [{ phrase: 'Audit Log', candidates: [{ name: 'activityLogs', file: 'activity.ts' }], rowId: card.rows[0]!.id }])
+    assert.equal(card.preview, true)
+    // The first preview comes with the card, drawn with Codex's own choices.
+    assert.equal(card.sketchState, 'done')
+    assert.ok(card.sketch!.lines.includes('- Weeks start on Monday.'))
+
+    const sketch = (picks: object) => call('tools/call', { name: 'margincue_sketch', arguments: { cardId: card.id, picks } })
+    assert.deepEqual((await sketch({})).structuredContent.sketch, card.sketch)
+    const updated = await sketch({ [week.id]: [1] })
+    assert.equal(updated.structuredContent.sketch.title, 'Activity report')
+    assert.ok(updated.structuredContent.sketch.lines.includes('- Weeks start on Sunday.'))
+    assert.equal((await sketch({ [week.id]: [10] })).isError, true)
+
+    const brief = await call('tools/call', { name: 'margincue_card', arguments: { prompt: 'Build an app', cwd: project } })
+    assert.ok((await follow(brief.structuredContent.id)).reading)
+
+    // A card the hook started is opened by its id alone.
+    writeRecord({
+      id: 'hook-card-1', prompt, cwd: project, at: Date.now(), version: 4, state: 'done',
+      card: { ...emptyCard('hook-card-1', prompt), reading: 'Read at Enter.' }, sketchState: 'none', sketch: null, names: [],
+    })
+    const byId = (await call('tools/call', { name: 'margincue_card', arguments: { card: 'hook-card-1' } })).structuredContent
+    assert.deepEqual([byId.id, byId.state, byId.reading, byId.version], ['hook-card-1', 'done', 'Read at Enter.', 4])
+    assert.equal((await call('tools/call', { name: 'margincue_card', arguments: { card: 'no-such-card' } })).isError, true)
+    assert.equal((await call('tools/call', { name: 'margincue_read', arguments: { card: 'no-such-card' } })).isError, true)
+
+    assert.equal((await call('resources/list')).resources[0].uri, uri)
+    const [resource] = (await call('resources/read', { uri })).contents
+    assert.equal(resource.uri, uri)
+    assert.equal(resource.mimeType, 'text/html;profile=mcp-app')
+    assert.match(resource.text, /<script>[\s\S]*ui\/initialize[\s\S]*<\/script>/)
+    assert.match(resource.text, /Go ahead with my prompt as written/)
+    assert.doesNotMatch(resource.text, /<script[^>]+src=|<link[^>]+href=/)
+  } finally {
+    child.stdin.end()
+    const [code] = await closed
+    assert.equal(code, 0, errors)
+  }
+})
+
+test('a desktop card streams in: its reading first, then each choice, then its first preview', { timeout: 15000 }, async () => {
+  const project = mkdtempSync(join(tmpdir(), 'margincue-project-'))
+  process.env['FAKE_CODEX_PROJECT'] = project
+  process.env['FAKE_CODEX_LINES'] = '1'
+  const reader = new CardReader([process.execPath, join(here, 'fixtures', 'fake-codex.mjs')])
+  try {
+    const seen: CardOutput[] = []
+    const source = await reader.read('card-a', 'Build a weekly report with a CSV download.', project, (card) => seen.push(card))
+    assert.deepEqual(seen.map((card) => [Boolean(card.reading), card.rows.length]), [[true, 0], [true, 0], [true, 1], [true, 2], [true, 3]])
+    assert.equal(source!.card.rows.length, 3)
+
+    const prompt = 'Build a weekly report with a CSV download.'
+    writeRecord({ id: 'card-b', prompt, cwd: project, at: Date.now(), version: 1, state: 'reading', card: emptyCard('card-b', prompt), sketchState: 'none', sketch: null, names: [] })
+    await fillCard(reader, 'card-b')
+    const record = readRecord('card-b')!
+    assert.deepEqual([record.state, record.sketchState, record.pid], ['done', 'done', process.pid])
+    assert.equal(record.card.reading, 'A weekly activity report with CSV export.')
+    assert.ok(record.sketch!.lines.includes('- Weeks start on Monday.'))
+  } finally {
+    reader.close()
+    delete process.env['FAKE_CODEX_PROJECT']
+    delete process.env['FAKE_CODEX_LINES']
+  }
+})
+
+test('the desktop hook starts the reading at Enter, in a reader that outlives the hook', { timeout: 15000 }, async () => {
+  const project = mkdtempSync(join(tmpdir(), 'margincue-project-'))
+  writeFileSync(join(project, 'app-server'), `void import(${JSON.stringify(pathToFileURL(join(here, 'fixtures', 'fake-codex.mjs')).href)})\n`)
+  const saved = { ...process.env }
+  Object.assign(process.env, {
+    MARGINCUE_ENTRY: join(here, '..', 'mods', 'codex', 'dist', 'margincue.mjs'),
+    MARGINCUE_CODEX: '', CODEX_CLI_PATH: '', CODEX_APP_RUNTIME_CLI_PATH: process.execPath, FAKE_CODEX_PROJECT: project,
+  })
+  try {
+    const prompt = 'Build a weekly report for team owners with a CSV download.'
+    const out = promptHook({ session_id: 'app-e2e', turn_id: 't-e2e', transcript_path: rollout('t-e2e', [], 'Codex Desktop'), cwd: project, prompt })
+    const id = /"card": "([\w-]+)"/.exec(JSON.stringify(out).replace(/\\"/g, '"'))?.[1]
+    assert.ok(id)
+    let record = readRecord(id)
+    for (const until = Date.now() + 12000; record && (record.state === 'reading' || record.sketchState !== 'done') && Date.now() < until;) {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      record = readRecord(id)
+    }
+    assert.deepEqual([record?.state, record?.sketchState], ['done', 'done'])
+    assert.equal(record!.card.reading, 'A weekly activity report with CSV export.')
+    assert.equal(record!.card.rows.length, 3)
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]
+    Object.assign(process.env, saved)
+  }
 })
 
 test('a scripted run (codex exec) is left exactly as it would be without MarginCue', () => {

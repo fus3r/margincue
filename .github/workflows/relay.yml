@@ -1,0 +1,79 @@
+name: relay
+
+# The Codex card's terminal relay: release binaries for `margincue setup`, and a daily
+# check of the relay against the newest Codex CLI (Codex redraws its prompt box often).
+
+on:
+  push:
+    tags: ['v*']
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin, asset: margincue-relay-darwin-arm64 }
+          - { os: macos-latest, target: x86_64-apple-darwin, asset: margincue-relay-darwin-x64 }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, asset: margincue-relay-linux-x64 }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, asset: margincue-relay-linux-arm64 }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          rustup target add ${{ matrix.target }}
+          if [[ "${{ matrix.target }}" == *musl ]]; then sudo apt-get update -q && sudo apt-get install -y -q musl-tools; fi
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }} --manifest-path crates/margincue-relay/Cargo.toml
+      - name: Package
+        run: |
+          cp crates/margincue-relay/target/${{ matrix.target }}/release/margincue-relay ${{ matrix.asset }}
+          shasum -a 256 ${{ matrix.asset }} > ${{ matrix.asset }}.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --clobber margincue-relay-*
+
+  codex:
+    if: github.event_name != 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Newest Codex CLI
+        run: npm install -g @openai/codex && codex --version
+      - name: The relay against it
+        run: cargo test --release --locked --manifest-path crates/margincue-relay/Cargo.toml --test live -- --ignored --test-threads=1

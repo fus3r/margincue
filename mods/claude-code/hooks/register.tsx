@@ -66,7 +66,7 @@ const expert = atom({ plugin: 'margincue', key: 'expert' } as const, null)
 const READ_WAIT_MS = 60000
 /** Claude's own dialog under MarginCue's card in an app: send with the card, or as written; "Other" adds to the prompt. */
 const GATE_QUESTION = 'Which prompt should Claude use?'
-const GATE_SEND = 'Use my picks'
+const GATE_SEND = 'Go ahead with this plan'
 const GATE_RAW = 'Use my prompt as written'
 
 /**
@@ -545,7 +545,8 @@ function cycleScope(slot: string, fallback: Scope): void {
   host.scopes.set(slot, scopes[(scopes.indexOf(current) + 1) % scopes.length]!)
 }
 
-type Held = 'send' | 'raw'
+/** send: the card's whole plan; asked: only the answers to choices asked one at a time; raw: as typed. */
+type Held = 'send' | 'asked' | 'raw'
 
 /** A question of the app's own panel and the card row it answers. */
 type PanelQuestion = {
@@ -581,7 +582,7 @@ async function askAtEnter($: $, text: string): Promise<{ how: Held; addition?: s
     if (skipped(answer)) continue
     answerRow($, question, answer)
   }
-  return { how: 'send' }
+  return { how: 'asked' }
 }
 
 /** The dialog's Skip answers "[No preference]"; typed text in brackets is still the person's words. */
@@ -841,7 +842,7 @@ function answerRow($: $, question: PanelQuestion, answer: string): void {
  * What a prompt carries once the person sends it: the Decisions they set (and the sketch they attached), with the
  * turn noted for the switches and the follow-up.
  */
-async function submitted($: $, typed: string, turnId?: string, addition?: string, raw = false): Promise<{ text: string; amendable: boolean }> {
+async function submitted($: $, typed: string, turnId?: string, addition?: string, raw = false, plan = true): Promise<{ text: string; amendable: boolean }> {
   const core = ensure($)
   const values = core.storedDecisions()
   if (host.settings.mode !== 'off' && values.some((value) => value.scope === 'model')) {
@@ -853,7 +854,7 @@ async function submitted($: $, typed: string, turnId?: string, addition?: string
   host.lastDraft = ''
   host.scopes.clear()
   const amendable = !turnId && !host.activeTurn && !host.turn
-  const effects = run($, { type: 'submit', now: now(), text: typed, amendable }, false)
+  const effects = run($, { type: 'submit', now: now(), text: typed, amendable, plan }, false)
   const sent = effects.find((fx): fx is SubmitEffect => fx.type === 'submit')
   // As written means exactly as typed: no picks, no standing preference, no sketch.
   const decided = raw ? typed : sent?.text ?? typed
@@ -1483,6 +1484,7 @@ export const register: Register = (on) => {
     dropClear()
     let addition: string | undefined
     let raw = false
+    let plan = true
     // An app (desktop, VS Code, phone) never shows MarginCue the draft while it is typed: the card comes at Enter,
     // before Claude starts, and the prompt goes when the person sends it (or as written).
     // The engine stamps the desktop app's typed prompts `composer` as well: the app, not the stamp, says the draft was unseen.
@@ -1490,9 +1492,10 @@ export const register: Register = (on) => {
       const asked = await askAtEnter($, e.text)
       addition = asked.addition
       raw = asked.how === 'raw'
+      plan = asked.how !== 'asked'
       if (raw) run($, { type: 'draft', now: now(), text: '', origin: 'type', cursor: 0 }, false)
     }
-    const { text, amendable } = await submitted($, e.text, e.turnId, addition, raw)
+    const { text, amendable } = await submitted($, e.text, e.turnId, addition, raw, plan)
     // An app never clears its box through MarginCue: once the prompt goes, its card goes too.
     if (host.appHost || e.origin.kind !== 'composer') run($, { type: 'draft', now: now(), text: '', origin: 'type', cursor: 0 }, false)
     const result = await next(text === e.text ? e : { ...e, text })

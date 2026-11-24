@@ -41,3 +41,14 @@ jobs:
           npm install -g @anthropic-ai/claude-code
           claude plugin validate .
           claude plugin test mods/claude-code
+
+  relay:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Relay unit and terminal tests
+        run: cargo test --release --locked --manifest-path crates/margincue-relay/Cargo.toml

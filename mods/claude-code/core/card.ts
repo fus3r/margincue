@@ -228,6 +228,22 @@ export function toggleSelection(row: Pick<ParsedRow, 'type'>, selected: number[]
 
 export type ParsedSketch = { title: string; lines: string[] }
 
+/** A sketch draws what it can know: something new, or an analysis. A change to existing code or screens it has not seen is not drawn. */
+export function canSketch(kind: CardKind | null): boolean {
+  return kind === 'build' || kind === 'explore'
+}
+
+export function buildSketchPrompt(input: { draft: string; read: string | null; choices: string[]; names: string[]; today?: string }): string {
+  const { draft, read, choices, names, today } = input
+  return [
+    'Draft:', '<<<', draft, '>>>',
+    ...(read ? [`Read as: ${read}`] : []),
+    ...(choices.length ? ['Choices:', ...choices.map((line) => `- ${line}`)] : []),
+    ...(names.length ? [`Names in the code: ${names.join(', ')}`] : []),
+    ...(today ? [`Today is ${today}: sample dates are recent.`] : []),
+  ].join('\n')
+}
+
 /** A sketch reply: `title | ...` then up to ten lines of plain text; NONE for nothing to show. */
 export function parseSketch(reply: string): ParsedSketch | null {
   const lines = reply.replace(/\t/g, '  ').split(/\r?\n/).filter((line) => !/^\s*```/.test(line))

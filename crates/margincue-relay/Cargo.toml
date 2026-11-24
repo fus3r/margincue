@@ -1,0 +1,23 @@
+[package]
+name = "margincue-relay"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+description = "Runs Codex a few rows short of the terminal so MarginCue's card can sit under its prompt."
+
+[dependencies]
+libc = "0.2"
+memchr = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+shlex = "1"
+signal-hook = "0.3"
+tempfile = "3"
+unicode-width = "0.2"
+vt100 = "0.18.1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

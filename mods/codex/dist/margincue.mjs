@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
 // src/cli.ts
-import { spawn as spawn3, spawnSync as spawnSync2 } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync as mkdirSync2, readFileSync as readFileSync3, appendFileSync } from "node:fs";
+import { spawn as spawn5, spawnSync as spawnSync3 } from "node:child_process";
+import { copyFileSync as copyFileSync2, existsSync as existsSync2, mkdirSync as mkdirSync4, readFileSync as readFileSync5, appendFileSync } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { join as join3 } from "node:path";
-import { createInterface as createInterface2 } from "node:readline";
-import { fileURLToPath } from "node:url";
+import { join as join5 } from "node:path";
+import { createInterface as createInterface4 } from "node:readline";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // ../claude-code/hooks/onboarding.ts
 var WORK = [
@@ -220,230 +220,6 @@ function foldCase(value) {
   return out;
 }
 
-// ../claude-code/core/card.ts
-var CARD_KINDS = ["build", "change", "fix", "explore", "ask", "other"];
-var CARD_MAX_ROWS = 6;
-var CARD_MAX_TOKENS = 560;
-var SKETCH_MAX_TOKENS = 420;
-var MAX_LABEL = 16;
-var MAX_OPTION = 80;
-var MAX_STATEMENT = 120;
-var MAX_READ = 400;
-var SKETCH_MAX_LINES = 14;
-var SKETCH_MAX_WIDTH = 78;
-var BLANK_OPEN = "\u27E6";
-var BLANK_CLOSE = "\u27E7";
-var TYPES = {
-  one: "one",
-  choice: "one",
-  pick: "one",
-  bool: "one",
-  many: "many",
-  multi: "many",
-  any: "many",
-  range: "range",
-  slider: "range",
-  scale: "range",
-  num: "num",
-  number: "num"
-};
-var QUOTES2 = /^["'“”‘’`]+|["'“”‘’`]+$/g;
-var clean = (text2) => text2.replace(/\s+/g, " ").replace(QUOTES2, "").trim();
-function parseCard(reply) {
-  let read = null;
-  let kind = null;
-  const rows = [];
-  for (const raw of reply.split(/\r?\n/)) {
-    const line = raw.trim().replace(/^[-*•]\s+/, "");
-    if (!line || line.startsWith("```")) continue;
-    const fields = line.split("|").map((field) => field.trim());
-    const head = fields[0]?.toLowerCase();
-    if (head === "read" && read === null) {
-      const text2 = clean(fields.slice(1).join(" | "));
-      if (text2) read = cut(text2, MAX_READ);
-    } else if (head === "kind" && kind === null) {
-      const value = fields[1]?.toLowerCase();
-      if (value && CARD_KINDS.includes(value)) kind = value;
-    } else if (head === "row" && rows.length < CARD_MAX_ROWS) {
-      const row = parseRow(fields.slice(1));
-      if (row && !rows.some((other) => other.key === row.key || normalize(other.statement) === normalize(row.statement))) {
-        rows.push(row);
-      }
-    }
-  }
-  return { read, kind, rows };
-}
-function parseRow(fields) {
-  let rest = [...fields];
-  let anchor;
-  const last = rest.at(-1);
-  if (last?.startsWith("@")) {
-    anchor = clean(last.slice(1)) || void 0;
-    rest = rest.slice(0, -1);
-  } else if (last && rest.length > 5) {
-    const glued = /^(.*?\S)\s+@(\S.*)$/.exec(last);
-    if (glued) {
-      anchor = clean(glued[2]) || void 0;
-      rest = [...rest.slice(0, -1), glued[1]];
-    }
-  }
-  const [rawKey, rawLabel, rawType, rawStatement, ...values] = rest;
-  const key = (rawKey ?? "").toLowerCase().replace(/[\s-]+/g, "_").replace(/[^a-z0-9_]/g, "");
-  if (!/^[a-z][a-z0-9_]{0,39}$/.test(key)) return null;
-  const label = clean(rawLabel ?? "").toLowerCase();
-  if (!label || label.length > MAX_LABEL * 2) return null;
-  const type = TYPES[(rawType ?? "").toLowerCase()];
-  if (!type) return null;
-  let statement = clean(rawStatement ?? "");
-  if (!statement || statement.length > MAX_STATEMENT) return null;
-  const holes = statement.split("{}").length - 1;
-  if (holes > 1) return null;
-  if (holes === 0) statement = `${statement.replace(/[:.]$/, "")}: {}`;
-  const base = { key, label, statement, ...anchor && { anchor } };
-  if (type === "num") {
-    const [value, min, max] = values.slice(0, 3).map((v) => Number.parseFloat(v ?? ""));
-    const unit = clean(values[3] ?? "").slice(0, 8);
-    if (![value, min, max].every((n) => Number.isFinite(n))) return null;
-    const steps = numberSteps(value, min, max);
-    if (steps.length < 2) return null;
-    return {
-      ...base,
-      type: "range",
-      options: steps.map((step) => formatNumber(step, unit)),
-      defaults: [Math.max(0, steps.indexOf(clamp(value, min, max)))],
-      ...unit && { unit }
-    };
-  }
-  const starred = [];
-  const options = [];
-  for (const value of values) {
-    const star = /(?:^|[\s,;(])\*|\*(?:$|[\s,;)])/.test(value);
-    const option = clean(value.replace(/\s*\*(?=$|[\s,;)])/g, "").replace(/(^|[\s,;(])\*\s*/g, "$1"));
-    if (!option || option.length > MAX_OPTION || /(?:…|\.\.\.)$/.test(option)) continue;
-    if (options.some((other) => normalize(other) === normalize(option))) continue;
-    if (star) starred.push(options.length);
-    options.push(option);
-  }
-  const most = type === "one" ? 5 : 7;
-  if (options.length < 2 || options.length > most) return null;
-  const defaults = type === "many" ? starred.length ? starred : options.map((_, i) => i) : [starred[0] ?? 0];
-  return { ...base, type, options, defaults };
-}
-function numberSteps(value, min, max) {
-  if (!(min < max)) return [];
-  const n = 9;
-  const geometric = min > 0 && max / min >= 20;
-  const raw = Array.from({ length: n }, (_, i) => geometric ? min * (max / min) ** (i / (n - 1)) : min + (max - min) * i / (n - 1));
-  const whole = [value, min, max].every(Number.isInteger);
-  const steps = [...raw.map(nice).map((step) => whole ? Math.round(step) : step), clamp(value, min, max)];
-  return [...new Set(steps.map((step) => Number(step.toPrecision(6))))].sort((a, b) => a - b);
-}
-function nice(x) {
-  const ax = Math.abs(x);
-  if (ax < 0.2) return Math.round(x * 100) / 100;
-  if (ax < 2) return Math.round(x * 10) / 10;
-  if (ax < 20) return Math.round(x);
-  if (ax < 100) return Math.round(x / 5) * 5;
-  const unit = 10 ** (Math.floor(Math.log10(ax)) - 1);
-  return Math.round(x / unit) * unit;
-}
-var clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
-function formatNumber(value, unit) {
-  const text2 = Number.isInteger(value) ? String(value) : String(Number(value.toFixed(2)));
-  if (!unit) return text2;
-  return /^[%°×x]$/.test(unit) ? `${text2}${unit}` : `${text2} ${unit}`;
-}
-function cut(text2, max) {
-  if (text2.length <= max) return text2;
-  const room = text2.slice(0, max - 1);
-  const space = room.lastIndexOf(" ");
-  return `${(space > max / 2 ? room.slice(0, space) : room).trimEnd()}\u2026`;
-}
-function joinList(items) {
-  if (items.length <= 1) return items[0] ?? "";
-  if (items.some((item) => /,|\band\b/.test(item))) return items.join("; ");
-  return `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
-}
-function rowValue(row, selected) {
-  const labels = [...selected].filter((i) => row.options[i] !== void 0).sort((a, b) => a - b).map((i) => row.options[i]);
-  if (row.type === "many") return labels.length ? joinList(labels) : "none of these";
-  return labels[0] ?? row.options[0] ?? "";
-}
-function sameSelection(a, b) {
-  if (a.length !== b.length) return false;
-  const x = [...a].sort((p, q) => p - q);
-  const y = [...b].sort((p, q) => p - q);
-  return x.every((v, i) => v === y[i]);
-}
-function cycleSelection(row, selected, dir = 1) {
-  const n = row.options.length;
-  if (row.type !== "many") {
-    if (selected[0] === void 0) return [dir === 1 ? 0 : n - 1];
-    return [((selected[0] + dir) % n + n) % n];
-  }
-  const all = row.options.map((_, i) => i);
-  const defaults = [...row.defaults].sort((a, b) => a - b);
-  const extras = all.filter((i) => !defaults.includes(i));
-  const states = extras.length ? [defaults, ...extras.map((_, k) => [...defaults, ...extras.slice(0, k + 1)].sort((a, b) => a - b))] : [all, [0]];
-  const at = states.findIndex((state) => sameSelection(selected, state));
-  return states[((at === -1 ? 0 : at + dir) % states.length + states.length) % states.length];
-}
-function toggleSelection(row, selected, i) {
-  if (row.type !== "many") return [i];
-  return selected.includes(i) ? selected.filter((j) => j !== i) : [...selected, i].sort((a, b) => a - b);
-}
-function parseSketch(reply) {
-  const lines = reply.replace(/\t/g, "  ").split(/\r?\n/).filter((line) => !/^\s*```/.test(line));
-  while (lines.length && !lines[0].trim()) lines.shift();
-  if (!lines.length || /^\s*NONE\s*$/i.test(lines[0])) return null;
-  let title = "Sketch";
-  const asked = /^\s*title\s*[|:]\s*(.+)$/i.exec(lines[0]);
-  const barred = asked ? null : /^\s*([^|]{1,60}?)\s*\|\s*(.*)$/.exec(lines[0]);
-  if (asked) {
-    title = cut(clean(asked[1]), 80);
-    lines.shift();
-  } else if (barred) {
-    title = cut(clean(barred[1]), 80);
-    lines.shift();
-    if (barred[2].trim()) lines.unshift(barred[2]);
-  }
-  const body = lines.map((line) => line.replace(/\s+$/, "")).map((line) => line.length > SKETCH_MAX_WIDTH ? `${line.slice(0, SKETCH_MAX_WIDTH - 1)}\u2026` : line);
-  while (body.length && !body.at(-1).trim()) body.pop();
-  while (body.length && !body[0].trim()) body.shift();
-  const kept = body.length > SKETCH_MAX_LINES && /^\s*[└╰┗╚]/.test(body.at(-1)) ? [...body.slice(0, SKETCH_MAX_LINES - 1), body.at(-1)] : body.slice(0, SKETCH_MAX_LINES);
-  if (!kept.some((line) => line.trim())) return null;
-  const margin = Math.min(...kept.filter((line) => line.trim()).map((line) => line.length - line.trimStart().length));
-  return { title, lines: kept.map((line) => line.slice(margin)) };
-}
-var BLANK = new RegExp(`${BLANK_OPEN}([^${BLANK_OPEN}${BLANK_CLOSE}\\n]{1,280})${BLANK_CLOSE}`, "g");
-function codeRanges(text2) {
-  const ranges = [];
-  for (const m of text2.matchAll(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm)) ranges.push([m.index, m.index + m[0].length]);
-  for (const m of text2.matchAll(/`[^`\n]+`/g)) ranges.push([m.index, m.index + m[0].length]);
-  return ranges;
-}
-function parseBlanks(text2) {
-  if (!text2.includes(BLANK_OPEN)) return [];
-  const code = codeRanges(text2);
-  const out = [];
-  for (const m of text2.matchAll(BLANK)) {
-    const start = m.index;
-    if (code.some(([a, b]) => start >= a && start < b)) continue;
-    const inner = m[1];
-    const colon = inner.indexOf(":");
-    if (colon < 1) continue;
-    const label = clean(inner.slice(0, colon));
-    const parts = inner.slice(colon + 1).split("|").map(clean).filter(Boolean);
-    const [choice, ...alternatives] = parts;
-    if (!label || label.length > 32 || !choice || choice.length > 60 || !alternatives.length) continue;
-    if (label.toLowerCase() === "label" && choice.toLowerCase() === "your choice") continue;
-    const alts = alternatives.filter((alt, i) => alt.length <= 60 && normalize(alt) !== normalize(choice) && alternatives.findIndex((other) => normalize(other) === normalize(alt)) === i).slice(0, 4);
-    if (!alts.length) continue;
-    out.push({ label: label.toLowerCase(), choice, alternatives: alts, start, end: start + m[0].length });
-  }
-  return out;
-}
-
 // ../claude-code/core/anchor.ts
 function resolveAnchor(text2, anchor, near) {
   const needle = anchor.trim();
@@ -504,18 +280,18 @@ function shiftSpan(span, edit) {
   if (edit.start >= span.end) return { start: span.start, end: span.end };
   return null;
 }
-function diffSplice(before, after) {
-  const limit = Math.min(before.length, after.length);
+function diffSplice(before2, after) {
+  const limit = Math.min(before2.length, after.length);
   let prefix = 0;
-  while (prefix < limit && before.charCodeAt(prefix) === after.charCodeAt(prefix)) prefix++;
+  while (prefix < limit && before2.charCodeAt(prefix) === after.charCodeAt(prefix)) prefix++;
   let suffix = 0;
-  while (suffix < limit - prefix && before.charCodeAt(before.length - 1 - suffix) === after.charCodeAt(after.length - 1 - suffix))
+  while (suffix < limit - prefix && before2.charCodeAt(before2.length - 1 - suffix) === after.charCodeAt(after.length - 1 - suffix))
     suffix++;
-  return { start: prefix, end: before.length - suffix, text: after.slice(prefix, after.length - suffix) };
+  return { start: prefix, end: before2.length - suffix, text: after.slice(prefix, after.length - suffix) };
 }
-function spliceFits(before, after, edit) {
-  if (edit.start < 0 || edit.end < edit.start || edit.end > before.length) return false;
-  return before.slice(0, edit.start) + edit.text + before.slice(edit.end) === after;
+function spliceFits(before2, after, edit) {
+  if (edit.start < 0 || edit.end < edit.start || edit.end > before2.length) return false;
+  return before2.slice(0, edit.start) + edit.text + before2.slice(edit.end) === after;
 }
 
 // ../claude-code/core/decisions.ts
@@ -1127,6 +903,246 @@ function lastSentenceStart(draft) {
   return start;
 }
 
+// ../claude-code/core/card.ts
+var CARD_KINDS = ["build", "change", "fix", "explore", "ask", "other"];
+var CARD_MAX_ROWS = 6;
+var CARD_MAX_TOKENS = 560;
+var SKETCH_MAX_TOKENS = 420;
+var MAX_LABEL = 16;
+var MAX_OPTION = 80;
+var MAX_STATEMENT = 120;
+var MAX_READ = 400;
+var SKETCH_MAX_LINES = 14;
+var SKETCH_MAX_WIDTH = 78;
+var BLANK_OPEN = "\u27E6";
+var BLANK_CLOSE = "\u27E7";
+var TYPES = {
+  one: "one",
+  choice: "one",
+  pick: "one",
+  bool: "one",
+  many: "many",
+  multi: "many",
+  any: "many",
+  range: "range",
+  slider: "range",
+  scale: "range",
+  num: "num",
+  number: "num"
+};
+var QUOTES2 = /^["'“”‘’`]+|["'“”‘’`]+$/g;
+var clean = (text2) => text2.replace(/\s+/g, " ").replace(QUOTES2, "").trim();
+function parseCard(reply) {
+  let read = null;
+  let kind = null;
+  const rows = [];
+  for (const raw of reply.split(/\r?\n/)) {
+    const line = raw.trim().replace(/^[-*•]\s+/, "");
+    if (!line || line.startsWith("```")) continue;
+    const fields = line.split("|").map((field) => field.trim());
+    const head = fields[0]?.toLowerCase();
+    if (head === "read" && read === null) {
+      const text2 = clean(fields.slice(1).join(" | "));
+      if (text2) read = cut(text2, MAX_READ);
+    } else if (head === "kind" && kind === null) {
+      const value = fields[1]?.toLowerCase();
+      if (value && CARD_KINDS.includes(value)) kind = value;
+    } else if (head === "row" && rows.length < CARD_MAX_ROWS) {
+      const row = parseRow(fields.slice(1));
+      if (row && !rows.some((other) => other.key === row.key || normalize(other.statement) === normalize(row.statement))) {
+        rows.push(row);
+      }
+    }
+  }
+  return { read, kind, rows };
+}
+function parseRow(fields) {
+  let rest = [...fields];
+  let anchor;
+  const last = rest.at(-1);
+  if (last?.startsWith("@")) {
+    anchor = clean(last.slice(1)) || void 0;
+    rest = rest.slice(0, -1);
+  } else if (last && rest.length > 5) {
+    const glued = /^(.*?\S)\s+@(\S.*)$/.exec(last);
+    if (glued) {
+      anchor = clean(glued[2]) || void 0;
+      rest = [...rest.slice(0, -1), glued[1]];
+    }
+  }
+  const [rawKey, rawLabel, rawType, rawStatement, ...values] = rest;
+  const key = (rawKey ?? "").toLowerCase().replace(/[\s-]+/g, "_").replace(/[^a-z0-9_]/g, "");
+  if (!/^[a-z][a-z0-9_]{0,39}$/.test(key)) return null;
+  const label = clean(rawLabel ?? "").toLowerCase();
+  if (!label || label.length > MAX_LABEL * 2) return null;
+  const type = TYPES[(rawType ?? "").toLowerCase()];
+  if (!type) return null;
+  let statement = clean(rawStatement ?? "");
+  if (!statement || statement.length > MAX_STATEMENT) return null;
+  const holes = statement.split("{}").length - 1;
+  if (holes > 1) return null;
+  if (holes === 0) statement = `${statement.replace(/[:.]$/, "")}: {}`;
+  const base = { key, label, statement, ...anchor && { anchor } };
+  if (type === "num") {
+    const [value, min, max] = values.slice(0, 3).map((v) => Number.parseFloat(v ?? ""));
+    const unit = clean(values[3] ?? "").slice(0, 8);
+    if (![value, min, max].every((n) => Number.isFinite(n))) return null;
+    const steps = numberSteps(value, min, max);
+    if (steps.length < 2) return null;
+    return {
+      ...base,
+      type: "range",
+      options: steps.map((step) => formatNumber(step, unit)),
+      defaults: [Math.max(0, steps.indexOf(clamp(value, min, max)))],
+      ...unit && { unit }
+    };
+  }
+  const starred = [];
+  const options = [];
+  for (const value of values) {
+    const star = /(?:^|[\s,;(])\*|\*(?:$|[\s,;)])/.test(value);
+    const option = clean(value.replace(/\s*\*(?=$|[\s,;)])/g, "").replace(/(^|[\s,;(])\*\s*/g, "$1"));
+    if (!option || option.length > MAX_OPTION || /(?:…|\.\.\.)$/.test(option)) continue;
+    if (options.some((other) => normalize(other) === normalize(option))) continue;
+    if (star) starred.push(options.length);
+    options.push(option);
+  }
+  const most = type === "one" ? 5 : 7;
+  if (options.length < 2 || options.length > most) return null;
+  const defaults = type === "many" ? starred.length ? starred : options.map((_, i) => i) : [starred[0] ?? 0];
+  return { ...base, type, options, defaults };
+}
+function numberSteps(value, min, max) {
+  if (!(min < max)) return [];
+  const n = 9;
+  const geometric = min > 0 && max / min >= 20;
+  const raw = Array.from({ length: n }, (_, i) => geometric ? min * (max / min) ** (i / (n - 1)) : min + (max - min) * i / (n - 1));
+  const whole = [value, min, max].every(Number.isInteger);
+  const steps = [...raw.map(nice).map((step) => whole ? Math.round(step) : step), clamp(value, min, max)];
+  return [...new Set(steps.map((step) => Number(step.toPrecision(6))))].sort((a, b) => a - b);
+}
+function nice(x) {
+  const ax = Math.abs(x);
+  if (ax < 0.2) return Math.round(x * 100) / 100;
+  if (ax < 2) return Math.round(x * 10) / 10;
+  if (ax < 20) return Math.round(x);
+  if (ax < 100) return Math.round(x / 5) * 5;
+  const unit = 10 ** (Math.floor(Math.log10(ax)) - 1);
+  return Math.round(x / unit) * unit;
+}
+var clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
+function formatNumber(value, unit) {
+  const text2 = Number.isInteger(value) ? String(value) : String(Number(value.toFixed(2)));
+  if (!unit) return text2;
+  return /^[%°×x]$/.test(unit) ? `${text2}${unit}` : `${text2} ${unit}`;
+}
+function cut(text2, max) {
+  if (text2.length <= max) return text2;
+  const room = text2.slice(0, max - 1);
+  const space = room.lastIndexOf(" ");
+  return `${(space > max / 2 ? room.slice(0, space) : room).trimEnd()}\u2026`;
+}
+function joinList(items) {
+  if (items.length <= 1) return items[0] ?? "";
+  if (items.some((item) => /,|\band\b/.test(item))) return items.join("; ");
+  return `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+}
+function rowValue(row, selected) {
+  const labels = [...selected].filter((i) => row.options[i] !== void 0).sort((a, b) => a - b).map((i) => row.options[i]);
+  if (row.type === "many") return labels.length ? joinList(labels) : "none of these";
+  return labels[0] ?? row.options[0] ?? "";
+}
+function sameSelection(a, b) {
+  if (a.length !== b.length) return false;
+  const x = [...a].sort((p, q) => p - q);
+  const y = [...b].sort((p, q) => p - q);
+  return x.every((v, i) => v === y[i]);
+}
+function cycleSelection(row, selected, dir = 1) {
+  const n = row.options.length;
+  if (row.type !== "many") {
+    if (selected[0] === void 0) return [dir === 1 ? 0 : n - 1];
+    return [((selected[0] + dir) % n + n) % n];
+  }
+  const all = row.options.map((_, i) => i);
+  const defaults = [...row.defaults].sort((a, b) => a - b);
+  const extras = all.filter((i) => !defaults.includes(i));
+  const states = extras.length ? [defaults, ...extras.map((_, k) => [...defaults, ...extras.slice(0, k + 1)].sort((a, b) => a - b))] : [all, [0]];
+  const at = states.findIndex((state) => sameSelection(selected, state));
+  return states[((at === -1 ? 0 : at + dir) % states.length + states.length) % states.length];
+}
+function toggleSelection(row, selected, i) {
+  if (row.type !== "many") return [i];
+  return selected.includes(i) ? selected.filter((j) => j !== i) : [...selected, i].sort((a, b) => a - b);
+}
+function canSketch(kind) {
+  return kind === "build" || kind === "explore";
+}
+function buildSketchPrompt(input) {
+  const { draft, read, choices, names, today } = input;
+  return [
+    "Draft:",
+    "<<<",
+    draft,
+    ">>>",
+    ...read ? [`Read as: ${read}`] : [],
+    ...choices.length ? ["Choices:", ...choices.map((line) => `- ${line}`)] : [],
+    ...names.length ? [`Names in the code: ${names.join(", ")}`] : [],
+    ...today ? [`Today is ${today}: sample dates are recent.`] : []
+  ].join("\n");
+}
+function parseSketch(reply) {
+  const lines = reply.replace(/\t/g, "  ").split(/\r?\n/).filter((line) => !/^\s*```/.test(line));
+  while (lines.length && !lines[0].trim()) lines.shift();
+  if (!lines.length || /^\s*NONE\s*$/i.test(lines[0])) return null;
+  let title = "Sketch";
+  const asked = /^\s*title\s*[|:]\s*(.+)$/i.exec(lines[0]);
+  const barred = asked ? null : /^\s*([^|]{1,60}?)\s*\|\s*(.*)$/.exec(lines[0]);
+  if (asked) {
+    title = cut(clean(asked[1]), 80);
+    lines.shift();
+  } else if (barred) {
+    title = cut(clean(barred[1]), 80);
+    lines.shift();
+    if (barred[2].trim()) lines.unshift(barred[2]);
+  }
+  const body = lines.map((line) => line.replace(/\s+$/, "")).map((line) => line.length > SKETCH_MAX_WIDTH ? `${line.slice(0, SKETCH_MAX_WIDTH - 1)}\u2026` : line);
+  while (body.length && !body.at(-1).trim()) body.pop();
+  while (body.length && !body[0].trim()) body.shift();
+  const kept = body.length > SKETCH_MAX_LINES && /^\s*[└╰┗╚]/.test(body.at(-1)) ? [...body.slice(0, SKETCH_MAX_LINES - 1), body.at(-1)] : body.slice(0, SKETCH_MAX_LINES);
+  if (!kept.some((line) => line.trim())) return null;
+  const margin = Math.min(...kept.filter((line) => line.trim()).map((line) => line.length - line.trimStart().length));
+  return { title, lines: kept.map((line) => line.slice(margin)) };
+}
+var BLANK = new RegExp(`${BLANK_OPEN}([^${BLANK_OPEN}${BLANK_CLOSE}\\n]{1,280})${BLANK_CLOSE}`, "g");
+function codeRanges(text2) {
+  const ranges = [];
+  for (const m of text2.matchAll(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm)) ranges.push([m.index, m.index + m[0].length]);
+  for (const m of text2.matchAll(/`[^`\n]+`/g)) ranges.push([m.index, m.index + m[0].length]);
+  return ranges;
+}
+function parseBlanks(text2) {
+  if (!text2.includes(BLANK_OPEN)) return [];
+  const code = codeRanges(text2);
+  const out = [];
+  for (const m of text2.matchAll(BLANK)) {
+    const start = m.index;
+    if (code.some(([a, b]) => start >= a && start < b)) continue;
+    const inner = m[1];
+    const colon = inner.indexOf(":");
+    if (colon < 1) continue;
+    const label = clean(inner.slice(0, colon));
+    const parts = inner.slice(colon + 1).split("|").map(clean).filter(Boolean);
+    const [choice, ...alternatives] = parts;
+    if (!label || label.length > 32 || !choice || choice.length > 60 || !alternatives.length) continue;
+    if (label.toLowerCase() === "label" && choice.toLowerCase() === "your choice") continue;
+    const alts = alternatives.filter((alt, i) => alt.length <= 60 && normalize(alt) !== normalize(choice) && alternatives.findIndex((other) => normalize(other) === normalize(alt)) === i).slice(0, 4);
+    if (!alts.length) continue;
+    out.push({ label: label.toLowerCase(), choice, alternatives: alts, start, end: start + m[0].length });
+  }
+  return out;
+}
+
 // ../claude-code/core/grounding.ts
 var STOP = /* @__PURE__ */ new Set(["of", "the", "a", "an", "and", "to", "in", "on", "for", "de", "la", "le", "du", "des", "et"]);
 var WHERE_RANK = { symbol: 0, name: 1, path: 2 };
@@ -1397,8 +1413,8 @@ var QUOTED = /(?<![\p{L}\p{N}])(['"‘“`])([^'"‘’“”`\n]{2,40})(['"’�
 var PROPER = new RegExp("(?<![\\p{L}\\p{N}_'\u2019-])(?:\\p{Lu}[\\p{Ll}\\p{N}'\u2019]+|\\p{Lu}{2,}\\p{Ll}*)(?:\\s(?:(?:of|the|de|la|du)\\s)?\\p{Lu}[\\p{Ll}\\p{N}'\u2019]+)*(?![\\p{L}\\p{N}_-])", "gu");
 var WORD = new RegExp("(?<![\\p{L}\\p{N}_'\u2019-])\\p{Ll}{5,}(?![\\p{L}\\p{N}_-])", "gu");
 function sentenceStart(text2, at) {
-  const before = text2.slice(0, at).replace(/[\s"'“‘(\[*_-]+$/u, "");
-  return before === "" || /[.!?:;\n]$/.test(before);
+  const before2 = text2.slice(0, at).replace(/[\s"'“‘(\[*_-]+$/u, "");
+  return before2 === "" || /[.!?:;\n]$/.test(before2);
 }
 function candidates(text2) {
   const out = [];
@@ -1602,7 +1618,7 @@ function lookPath(index, phrase) {
 }
 var NAMED_HERE = /\b(?:named|called|new|create|creating|add|adding|introduce|introducing)\s+(?:(?:a|an|the)\s+)?(?:new\s+)?[`'"\u2018\u201C]?$/i;
 var RENAMED_TO = /\b(?:rename|renamed|renaming|change|changed|changing|move|moved|moving|turn|turned|convert|converted)\b[^.!?\n]{0,60}?\b(?:to|into|as)\s+(?:(?:a|an|the)\s+)?[`'"\u2018\u201C]?$/i;
-var introduced = (before) => NAMED_HERE.test(before) || RENAMED_TO.test(before);
+var introduced = (before2) => NAMED_HERE.test(before2) || RENAMED_TO.test(before2);
 function ground(text2, index) {
   if (!index || !text2.trim()) return [];
   const out = [];
@@ -2001,7 +2017,6 @@ var AMEND_DELAY_MS = 1500;
 var LEARNED_AFTER = 2;
 var DRAFT_MAX = 8e3;
 var REFS_MAX = 4;
-var SKETCH_KINDS = /* @__PURE__ */ new Set(["build", "explore"]);
 var STAKES = {
   explore: "exploring",
   build: "building something to use",
@@ -2013,14 +2028,15 @@ var LENS_WORDS = [
   ["system-design", /\b(?:services?|queues?|cach\w+|databases?|scal(?:e|ing|ability)|latency|throughput|replica\w*|shard\w*|load balanc\w*|microservices?|kafka|redis|postgres\w*|consistency|availability|rate limit\w*|backpressure|idempoten\w*|retries|webhooks?)\b/gi]
 ];
 var EMPTY_PROFILE = { name: "general", description: "", maxCues: 3, rubric: "", examples: [] };
-function createCore(assets) {
-  return new Core(assets);
+function createCore(assets, options) {
+  return new Core(assets, options);
 }
 function sameCue(a, b) {
   return normalize(a.anchor ?? "") === normalize(b.anchor ?? "") && sameOptions(a.options, b.options);
 }
 var Core = class {
   assets;
+  readSubmittedPrompt;
   configured = false;
   enabled = false;
   generation = 0;
@@ -2097,8 +2113,9 @@ var Core = class {
   sentTimerAt = null;
   sentView = "";
   out = [];
-  constructor(assets) {
+  constructor(assets, options = {}) {
     this.assets = assets;
+    this.readSubmittedPrompt = options.readSubmittedPrompt === true;
     this.state = new DecisionState(assets.bundles ?? [], assets.personalProfiles ?? []);
     this.cache = new Lru(DEFAULT_TIMING.cacheSize);
   }
@@ -2134,7 +2151,7 @@ var Core = class {
         this.onFocus(event.dir, event.cue);
         break;
       case "submit":
-        this.onSubmit(event.text, event.amendable !== false);
+        this.onSubmit(event.text, event.amendable !== false, event.plan !== false);
         break;
       case "loadState":
         this.state.load(event.state);
@@ -2343,12 +2360,12 @@ var Core = class {
     }
   }
   onDraft(text2, origin, edit, cursor) {
-    const before = this.text;
+    const before2 = this.text;
     this.cursor = cursor === void 0 ? text2.length : Math.max(0, Math.min(text2.length, cursor));
-    if (text2 === before && origin === "type") return;
-    const splice = edit !== void 0 && spliceFits(before, text2, edit) ? edit : diffSplice(before, text2);
+    if (text2 === before2 && origin === "type") return;
+    const splice = edit !== void 0 && spliceFits(before2, text2, edit) ? edit : diffSplice(before2, text2);
     this.text = text2;
-    if (text2 !== before) {
+    if (text2 !== before2) {
       this.textAt = this.now;
       this.note = null;
       if (this.sheetEnabled !== void 0) this.onCardDraft(text2);
@@ -2537,15 +2554,17 @@ var Core = class {
     const step = dir === -1 ? -1 : 1;
     this.focus = visible[(at + step + visible.length) % visible.length].id;
   }
-  onSubmit(text2, amendable) {
+  onSubmit(text2, amendable, plan = true) {
     const prompt = !isHostCommand(text2) && text2.trim() !== "";
     const isPrompt = this.enabled && prompt;
     if (this.mode !== void 0 && text2 !== this.text) this.refreshState(text2);
     const exact = text2 === this.text;
-    const decisions = isPrompt ? this.decisions(exact) : [];
+    const card = this.card;
+    const whole = plan && exact && card?.stage === "draft" && card.req === null && card.readFor === text2;
+    const decisions = isPrompt ? this.decisions(exact, whole) : [];
     const attached = attachDecisions(text2, decisions);
     const added = attached.added;
-    const target = isPrompt && exact ? this.pinnedSketch() : null;
+    const target = isPrompt && exact ? this.targetSketch(plan) : null;
     const sent = target ? `${attached.text.replace(/\s+$/, "")}
 
 ${target}` : attached.text;
@@ -2835,6 +2854,7 @@ ${expertPrompt(this.expertCatalog, slots)}`,
   // it works (blanks), which the person can switch without stopping it; after
   // the turn, a receipt and one-key follow-ups.
   cardText(text2 = this.text) {
+    if (this.readSubmittedPrompt) return Boolean(text2.trim());
     return !isHostCommand(text2) && wordCount(text2) >= CARD_MIN_WORDS;
   }
   cardAllowed() {
@@ -3101,7 +3121,7 @@ ${lines.join("\n")}` : "";
     for (const row of old) if (!used.has(row.id) && (partial || row.picked !== null)) next.push(row);
     card.rows = [...card.rows.filter((row) => row.origin === "repo"), ...next];
     this.fixCardFocus();
-    if (!partial && this.sketchEnabled && this.assets.sketchSystem && card.kind && SKETCH_KINDS.has(card.kind) && text2 === this.text) {
+    if (!partial && this.sketchEnabled && this.assets.sketchSystem && canSketch(card.kind) && text2 === this.text) {
       card.sketchDue = this.now;
     }
   }
@@ -3175,7 +3195,7 @@ ${lines.join("\n")}` : "";
       if (commit) this.sendAgentChanges();
       else card.amendDue = this.now + AMEND_DELAY_MS;
     } else if (card.stage === "after") this.fillFollowUp();
-    else if (card.sketch && card.kind && SKETCH_KINDS.has(card.kind)) card.sketchDue = this.now + SKETCH_DELAY_MS;
+    else if (card.sketch && canSketch(card.kind)) card.sketchDue = this.now + SKETCH_DELAY_MS;
   }
   onCardSay(rowId, text2) {
     const card = this.card;
@@ -3205,9 +3225,14 @@ ${lines.join("\n")}` : "";
     this.metric("card-dismissed", { card: card.id, row: row.key, origin: row.origin, stage: card.stage });
     if (card.stage === "after") this.fillFollowUp();
   }
-  cardDecisions() {
+  /**
+   * The card's choices that travel with the prompt. What the person switched always does. With `whole`, the
+   * choices they saw and left as they were travel too: the card showed them as the plan, so the agent must not
+   * decide them again. A name the code lacks has no default, so only a pick of it travels.
+   */
+  cardDecisions(whole = false) {
     const card = this.card;
-    const out = card.rows.filter((row) => row.picked !== null).map((row) => ({ statement: row.statement, option: row.said ?? this.rowText(row, row.picked) }));
+    const out = card.rows.filter((row) => row.picked !== null || whole && row.origin !== "repo" && (row.learned ?? row.defaults).length > 0).map((row) => ({ statement: row.statement, option: row.said ?? this.rowText(row, row.picked ?? row.learned ?? row.defaults) }));
     if (this.refsEnabled) {
       const refs = this.mentions.filter((m) => m.status === "found" && m.files.length > 0 && m.as === "code").slice(0, REFS_MAX);
       if (refs.length) out.push({ statement: "Where things are: {}", option: refs.map((m) => `${m.phrase} (${m.files[0]})`).join(", ") });
@@ -3282,7 +3307,7 @@ ${prompt}`;
     const prior = card.sketch;
     if (prior && prior.key === key) return;
     if (prior && prior.req !== null) this.out.push({ type: "cancel", req: prior.req });
-    const base = { key, buffer: "", title: prior?.title ?? "", lines: prior?.lines ?? [], pinned: prior?.pinned ?? false, open: prior?.open ?? true };
+    const base = { key, buffer: "", title: prior?.title ?? "", lines: prior?.lines ?? [], pinned: prior?.pinned ?? true, open: prior?.open ?? true };
     const cached = this.sketchCache.get(key);
     if (cached !== void 0) {
       card.sketch = cached ? { ...base, req: null, title: cached.title, lines: cached.lines } : null;
@@ -3303,18 +3328,9 @@ ${prompt}`;
     this.metric("sketch-requested", { req, card: card.id });
   }
   sketchPrompt(card) {
-    const choices = card.rows.filter((row) => row.origin !== "repo" || row.picked !== null).map((row) => `- ${decisionLine({ statement: row.statement, option: this.rowText(row, row.picked ?? row.learned ?? row.defaults) })}`);
+    const choices = card.rows.filter((row) => row.origin !== "repo" || row.picked !== null).map((row) => decisionLine({ statement: row.statement, option: this.rowText(row, row.picked ?? row.learned ?? row.defaults) }));
     const found = this.mentions.filter((m) => m.status === "found").slice(0, 8);
-    return [
-      "Draft:",
-      "<<<",
-      this.text,
-      ">>>",
-      ...card.read ? [`Read as: ${card.read}`] : [],
-      ...choices.length ? ["Choices:", ...choices] : [],
-      ...found.length ? [`Names in the code: ${found.map((m) => m.match ?? m.phrase).join(", ")}`] : [],
-      ...this.today ? [`Today is ${this.today}: sample dates are recent.`] : []
-    ].join("\n");
+    return buildSketchPrompt({ draft: this.text, read: card.read, choices, names: found.map((m) => m.match ?? m.phrase), today: this.today });
   }
   onSketchReply(chunk, done, ok) {
     const card = this.card;
@@ -3330,9 +3346,17 @@ ${prompt}`;
     else if (ok || !sketch.lines.length) card.sketch = null;
     this.metric("sketch-reply", { req, card: card.id, ok, lines: parsed?.lines.length ?? 0 });
   }
-  pinnedSketch() {
-    const sketch = this.card?.stage === "draft" ? this.card.sketch : null;
-    if (!sketch?.pinned || !sketch.lines.length) return null;
+  /**
+   * The preview travels as the target when the person saw it (`plan`: the card, not choices asked one at a time),
+   * did not leave it out, and it was drawn for the very choices being sent: a preview of other choices would
+   * contradict them.
+   */
+  targetSketch(plan = true) {
+    const card = this.card?.stage === "draft" ? this.card : null;
+    const sketch = card?.sketch;
+    if (!plan || !card || !sketch?.lines.length || !sketch.pinned) return null;
+    if (sketch.req !== null || sketch.key !== `${this.language}
+${this.sketchPrompt(card)}`) return null;
     return `Target output, as sketched (${sketch.title}):
 \`\`\`text
 ${sketch.lines.join("\n")}
@@ -3408,11 +3432,11 @@ ${sketch.lines.join("\n")}
     card.amendDue = null;
     for (const row of card.rows) {
       if (row.origin !== "agent" || row.picked === null) continue;
-      const before = row.sent ?? row.defaults;
-      if (sameSelection(row.picked, before)) continue;
+      const before2 = row.sent ?? row.defaults;
+      if (sameSelection(row.picked, before2)) continue;
       const i = row.picked[0] ?? 0;
       row.sent = [i];
-      this.sendAmendment(row.id, i, `for ${row.label}, use ${row.options[i]} instead of ${row.options[before[0] ?? 0]}.`, card.submittedAt ?? this.now);
+      this.sendAmendment(row.id, i, `for ${row.label}, use ${row.options[i]} instead of ${row.options[before2[0] ?? 0]}.`, card.submittedAt ?? this.now);
     }
   }
   endTurnCard() {
@@ -3429,8 +3453,8 @@ ${sketch.lines.join("\n")}
         id: this.nextReceipt++,
         yours: card.sent,
         agent: agent.map((row) => {
-          const now2 = (row.sent ?? row.defaults)[0] ?? 0;
-          return { label: row.label, value: row.options[now2], ...now2 !== 0 && { was: row.options[0] }, options: [...row.options] };
+          const now3 = (row.sent ?? row.defaults)[0] ?? 0;
+          return { label: row.label, value: row.options[now3], ...now3 !== 0 && { was: row.options[0] }, options: [...row.options] };
         })
       };
       this.metric("receipt", { id: this.receipt.id, yours: card.sent.length, agent: agent.length, changed: agent.filter((row) => row.sent).length });
@@ -3737,7 +3761,8 @@ ${prompt}` };
     }
     return null;
   }
-  decisions(includeCard = true) {
+  /** `whole`: the card's untouched choices too (at send, when the card was read for exactly what is sent). */
+  decisions(includeCard = true, whole = false) {
     const out = [];
     for (const cue of this.cues) {
       if (cue.provisional || cue.chosen === null) continue;
@@ -3745,7 +3770,7 @@ ${prompt}` };
       if (option !== void 0) out.push({ statement: cue.statement, option });
     }
     if (this.mode === void 0) return out;
-    if (includeCard && this.card?.stage === "draft") out.push(...this.cardDecisions());
+    if (includeCard && this.card?.stage === "draft") out.push(...this.cardDecisions(whole));
     const standing = [];
     const draft = this.stateDraft;
     if (draft && this.enabled) {
@@ -9371,14 +9396,14 @@ var FR2 = {
   folded: (n) => `${n} ligne${n === 1 ? "" : "s"}, repli\xE9es`
 };
 function layoutCard(card, columns, budget, options) {
-  const P2 = options.palette ?? DARK;
+  const P3 = options.palette ?? DARK;
   const words = card.language === "fr" ? FR2 : EN2;
   const hidden = hiddenButtons(card, options.chords);
   const open = card.rows.filter((row) => !row.chosen).length;
-  if (card.collapsed) return [collapsed(card, columns, P2, words, open, hidden)];
+  if (card.collapsed) return [collapsed(card, columns, P3, words, open, hidden)];
   const g = grid(card, columns, words);
-  const right = status(card, words, open, columns >= 110 && card.stage === "draft" ? options.extra : [], P2);
-  const head = header(card, g, right, P2, words, budget >= 10 ? 4 : budget >= 6 ? 2 : 1);
+  const right = status(card, words, open, columns >= 110 && card.stage === "draft" ? options.extra : [], P3);
+  const head = header(card, g, right, P3, words, budget >= 10 ? 4 : budget >= 6 ? 2 : 1);
   head[0].push(...hidden);
   const room = budget - head.length;
   if (room <= 0) return head;
@@ -9387,9 +9412,9 @@ function layoutCard(card, columns, budget, options) {
   const pictureWidth = Math.min(80, Math.max(36, ...drawing.map(cells)));
   if (drawing.length && columns >= MIN_COLUMNS_BESIDE && columns - pictureWidth - 3 - g.content >= MIN_ROWS_BESIDE) {
     const left2 = columns - pictureWidth - 3;
-    const body2 = bodyLines(card, g, left2, P2, words, room);
+    const body2 = bodyLines(card, g, left2, P3, words, room);
     if (!body2.some((line) => line.some((s) => s.kind === "button" && s.key.startsWith("card-more-")))) {
-      const picture = [captionLine(sketch, P2, words, pictureWidth, "", true), ...pictureLines(drawing, P2, words, Math.max(1, room - 1))];
+      const picture = [captionLine(sketch, P3, words, pictureWidth, "", true), ...pictureLines(drawing, P3, words, Math.max(1, room - 1))];
       const out2 = [...head];
       for (let i = 0; i < Math.min(room, Math.max(body2.length, picture.length)); i++) {
         const line = body2[i] ?? [];
@@ -9399,15 +9424,15 @@ function layoutCard(card, columns, budget, options) {
       return out2;
     }
   }
-  const body = bodyLines(card, g, columns, P2, words, sketch ? Math.max(1, room - 1) : room);
+  const body = bodyLines(card, g, columns, P3, words, sketch ? Math.max(1, room - 1) : room);
   const out = [...head, ...body];
   const left = room - body.length - 1;
   if (sketch && left >= 0) {
     const wide = Math.max(0, ...drawing.map(cells));
     const indent = g.content + wide <= columns ? g.content : wide + 2 <= columns ? columns - wide : -1;
-    const shown = drawing.length && indent >= 0 && left >= Math.min(3, drawing.length) ? pictureLines(drawing, P2, words, left) : [];
+    const shown = drawing.length && indent >= 0 && left >= Math.min(3, drawing.length) ? pictureLines(drawing, P3, words, left) : [];
     const note = drawing.length && !shown.length ? words.folded(drawing.length) : "";
-    out.push([...labelLead(words.preview, g, { dim: true }), ...captionLine(sketch, P2, words, columns - g.content, note)]);
+    out.push([...labelLead(words.preview, g, { dim: true }), ...captionLine(sketch, P3, words, columns - g.content, note)]);
     for (const line of shown) out.push([text(" ".repeat(indent)), ...line]);
   }
   return out;
@@ -9422,8 +9447,8 @@ function grid(card, columns, words) {
   const label = Math.max(cells(TAG), Math.min(cap, Math.max(0, ...widths)));
   return { label, content: MARK + label + GAP.length, columns };
 }
-function header(card, g, right, P2, words, most) {
-  const lead = [text(" ".repeat(MARK + g.label - cells(TAG))), text(TAG, P2.tag), text(GAP)];
+function header(card, g, right, P3, words, most) {
+  const lead = [text(" ".repeat(MARK + g.label - cells(TAG))), text(TAG, P3.tag), text(GAP)];
   const room = g.columns - g.content;
   const rightWidth = segmentsWidth(right);
   const first = Math.max(12, room - (rightWidth ? rightWidth + 3 : 0));
@@ -9445,13 +9470,13 @@ function header(card, g, right, P2, words, most) {
   if (card.reading) return [withRight([...lead, { kind: "progress", label: words.reading }], right, g.columns)];
   return [withRight([...lead, text(card.error ? words.noReading : "", { dim: true })], right, g.columns)];
 }
-function status(card, words, open, extra, P2) {
+function status(card, words, open, extra, P3) {
   const parts = [];
   if (card.stage === "draft" && card.reading && card.read) parts.push(text("\u27F3", { dim: true }));
   if (card.stage === "draft" && card.rows.length) {
     const set = card.rows.length - open;
     if (parts.length) parts.push(text(" "));
-    if (set) parts.push(text(`${set} ${words.set}`, { color: P2.yours.color, bold: true }), text(" \xB7 ", { dim: true }));
+    if (set) parts.push(text(`${set} ${words.set}`, { color: P3.yours.color, bold: true }), text(" \xB7 ", { dim: true }));
     parts.push(text(`${open} ${words.open}`, { dim: true }));
   }
   for (const button of extra) parts.push(...parts.length ? [text("  ")] : [], button);
@@ -9462,18 +9487,18 @@ function withRight(left, right, columns) {
   const gap = columns - segmentsWidth(left) - segmentsWidth(right);
   return gap >= 3 ? [...left, text(" ".repeat(gap)), ...right] : left;
 }
-function collapsed(card, columns, P2, words, open, hidden) {
-  const lead = [text(" "), text(TAG, P2.tag), text(GAP)];
+function collapsed(card, columns, P3, words, open, hidden) {
+  const lead = [text(" "), text(TAG, P3.tag), text(GAP)];
   const tail = card.reading && !card.read ? words.reading : `${open} ${words.open}${card.rows.length ? " \xB7 alt\u2191 alt\u2193" : ""}`;
   const room = columns - segmentsWidth(lead) - cells(tail) - 3;
   const read = card.read && room >= 12 ? truncate(card.read, room) : "";
   return [...lead, ...read ? [text(read)] : [], text(`${read ? " \xB7 " : ""}${tail}`, { dim: true }), ...hidden];
 }
-function bodyLines(card, g, width, P2, words, room) {
+function bodyLines(card, g, width, P3, words, room) {
   if (room <= 0) return [];
-  let names = mentionLines(card, g, width, P2, words);
+  let names = mentionLines(card, g, width, P3, words);
   const focus = card.rows.findIndex((row) => row.id === card.focus);
-  const layout = (most2) => card.rows.map((row, i) => rowLines(row, i === focus, g, width, P2, words, i === focus ? 4 : most2));
+  const layout = (most2) => card.rows.map((row, i) => rowLines(row, i === focus, g, width, P3, words, i === focus ? 4 : most2));
   let rows = layout(2);
   const total = () => names.length + rows.reduce((n, lines) => n + lines.length, 0);
   if (total() > room) rows = layout(1);
@@ -9482,7 +9507,7 @@ function bodyLines(card, g, width, P2, words, room) {
   if (!rows.length) return names.slice(0, room);
   const at = Math.max(0, focus);
   const most = Math.max(1, room - 1);
-  if (rows[at].length > most) rows[at] = rowLines(card.rows[at], at === focus, g, width, P2, words, most);
+  if (rows[at].length > most) rows[at] = rowLines(card.rows[at], at === focus, g, width, P3, words, most);
   const keep = /* @__PURE__ */ new Set([at]);
   let used = rows[at].length + 1;
   for (let i = 0; i < rows.length; i++) {
@@ -9499,14 +9524,14 @@ function labelLead(label, g, style) {
   const cut2 = truncate(label, g.label);
   return [text(" ".repeat(MARK + g.label - cells(cut2))), text(cut2, style), text(GAP)];
 }
-function mentionLines(card, g, width, P2, words) {
+function mentionLines(card, g, width, P3, words) {
   const found = card.mentions.filter((m) => m.status === "found");
   const missing = card.mentions.filter((m) => m.status === "missing");
   if (!found.length && !missing.length) return [];
   const room = width - g.content;
   const items = [
-    ...missing.map((m) => [text("? ", { color: P2.attention, bold: true }), text(truncate(m.phrase, room - 2), { color: P2.attention })]),
-    ...found.map((m) => [text("\u2713 ", { color: "success" }), text(truncate(m.phrase, room - 2), { color: P2.accent })])
+    ...missing.map((m) => [text("? ", { color: P3.attention, bold: true }), text(truncate(m.phrase, room - 2), { color: P3.attention })]),
+    ...found.map((m) => [text("\u2713 ", { color: "success" }), text(truncate(m.phrase, room - 2), { color: P3.accent })])
   ];
   const { lines } = flow(items, room, 2, 3, (n) => [text(`+${n}`, { dim: true })]);
   return lines.map((line, i) => i ? [text(" ".repeat(g.content)), ...line] : [...labelLead(words.inCode, g, { dim: true }), ...line]);
@@ -9546,28 +9571,28 @@ function labelParts(label, room) {
   if (line) out.push(line);
   return out;
 }
-function rowLead(row, focus, g, P2, gap, part = row.label, first = true) {
+function rowLead(row, focus, g, P3, gap, part = row.label, first = true) {
   const mark = badge(row);
   const room = g.label - (mark ? 2 : 0);
   return [
-    text(first && focus ? "\u25B8 " : "  ", first && focus ? { color: P2.accent, bold: true } : void 0),
+    text(first && focus ? "\u25B8 " : "  ", first && focus ? { color: P3.accent, bold: true } : void 0),
     text(" ".repeat(Math.max(0, room - cells(part)))),
     ...mark ? [first ? text(`${mark.glyph} `, { color: mark.color }) : text("  ")] : [],
-    text(part, focus ? { color: P2.accent, bold: true } : row.chosen ? void 0 : { dim: true }),
+    text(part, focus ? { color: P3.accent, bold: true } : row.chosen ? void 0 : { dim: true }),
     text(gap)
   ];
 }
-function tone(row, P2) {
-  if (row.origin === "agent") return row.chosen && !sameSelection(row.selected, row.defaults) ? P2.yours : P2.agent;
-  return row.chosen ? P2.yours : P2.suggested;
+function tone(row, P3) {
+  if (row.origin === "agent") return row.chosen && !sameSelection(row.selected, row.defaults) ? P3.yours : P3.agent;
+  return row.chosen ? P3.yours : P3.suggested;
 }
-function chip(row, i, focus, P2, room) {
+function chip(row, i, focus, P3, room) {
   const on = row.selected.includes(i);
   const option = row.options[i] ?? "";
   const many = row.type === "many";
   const body = `${many ? on ? "\u2713 " : "+ " : ""}${option}`;
   const face = ` ${cells(body) + 2 > room ? truncate(body, Math.max(1, room - 2)) : body} `;
-  const style = on ? tone(row, P2) : void 0;
+  const style = on ? tone(row, P3) : void 0;
   return {
     kind: "button",
     key: `card-${row.id}-${i}`,
@@ -9577,33 +9602,33 @@ function chip(row, i, focus, P2, room) {
     action: { type: "cardSet", row: row.id, option: i }
   };
 }
-function focusHint(P2, words) {
+function focusHint(P3, words) {
   return [
-    text("alt\u2193", { color: P2.accent }),
+    text("alt\u2193", { color: P3.accent }),
     text(` ${words.change}`, { dim: true }),
     text(" \xB7 ", { dim: true }),
-    text("alt\u2191", { color: P2.accent }),
+    text("alt\u2191", { color: P3.accent }),
     text(` ${words.nextRow}`, { dim: true })
   ];
 }
-function rowLines(row, focus, g, width, P2, words, most) {
+function rowLines(row, focus, g, width, P3, words, most) {
   const room = Math.max(8, width - g.content + 1);
-  const hint = focus ? focusHint(P2, words) : [];
+  const hint = focus ? focusHint(P3, words) : [];
   const withHint = (line) => hint.length && segmentsWidth(line) + 4 + segmentsWidth(hint) <= width ? [...line, text("    "), ...hint] : line;
   const parts = labelParts(row.label, g.label - (badge(row) ? 2 : 0));
-  const tail = (k, gap) => rowLead(row, focus, g, P2, gap, parts[k], false);
+  const tail = (k, gap) => rowLead(row, focus, g, P3, gap, parts[k], false);
   if (row.type === "range") {
-    const bar = slider(row, focus, room - 1, P2);
-    if (bar) return [withHint([...rowLead(row, focus, g, P2, GAP, parts[0]), ...bar]), ...parts.slice(1).map((_, k) => tail(k + 1, GAP))];
+    const bar = slider(row, focus, room - 1, P3);
+    if (bar) return [withHint([...rowLead(row, focus, g, P3, GAP, parts[0]), ...bar]), ...parts.slice(1).map((_, k) => tail(k + 1, GAP))];
   }
-  const lead = rowLead(row, focus, g, P2, " ", parts[0]);
-  const chips = row.options.map((_, i) => [chip(row, i, focus, P2, room)]);
+  const lead = rowLead(row, focus, g, P3, " ", parts[0]);
+  const chips = row.options.map((_, i) => [chip(row, i, focus, P3, room)]);
   if (row.origin === "agent" && row.chosen && !sameSelection(row.selected, row.defaults)) {
     const was = row.options[row.defaults[0] ?? 0];
     if (was) chips.push([text(`${words.was} ${was}`, { dim: true, italic: true })]);
   }
   const more = (n) => [{ kind: "button", key: `card-more-${row.id}`, label: `+${n}`, dim: true, action: { type: "cardFocus", row: row.id } }];
-  const smaller = (option) => (_, cells2) => [chip(row, option, focus, P2, Math.max(3, cells2))];
+  const smaller = (option) => (_, cells2) => [chip(row, option, focus, P3, Math.max(3, cells2))];
   let laid = flow(chips, room, most, 1, more, (j, cells2) => j < row.options.length ? smaller(j)(j, cells2) : chips[j]);
   if (laid.hidden.length && row.selected.some((i) => laid.hidden.includes(i))) {
     const order = [...row.selected, ...row.options.map((_, i) => i).filter((i) => !row.selected.includes(i))];
@@ -9614,7 +9639,7 @@ function rowLines(row, focus, g, width, P2, words, most) {
   for (let k = out.length; k < parts.length; k++) out.push(tail(k, " "));
   return out;
 }
-function slider(row, focus, room, P2) {
+function slider(row, focus, room, P3) {
   const n = row.options.length;
   const at = row.selected[0] ?? 0;
   const low = truncate(row.options[0] ?? "", 14);
@@ -9623,8 +9648,8 @@ function slider(row, focus, room, P2) {
   const fixed = cells(low) + cells(high) + cells(value) + 2 + 2 + 3;
   if (room - fixed < n) return null;
   const per = Math.max(1, Math.min(4, Math.floor((room - fixed) / n)));
-  const chip2 = row.chosen ? P2.yours : P2.suggested;
-  const fill = row.chosen ? P2.yours.color : P2.accent;
+  const chip2 = row.chosen ? P3.yours : P3.suggested;
+  const fill = row.chosen ? P3.yours.color : P3.accent;
   const steps = Array.from({ length: n }, (_, i) => ({
     kind: "button",
     key: `card-${row.id}-${i}`,
@@ -9669,13 +9694,13 @@ function flow(groups, room, most, gap, more, shrink) {
   if (hidden.length && lines.length) lines[lines.length - 1].push(text(" ".repeat(gap)), ...more(hidden.length));
   return { lines, hidden };
 }
-function captionLine(sketch, P2, words, width, note = "", named = false) {
+function captionLine(sketch, P3, words, width, note = "", named = false) {
   let pin = sketch.lines.length ? {
     kind: "button",
     key: "sketch-pin",
     label: sketch.pinned ? words.attached : words.attach,
     face: sketch.pinned ? ` ${words.attached} ` : words.attach,
-    ...sketch.pinned ? { style: P2.yours } : { dim: true },
+    ...sketch.pinned ? { style: P3.yours } : { dim: true },
     action: { type: "sketch", action: "pin" }
   } : null;
   let state = sketch.drawing ? sketch.lines.length ? " \u27F3" : ` ${words.drawing}` : note ? ` \xB7 ${note}` : "";
@@ -9720,13 +9745,13 @@ function tidySketch(lines) {
     return `${" ".repeat(indent)}${part.left}${part.body}${fill.repeat(Math.max(0, inner - cells(part.body)))}${part.right}`;
   });
 }
-function pictureLines(drawing, P2, words, most) {
+function pictureLines(drawing, P3, words, most) {
   const draw = (line) => {
     const out = [];
     let at = 0;
     for (const m of line.matchAll(BOX)) {
       if (m.index > at) out.push(text(line.slice(at, m.index)));
-      out.push(text(m[0], { color: P2.frame }));
+      out.push(text(m[0], { color: P3.frame }));
       at = m.index + m[0].length;
     }
     if (at < line.length) out.push(text(line.slice(at)));
@@ -9746,7 +9771,7 @@ function pictureLines(drawing, P2, words, most) {
   const body = ` ${truncate(note, Math.max(1, inner - 1))}`;
   return [
     ...head.map(draw),
-    [text(" ".repeat(indent)), text("\u2502", { color: P2.frame }), text(body + " ".repeat(Math.max(0, inner - cells(body))), { dim: true, italic: true }), text("\u2502", { color: P2.frame })],
+    [text(" ".repeat(indent)), text("\u2502", { color: P3.frame }), text(body + " ".repeat(Math.max(0, inner - cells(body))), { dim: true, italic: true }), text("\u2502", { color: P3.frame })],
     draw(last)
   ];
 }
@@ -9853,8 +9878,8 @@ async function fromGit($, root) {
   return { ...buildVocabulary({ files, declarations, names }), libs: countLibraries(`${imports}
 ${declared}`) };
 }
-function slashed(output) {
-  return output.split(/\r?\n/).map((line) => {
+function slashed(output2) {
+  return output2.split(/\r?\n/).map((line) => {
     const at = line.search(/:\d+:/);
     return at > 0 ? line.slice(0, at).replace(/\\/g, "/") + line.slice(at) : line;
   }).join("\n");
@@ -9889,6 +9914,29 @@ async function fromRipgrep($, root) {
 ${declared}`) };
 }
 
+// src/card-config.ts
+function cardConfig(settings) {
+  const user = settings.user;
+  const depths = Object.fromEntries(Object.entries(user?.levels ?? {}).map(([profile, level]) => [profile, depthFor(level)]));
+  const date = /* @__PURE__ */ new Date();
+  const today = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  return {
+    type: "config",
+    enabled: settings.mode !== "off",
+    mode: settings.mode ?? "auto",
+    language: "en",
+    sheet: true,
+    sketch: settings.sketch !== false,
+    refs: settings.refs !== false,
+    today,
+    profile: "general",
+    streaming: false,
+    eagerPlan: false,
+    depths,
+    ...user && { user: describeUser(user), prefer: preferredProfiles(user) }
+  };
+}
+
 // src/editor.ts
 var WORD2 = /[\p{L}\p{N}_]/u;
 var Draft = class {
@@ -9920,10 +9968,10 @@ var Draft = class {
     return this.replace(this.cursor, this.nextChar(this.cursor), "");
   }
   /** ctrl+u: to the start of the line. ctrl+k: to its end. */
-  killLine(before) {
+  killLine(before2) {
     const lineStart = this.text.lastIndexOf("\n", this.cursor - 1) + 1;
     const lineEnd = this.text.indexOf("\n", this.cursor) < 0 ? this.text.length : this.text.indexOf("\n", this.cursor);
-    return before ? this.replace(lineStart, this.cursor, "") : this.replace(this.cursor, lineEnd, "");
+    return before2 ? this.replace(lineStart, this.cursor, "") : this.replace(this.cursor, lineEnd, "");
   }
   move(dir, word) {
     this.goal = null;
@@ -10027,6 +10075,11 @@ var Draft = class {
 // src/model.ts
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+
+// src/version.ts
+var VERSION = "0.4.11";
+
+// src/model.ts
 var LIGHT = [/luna/i, /mini/i, /nano/i, /lite/i, /small/i, /flash/i, /terra/i];
 var TIMEOUT_MS = 25e3;
 var CodexModel = class {
@@ -10035,13 +10088,17 @@ var CodexModel = class {
   turns = /* @__PURE__ */ new Map();
   next = 1;
   ready = null;
+  /** The account's default model, for readings that ask for `strong`. */
+  strongModel = null;
   failure = null;
   cwd;
   /** The Codex command and any leading arguments (tests run a fake app-server through Node). */
   command;
-  constructor(cwd, command = process.env["MARGINCUE_CODEX"] ?? "codex") {
+  disablePlugins;
+  constructor(cwd, command = process.env["MARGINCUE_CODEX"] ?? "codex", disablePlugins = false) {
     this.cwd = cwd;
     this.command = Array.isArray(command) ? command : [command];
+    this.disablePlugins = disablePlugins;
   }
   /** Starts the app-server and picks the model; resolves to the model id, or null when Codex is not usable. */
   start() {
@@ -10056,12 +10113,13 @@ var CodexModel = class {
   }
   async boot() {
     const args = ["app-server", "-c", "features.hooks=false", "-c", "features.memories=false", "-c", "project_doc_max_bytes=0"];
+    if (this.disablePlugins) args.push("-c", "features.plugins=false");
     const [program, ...lead] = this.command;
     const child = spawn(program, [...lead, ...args], {
       cwd: this.cwd,
       stdio: ["pipe", "pipe", "pipe"],
       // Codex is a .cmd shim on Windows when installed with npm.
-      shell: process.platform === "win32" && this.command.length === 1,
+      shell: process.platform === "win32" && this.command.length === 1 && !/\.exe$/i.test(program),
       env: { ...process.env, MARGINCUE_READER: "1" },
       windowsHide: true
     });
@@ -10070,24 +10128,33 @@ var CodexModel = class {
     child.on("error", (error) => this.fail(`codex could not start: ${error.message}`));
     child.on("exit", () => this.fail("codex app-server exited"));
     createInterface({ input: child.stdout }).on("line", (line) => this.receive(line));
-    const init = await this.call("initialize", { clientInfo: { name: "margincue", title: "MarginCue", version: "0.4.10" }, capabilities: null });
+    const init = await this.call("initialize", { clientInfo: { name: "margincue", title: "MarginCue", version: VERSION }, capabilities: null });
     if (init.error) throw new Error(init.error.message ?? "initialize failed");
     this.notify("initialized");
     const preferred = process.env.MARGINCUE_CODEX_MODEL;
-    if (preferred) return preferred;
+    if (preferred) {
+      this.strongModel = preferred;
+      return preferred;
+    }
     const listed = await this.call("model/list", {});
     const models = (listed.result?.data ?? []).filter((model) => !model.hidden);
+    const fallback = models.find((model) => model.isDefault)?.id ?? models[0]?.id ?? null;
+    this.strongModel = fallback;
     for (const pattern2 of LIGHT) {
       const light = models.find((model) => pattern2.test(model.id));
       if (light) return light.id;
     }
-    return models.find((model) => model.isDefault)?.id ?? models[0]?.id ?? null;
+    return fallback;
   }
-  /** One reading: `system` replaces Codex's own instructions, `prompt` is the only input; `onDelta` hears the text as it streams. */
+  /**
+   * One reading: `system` replaces Codex's own instructions, `prompt` is the only input; `onDelta` hears the text as it
+   * streams. `strong` reads on the account's default model instead of its lightest.
+   */
   async complete(system, prompt, options = {}) {
     const { signal, onDelta } = options;
     const started = Date.now();
-    const model = await this.start();
+    const light = await this.start();
+    const model = options.strong ? this.strongModel ?? light : light;
     if (!model) return { ok: false, reason: this.failure ?? "no Codex model", ms: Date.now() - started };
     const thread = await this.call("thread/start", {
       model,
@@ -10099,14 +10166,14 @@ var CodexModel = class {
     });
     const threadId = thread.result?.thread?.id;
     if (!threadId) return { ok: false, reason: thread.error?.message ?? "no thread", ms: Date.now() - started };
-    return new Promise((resolve) => {
+    return new Promise((resolve2) => {
       let settled = false;
       const done = (outcome) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         this.turns.delete(threadId);
-        resolve(outcome);
+        resolve2(outcome);
       };
       const timer = setTimeout(() => {
         void this.call("turn/interrupt", { threadId }).catch(() => {
@@ -10141,9 +10208,9 @@ var CodexModel = class {
       return;
     }
     if (message.id !== void 0 && !message.method) {
-      const resolve = this.pending.get(message.id);
+      const resolve2 = this.pending.get(message.id);
       this.pending.delete(message.id);
-      resolve?.(message);
+      resolve2?.(message);
       return;
     }
     if (message.id !== void 0 && message.method) {
@@ -10167,8 +10234,8 @@ var CodexModel = class {
   call(method, params) {
     if (this.failure && method !== "initialize") return Promise.resolve({ error: { message: this.failure } });
     const id = this.next++;
-    return new Promise((resolve) => {
-      this.pending.set(id, resolve);
+    return new Promise((resolve2) => {
+      this.pending.set(id, resolve2);
       this.write({ id, method, params });
     });
   }
@@ -10182,7 +10249,7 @@ var CodexModel = class {
   }
   fail(reason) {
     this.failure ??= reason;
-    for (const resolve of this.pending.values()) resolve({ error: { message: reason } });
+    for (const resolve2 of this.pending.values()) resolve2({ error: { message: reason } });
     this.pending.clear();
     for (const turn of this.turns.values()) turn.done({ ok: false, reason, ms: Date.now() - turn.started });
   }
@@ -10259,6 +10326,31 @@ function turnMessages(transcript, turn) {
   }
   return out;
 }
+var APP_MESSAGE = /^An MCP app initiated this message\b/;
+function appMessage(transcript) {
+  const lines = readTail(transcript, 512 * 1024).split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line.includes('"response_item"')) continue;
+    try {
+      const entry = JSON.parse(line);
+      const payload = entry.payload;
+      if (entry.type !== "response_item" || !payload) continue;
+      if (payload.type === "message" && payload.role === "user") {
+        const text2 = (payload.content ?? []).map((part) => part.text ?? "").join("");
+        if (APP_MESSAGE.test(text2)) continue;
+        return null;
+      }
+      if (payload.type !== "function_call_output" || !String(payload.call_id ?? "").startsWith("untrusted_input")) continue;
+      const raw = Array.isArray(payload.output) ? payload.output.map((part) => part.text ?? "").join("") : String(payload.output ?? "");
+      const message = JSON.parse(raw);
+      return message.kind === "message" && message.source === "mcp_app" && typeof message.text === "string" ? message.text : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
 function readHead(file, bytes) {
   try {
     const fd = openSync(file, "r");
@@ -10292,7 +10384,7 @@ function readTail(file, bytes) {
 }
 var processEngine = {
   process: {
-    run: (argv, options) => new Promise((resolve, reject) => {
+    run: (argv, options) => new Promise((resolve2, reject) => {
       const child = spawn2(argv[0], argv.slice(1), { cwd: options.cwd, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
       const out = [];
       const err = [];
@@ -10309,7 +10401,7 @@ var processEngine = {
       });
       child.on("close", (code) => {
         clearTimeout(timer);
-        resolve({ exitCode: code ?? 1, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
+        resolve2({ exitCode: code ?? 1, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
       });
     })
   }
@@ -10506,10 +10598,73 @@ function fit(text2, room) {
   return out;
 }
 
+// src/turn-card.ts
+var RECENT_MS = 30 * 60 * 1e3;
+function readTurn(cwd, now3 = Date.now()) {
+  const turn = readJson(PATHS.turn, null);
+  if (!turn || turn.cwd !== cwd) return null;
+  const running = turn.endedAt === null;
+  if (!running && now3 - (turn.endedAt ?? 0) > RECENT_MS) return null;
+  const seen = /* @__PURE__ */ new Map();
+  for (const message of turnMessages(turn.transcript, turn.turn)) for (const blank of parseBlanks(message)) seen.set(blank.label, blank);
+  const blanks = [...seen.values()];
+  if (!blanks.length) return null;
+  return { running, blanks, picked: blanks.map(() => 0), focus: 0, text: "", turn: turn.turn };
+}
+function mergeTurn(before2, after) {
+  if (!before2 || !after || before2.turn !== after.turn) return after;
+  const picks2 = new Map(before2.blanks.map((blank, i) => [blank.label, before2.picked[i] ?? 0]));
+  const picked = after.blanks.map((blank) => Math.min(picks2.get(blank.label) ?? 0, blank.alternatives.length));
+  const focused = before2.blanks[before2.focus]?.label;
+  const focus = Math.max(0, after.blanks.findIndex((blank) => blank.label === focused));
+  return { ...after, picked, focus, text: before2.text };
+}
+function agentCard(state) {
+  const rows = state.blanks.map((blank, i) => ({
+    id: `a${i}`,
+    key: `agent_${i}`,
+    label: blank.label,
+    type: "one",
+    statement: `${blank.label}: {}`,
+    options: [blank.choice, ...blank.alternatives],
+    defaults: [0],
+    selected: [state.picked[i] ?? 0],
+    chosen: (state.picked[i] ?? 0) !== 0,
+    origin: "agent"
+  }));
+  return {
+    id: 1,
+    stage: state.running ? "turn" : "after",
+    reading: false,
+    error: false,
+    read: null,
+    kind: null,
+    rows,
+    focus: rows[state.focus]?.id ?? null,
+    mentions: [],
+    language: "en",
+    collapsed: false
+  };
+}
+function pick2(state, row, option) {
+  const blank = state.blanks[row];
+  if (!blank) return state.text;
+  const count2 = blank.alternatives.length + 1;
+  state.picked[row] = option === "next" ? ((state.picked[row] ?? 0) + 1) % count2 : Math.min(option, count2 - 1);
+  state.focus = row;
+  const lines = state.blanks.flatMap((b, i) => {
+    const picked = state.picked[i] ?? 0;
+    if (picked === 0) return [];
+    const value = b.alternatives[picked - 1];
+    return state.running ? [`Amendment to my last prompt: for ${b.label}, use ${value} instead of ${b.choice}.`] : [`Change ${b.label}: ${value} instead of ${b.choice}.`];
+  });
+  state.text = lines.length ? state.running ? lines.join("\n") : `${lines.join(" ")} Keep everything else as it is.` : "";
+  return state.text;
+}
+
 // src/compose.ts
 var P = DARK;
 var now = () => performance.now();
-var RECENT_MS = 30 * 60 * 1e3;
 async function compose(file) {
   const seed = readFileSync2(file, "utf8");
   const cwd = process.cwd();
@@ -10527,7 +10682,7 @@ async function compose(file) {
   let spinner = null;
   let modelName = "starting Codex\u2026";
   let finished = false;
-  const agent = openTurn(cwd, draft.text);
+  const agent = draft.text.trim() ? null : readTurn(cwd);
   function run(event) {
     const effects = core.handle(event);
     for (const fx of effects) effect(fx);
@@ -10570,25 +10725,6 @@ async function compose(file) {
       run(outcome.ok ? { type: "reply", now: now(), req, text: "", done: true } : { type: "reply", now: now(), req, text: "", done: true, ok: false });
     });
   }
-  function configEvent() {
-    const user = settings.user;
-    const depths = Object.fromEntries(Object.entries(user?.levels ?? {}).map(([profile, level]) => [profile, depthFor(level)]));
-    return {
-      type: "config",
-      enabled: settings.mode !== "off",
-      mode: settings.mode ?? "auto",
-      language: "en",
-      sheet: true,
-      sketch: settings.sketch !== false,
-      refs: settings.refs !== false,
-      today: localDate(),
-      profile: "general",
-      streaming: false,
-      eagerPlan: false,
-      depths,
-      ...user && { user: describeUser(user), prefer: preferredProfiles(user) }
-    };
-  }
   function edited(splice, origin) {
     if (!splice) return draw();
     if (agent && draft.text !== agent.text) leaveAgent();
@@ -10598,48 +10734,9 @@ async function compose(file) {
     draft.replace(0, draft.text.length, text2);
     run({ type: "draft", now: now(), text: draft.text, origin: "fill", cursor: draft.cursor });
   }
-  function agentCard(state) {
-    const rows = state.blanks.map((blank, i) => ({
-      id: `a${i}`,
-      key: `agent_${i}`,
-      label: blank.label,
-      type: "one",
-      statement: `${blank.label}: {}`,
-      options: [blank.choice, ...blank.alternatives],
-      defaults: [0],
-      selected: [state.picked[i] ?? 0],
-      chosen: (state.picked[i] ?? 0) !== 0,
-      origin: "agent"
-    }));
-    return {
-      id: 1,
-      stage: state.running ? "turn" : "after",
-      reading: false,
-      error: false,
-      read: null,
-      kind: null,
-      rows,
-      focus: rows[state.focus]?.id ?? null,
-      mentions: [],
-      language: "en",
-      collapsed: false
-    };
-  }
   function switchAgent(row, option) {
-    if (!agent) return;
-    const blank = agent.blanks[row];
-    if (!blank) return;
-    const count2 = blank.alternatives.length + 1;
-    agent.picked[row] = option === "next" ? ((agent.picked[row] ?? 0) + 1) % count2 : Math.min(option, count2 - 1);
-    agent.focus = row;
-    const lines = agent.blanks.flatMap((b, i) => {
-      const picked = agent.picked[i] ?? 0;
-      if (picked === 0) return [];
-      const value = b.alternatives[picked - 1];
-      return agent.running ? [`Amendment to my last prompt: for ${b.label}, use ${value} instead of ${b.choice}.`] : [`Change ${b.label}: ${value} instead of ${b.choice}.`];
-    });
-    const text2 = lines.length ? agent.running ? lines.join("\n") : `${lines.join(" ")} Keep everything else as it is.` : "";
-    agent.text = text2;
+    if (!agent || !agent.blanks[row]) return;
+    const text2 = pick2(agent, row, option);
     draft.replace(0, draft.text.length, text2);
     draw();
   }
@@ -10916,7 +11013,7 @@ async function compose(file) {
   process.stdin.on("data", onKeys);
   process.stdout.on("resize", draw);
   process.on("SIGTERM", cancel);
-  run(configEvent());
+  run(cardConfig(settings));
   run({ type: "learned", picks: readLearned(cwd) });
   void model.start().then((name) => {
     modelName = name ? `readings by ${name}` : "Codex unavailable";
@@ -10929,22 +11026,6 @@ async function compose(file) {
     agent.text = "";
   } else if (draft.text.trim()) run({ type: "draft", now: now(), text: draft.text, origin: "open", cursor: draft.cursor });
   draw();
-}
-function openTurn(cwd, text2) {
-  if (text2.trim()) return null;
-  const turn = readJson(PATHS.turn, null);
-  if (!turn || turn.cwd !== cwd) return null;
-  const running = turn.endedAt === null;
-  if (!running && Date.now() - (turn.endedAt ?? 0) > RECENT_MS) return null;
-  const seen = /* @__PURE__ */ new Map();
-  for (const message of turnMessages(turn.transcript, turn.turn)) for (const blank of parseBlanks(message)) seen.set(blank.label, blank);
-  const blanks = [...seen.values()];
-  if (!blanks.length) return null;
-  return { running, blanks, picked: blanks.map(() => 0), focus: 0, text: "" };
-}
-function localDate() {
-  const d = /* @__PURE__ */ new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 // ../claude-code/core/kickoff.ts
@@ -10992,20 +11073,139 @@ function createsRoutineObject(request) {
   const lead = request.replace(/^(?:for|in|on|pour|dans|sur)\b[^,]*,\s*/u, "");
   const verb = CREATION.exec(lead) ?? ROUTINE_VERB.exec(lead);
   if (!verb) return false;
-  const object = lead.slice(verb[0].length).trimStart().replace(OBJECT_MODIFIERS, "");
-  const routine = ROUTINE_OBJECT.exec(object);
-  return routine !== null && !ROUTINE_ARTIFACT.test(object.slice(routine[0].length).trimStart());
+  const object2 = lead.slice(verb[0].length).trimStart().replace(OBJECT_MODIFIERS, "");
+  const routine = ROUTINE_OBJECT.exec(object2);
+  return routine !== null && !ROUTINE_ARTIFACT.test(object2.slice(routine[0].length).trimStart());
 }
 function startsSomethingNew(draft, context) {
   const signal = kickoffSignal(draft);
   return signal === "creation" || signal === "unclear" && context.firstOfSession;
 }
 
+// src/card-store.ts
+import { spawn as spawn3 } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { mkdirSync as mkdirSync2, readdirSync, readFileSync as readFileSync3, renameSync as renameSync2, statSync as statSync2, unlinkSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { join as join3 } from "node:path";
+import { fileURLToPath } from "node:url";
+var CARDS = join3(HOME, "codex", "cards");
+var KEEP_MS = 7 * 24 * 60 * 60 * 1e3;
+var POLL_MS = 80;
+var isCardId = (id) => typeof id === "string" && /^[A-Za-z0-9_-]{6,40}$/.test(id);
+var fileOf = (id) => join3(CARDS, `${id}.json`);
+function emptyCard(id, prompt) {
+  return { id, prompt, reading: null, rows: [], missing: [], preview: false, sketch: null };
+}
+function readRecord(id) {
+  if (!isCardId(id)) return null;
+  try {
+    const record = JSON.parse(readFileSync3(fileOf(id), "utf8"));
+    return record?.id === id ? settle(record) : null;
+  } catch {
+    return null;
+  }
+}
+function writeRecord(record) {
+  mkdirSync2(CARDS, { recursive: true });
+  const temp = `${fileOf(record.id)}.${process.pid}.tmp`;
+  writeFileSync3(temp, JSON.stringify(record));
+  renameSync2(temp, fileOf(record.id));
+}
+function updateRecord(id, change) {
+  const record = readRecord(id);
+  if (!record) return null;
+  change(record);
+  record.version++;
+  writeRecord(record);
+  return record;
+}
+async function waitForRecord(id, after, ms) {
+  const until = Date.now() + ms;
+  for (; ; ) {
+    const record = readRecord(id);
+    if (!record || record.version > after || Date.now() >= until) return record;
+    await new Promise((resolve2) => setTimeout(resolve2, POLL_MS));
+  }
+}
+function settle(record) {
+  if (record.pid === void 0 || record.state !== "reading" && record.sketchState !== "drawing" || alive(record.pid)) return record;
+  if (record.state === "reading") record.state = "failed";
+  if (record.sketchState === "drawing") record.sketchState = "failed";
+  return record;
+}
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+function startCard(prompt, cwd, extra = {}) {
+  const id = randomBytes(6).toString("base64url");
+  const record = {
+    id,
+    prompt,
+    cwd,
+    at: Date.now(),
+    version: 1,
+    state: "reading",
+    card: emptyCard(id, prompt),
+    sketchState: "none",
+    sketch: null,
+    names: [],
+    ...extra
+  };
+  try {
+    writeRecord(record);
+    const entry = process.env["MARGINCUE_ENTRY"] ?? fileURLToPath(import.meta.url);
+    const child = spawn3(process.execPath, [entry, "prefetch", id], { detached: true, stdio: "ignore", windowsHide: true });
+    child.on("error", () => updateRecord(id, (card) => {
+      card.state = "failed";
+    }));
+    child.unref();
+    if (child.pid !== void 0) updateRecord(id, (card) => {
+      card.pid ??= child.pid;
+    });
+    pruneCards();
+    return id;
+  } catch {
+    return null;
+  }
+}
+function pruneCards(now3 = Date.now()) {
+  try {
+    for (const name of readdirSync(CARDS)) {
+      const file = join3(CARDS, name);
+      try {
+        if (now3 - statSync2(file).mtimeMs > KEEP_MS) unlinkSync(file);
+      } catch {
+      }
+    }
+  } catch {
+  }
+}
+
+// src/widget-message.ts
+var AS_WRITTEN = "Go ahead with my prompt as written.";
+var WITH_EDITS = "Go ahead with my prompt above.";
+function isCardFollowUp(prompt) {
+  const first = prompt.trimStart().split(/\r?\n/, 1)[0]?.trimEnd();
+  return first === AS_WRITTEN || first === WITH_EDITS;
+}
+function choiceLine(row, selected) {
+  const file = row.files?.[selected[0] ?? -1];
+  const value = rowValue(row, selected);
+  return decisionLine({ statement: row.statement, option: file ? `${value} (${file})` : value });
+}
+
 // src/hooks.ts
 function decisionsOf(prompt) {
   const at = prompt.lastIndexOf("\nDecisions:\n");
   if (at < 0) return [];
-  return prompt.slice(at + "\nDecisions:\n".length).split("\n").filter((line) => line.startsWith("- ")).map((line) => line.slice(2).trim());
+  const lines = prompt.slice(at + "\nDecisions:\n".length).split("\n");
+  const end = lines.findIndex((line) => !line.startsWith("- "));
+  return lines.slice(0, end < 0 ? lines.length : end).map((line) => line.slice(2).trim());
 }
 var READING_FIRST = [
   "# MarginCue's card (the user did not see it before sending)",
@@ -11015,6 +11215,21 @@ var READING_FIRST = [
   '- "Not in the code:" only when the prompt names something the repository does not have: that name, and the closest names that exist.',
   '- The choices the prompt leaves open that you settle now, each marked as described in "Choices you make for the user".'
 ].join("\n");
+var CARD_TOOL = "mcp__margincue__margincue_card";
+function desktopCardFirst(prompt, cwd) {
+  const id = cwd ? startCard(prompt, cwd) : null;
+  const call = id ? [
+    `Your first action must be this exact tool call, before any tool search, file read or message: \`${CARD_TOOL}\` with {"card": ${JSON.stringify(id)}}.`,
+    `In code mode, that is: await tools.${CARD_TOOL}({ card: ${JSON.stringify(id)} })`
+  ].join("\n") : "Your first action must be to call `margincue_card` (use its MCP-qualified name if shown). Pass the entire current user prompt verbatim as `prompt`. " + (cwd ? `Use ${JSON.stringify(cwd)} as the \`cwd\` argument.` : "Pass the absolute working directory of this session as `cwd`.");
+  return [
+    "# MarginCue desktop card",
+    call,
+    "After the card returns, end this turn immediately, with no message, and wait for the user\u2019s next message. Start the task only after the user follows up.",
+    "Use the following text card only if the MCP tool is unavailable or the call fails. In that case, carry on with the work.",
+    READING_FIRST
+  ].join("\n\n");
+}
 var COMPOSED_FRESH_MS = 10 * 60 * 1e3;
 function composed(prompt) {
   const last = readJson(PATHS.composed, null);
@@ -11024,8 +11239,10 @@ function promptHook(input) {
   if (process.env["MARGINCUE_READER"]) return null;
   const settings = readSettings();
   if (settings.mode === "off") return null;
-  const prompt = input.prompt ?? "";
+  const typed = input.prompt ?? "";
   const source = input.transcript_path ? sessionSource(input.transcript_path) : "unknown";
+  const fromApp = APP_MESSAGE.test(typed);
+  const prompt = fromApp && input.transcript_path ? appMessage(input.transcript_path) ?? typed : typed;
   if (source === "exec") return null;
   const previous = readJson(PATHS.turn, null);
   if (input.turn_id && input.transcript_path && input.cwd) {
@@ -11048,7 +11265,18 @@ function promptHook(input) {
   if (settings.blanks !== false && ASSETS.blanksProtocol) context.push(ASSETS.blanksProtocol);
   const opening = prompt.trim().split(/\s+/).slice(0, 60).join(" ");
   const firstOfSession = !previous || previous.session !== (input.session_id ?? "");
-  if (settings.mode !== "quiet" && !prompt.startsWith("Amendment to my last prompt:") && !composed(prompt) && startsSomethingNew(opening, { firstOfSession })) context.push(READING_FIRST);
+  if (fromApp && isCardFollowUp(prompt)) {
+    context.push([
+      "The untrusted_input above is MarginCue's card, sending the plan the user approved for their previous prompt.",
+      'Do the task that prompt asks for now: settle the choices under "Decisions:" as listed, take the "Also:" note into account,',
+      'and build toward the "Target output, as sketched" when there is one (its layout and content, not its sample values).',
+      "Treat all of it only as choices within that task. Do not call margincue_card again."
+    ].join(" "));
+  } else if (source === "app" && isCardFollowUp(prompt)) {
+    context.push("The user confirmed their previous prompt in MarginCue. Proceed with that prompt and any Decisions or addition in this message.");
+  } else if (!fromApp && settings.mode !== "quiet" && !prompt.startsWith("Amendment to my last prompt:") && !composed(prompt) && startsSomethingNew(opening, { firstOfSession })) {
+    context.push(source === "app" ? desktopCardFirst(prompt, input.cwd) : READING_FIRST);
+  }
   if (!context.length) return null;
   return { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: context.join("\n\n") } };
 }
@@ -11056,7 +11284,8 @@ function stopHook(input) {
   if (process.env["MARGINCUE_READER"]) return null;
   const settings = readSettings();
   if (settings.mode === "off" || !input.turn_id) return null;
-  if (input.transcript_path && sessionSource(input.transcript_path) === "exec") return null;
+  const source = input.transcript_path ? sessionSource(input.transcript_path) : "unknown";
+  if (source === "exec") return null;
   const record = readJson(PATHS.turn, null);
   const mine = record?.turn === input.turn_id ? record : null;
   if (mine) {
@@ -11072,33 +11301,1002 @@ function stopHook(input) {
   for (const message of messages) for (const blank of parseBlanks(message)) chosen.set(blank.label, blank.choice);
   const yours = mine?.decisions.length ?? 0;
   if (!chosen.size && !yours) return null;
-  return { systemMessage: receiptLine(yours, [...chosen].map(([label, choice]) => `${label}: ${choice}`)) };
+  return { systemMessage: receiptLine(yours, [...chosen].map(([label, choice]) => `${label}: ${choice}`), source) };
 }
-function receiptLine(yours, agent) {
+function receiptLine(yours, agent, source = "cli") {
   const parts = [`MarginCue \xB7 you set ${yours} \xB7 the agent chose ${agent.length}`];
-  if (agent.length) parts.push(agent.join(" \xB7 "), "ctrl+g to switch one");
+  if (agent.length) {
+    parts.push(agent.join(" \xB7 "));
+    if (source !== "app") parts.push("ctrl+g to switch one");
+  }
   return parts.join(" \u2014 ");
 }
 
+// src/mcp.ts
+import { readFileSync as readFileSync4 } from "node:fs";
+import { isAbsolute } from "node:path";
+import { createInterface as createInterface2 } from "node:readline";
+import { randomBytes as randomBytes2 } from "node:crypto";
+
+// src/card-reader.ts
+var READ_MS = 15e3;
+var INDEX_MS = 750;
+var SKETCH_MS = 12e3;
+var WARM_MS = 3 * 60 * 1e3;
+var CardReader = class {
+  command;
+  models = /* @__PURE__ */ new Map();
+  constructor(command) {
+    this.command = command;
+  }
+  /** A started app-server for this project, kept up for a few minutes after each use. */
+  warm(cwd) {
+    let entry = this.models.get(cwd);
+    if (entry?.model.problem) {
+      entry.model.close();
+      clearTimeout(entry.idle);
+      entry = void 0;
+    }
+    const model = entry?.model ?? new CodexModel(cwd, this.command, true);
+    if (entry) clearTimeout(entry.idle);
+    else void model.start();
+    const idle = setTimeout(() => {
+      model.close();
+      this.models.delete(cwd);
+    }, WARM_MS);
+    idle.unref();
+    this.models.set(cwd, { model, idle });
+    return model;
+  }
+  close() {
+    for (const { model, idle } of this.models.values()) {
+      clearTimeout(idle);
+      model.close();
+    }
+    this.models.clear();
+  }
+  /**
+   * Reads the prompt into a card. `onUpdate` hears the card each time the streamed reading completes a line:
+   * its reading first, then each choice. Resolves to the finished card with what a preview needs, or null when off.
+   */
+  async read(id, prompt, cwd, onUpdate) {
+    const settings = readSettings();
+    if (settings.mode === "off") return null;
+    const started = Date.now();
+    const config = cardConfig(settings);
+    const model = this.warm(cwd);
+    const core = createCore(ASSETS, { readSubmittedPrompt: true });
+    core.handle({ ...config, sketch: false });
+    core.handle({ type: "learned", picks: readLearned(cwd) });
+    const indexBy = started + INDEX_MS;
+    core.handle({ type: "vocabulary", vocab: await before(vocabulary(cwd, indexBy), indexBy) });
+    const request = core.handle({ type: "draft", text: prompt, now: Date.now(), origin: "open" }).find((effect) => effect.type === "request" && effect.kind === "card");
+    if (request?.type === "request") {
+      const reply = (text2, done, ok = true) => core.handle({ type: "reply", now: Date.now(), req: request.req, text: text2, done, ok });
+      let rest = "";
+      let given = false;
+      let open = true;
+      const stop = new AbortController();
+      const reading = model.complete(request.system.join("\n\n"), request.prompt, {
+        signal: stop.signal,
+        strong: true,
+        onDelta: (delta) => {
+          if (!open) return;
+          rest += delta;
+          const end = rest.lastIndexOf("\n");
+          if (end < 0) return;
+          reply(rest.slice(0, end + 1), false);
+          rest = rest.slice(end + 1);
+          given = true;
+          onUpdate?.(cardOf(core, id, prompt, config.sketch !== false));
+        }
+      });
+      const outcome = await before(reading, started + READ_MS);
+      open = false;
+      if (!outcome) stop.abort();
+      if (outcome?.ok) reply(rest, true);
+      else reply("", true, given);
+    }
+    const card = cardOf(core, id, prompt, config.sketch !== false);
+    const view = core.currentView().card;
+    const names = (view?.mentions ?? []).filter((mention) => mention.status === "found").slice(0, 8).map((mention) => mention.match ?? mention.phrase);
+    return { card, cwd, names, today: config.today, kind: view?.kind ?? null };
+  }
+  /** Draws the preview for the card with these choices (none: as Codex would decide them). */
+  async sketch(source, picks2) {
+    const { card, cwd, names, today } = source;
+    const choices = card.rows.filter((row) => !row.files || picks2[row.id] !== void 0).map((row) => choiceLine(row, picks2[row.id] ?? row.assumed));
+    const prompt = buildSketchPrompt({ draft: card.prompt, read: card.reading, choices, names, today });
+    const system = ASSETS.sketchSystem.replace("{language}", "in English");
+    const reply = await before(this.warm(cwd).complete(system, prompt, { strong: true }), Date.now() + SKETCH_MS);
+    if (!reply?.ok) throw new Error("The preview is unavailable.");
+    const sketch = parseSketch(reply.text);
+    return sketch && { title: sketch.title, lines: tidySketch(sketch.lines) };
+  }
+};
+function cardOf(core, id, prompt, sketchOn) {
+  const view = core.currentView().card;
+  const missing = (view?.mentions ?? []).filter((mention) => mention.status === "missing").map((mention) => {
+    const row = view?.rows.find((row2) => row2.origin === "repo" && row2.statement === `"${mention.phrase}" is {}`);
+    return { phrase: mention.phrase, candidates: mention.near, ...row && { rowId: row.id } };
+  });
+  const rows = (view?.rows ?? []).map(({ id: id2, label, type, statement, options, selected }) => {
+    const mention = missing.find((name) => name.rowId === id2);
+    return { id: id2, label, type, statement, options, assumed: selected, ...mention && { files: mention.candidates.map((candidate) => candidate.file) } };
+  });
+  const preview = sketchOn && Boolean(ASSETS.sketchSystem) && canSketch(view?.kind ?? null);
+  return { id, prompt, reading: view?.read ?? null, rows, missing, preview, sketch: null };
+}
+function validPicks(rows, value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const picks2 = {};
+  for (const [id, selected] of Object.entries(value)) {
+    const row = rows.find((row2) => row2.id === id);
+    if (!row || !Array.isArray(selected) || row.type !== "many" && selected.length !== 1 || new Set(selected).size !== selected.length || selected.some((i) => !Number.isInteger(i) || i < 0 || i >= row.options.length)) return null;
+    picks2[id] = selected;
+  }
+  return picks2;
+}
+async function vocabulary(cwd, deadline) {
+  const run = (argv, options) => {
+    const left = deadline - Date.now();
+    if (left <= 0) return Promise.resolve({ exitCode: 1, stdout: "", stderr: "" });
+    return processEngine.process.run(argv, { ...options, timeoutMs: left });
+  };
+  return collectVocabulary({ process: { run } }, cwd).catch(() => null);
+}
+async function before(work, deadline) {
+  let timer;
+  try {
+    return await Promise.race([
+      work,
+      new Promise((resolve2) => {
+        timer = setTimeout(() => resolve2(null), Math.max(0, deadline - Date.now()));
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// src/prefetch.ts
+function codexCommand() {
+  return process.env["MARGINCUE_CODEX"] || process.env["CODEX_CLI_PATH"] || process.env["CODEX_APP_RUNTIME_CLI_PATH"] || "codex";
+}
+async function fillCard(reader, id) {
+  const start = readRecord(id);
+  if (!start || start.state !== "reading") return;
+  updateRecord(id, (record) => {
+    record.pid = process.pid;
+  });
+  const read = () => reader.read(id, start.prompt, start.cwd, (card2) => updateRecord(id, (record) => {
+    record.card = card2;
+  })).catch(() => null);
+  let source = await read();
+  if (source && source.kind === "build" && !source.card.rows.length) source = await read() ?? source;
+  if (!source?.card.reading && !source?.card.rows.length) {
+    updateRecord(id, (record) => {
+      if (source) record.card = source.card;
+      record.state = "failed";
+    });
+    return;
+  }
+  const { card, names, today } = source;
+  updateRecord(id, (record) => {
+    Object.assign(record, { card, names, ...today && { today }, state: "done", sketchState: card.preview ? "drawing" : "none" });
+  });
+  if (!card.preview) return;
+  const sketch = await reader.sketch(source, {}).catch(() => void 0);
+  updateRecord(id, (record) => {
+    record.sketch = sketch ?? null;
+    record.sketchState = sketch ? "done" : "failed";
+  });
+}
+async function runPrefetch(id) {
+  const reader = new CardReader(codexCommand());
+  try {
+    await fillCard(reader, id);
+  } finally {
+    reader.close();
+  }
+}
+
+// src/mcp.ts
+var CARD_URI = "ui://margincue/card.html";
+var CARD_META = { ui: { resourceUri: CARD_URI }, "openai/outputTemplate": CARD_URI };
+var CARD_RESOURCE = { uri: CARD_URI, name: "MarginCue card", mimeType: "text/html;profile=mcp-app" };
+var APP_ONLY = { ui: { visibility: ["app"] }, "openai/widgetAccessible": true, "openai/visibility": "private" };
+var TOOL_LIST = [
+  {
+    name: "margincue_card",
+    description: "Show the MarginCue card for the current prompt, when MarginCue\u2019s prompt hook asks for it. Then end your turn: the user\u2019s choices arrive as their next message.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        card: { type: "string", description: "The card id MarginCue\u2019s prompt hook gave." },
+        prompt: { type: "string", description: "Only without a card id: the user\u2019s full prompt verbatim." },
+        cwd: { type: "string", description: "Only without a card id: the session\u2019s absolute project directory." }
+      }
+    },
+    annotations: { readOnlyHint: true },
+    _meta: CARD_META
+  },
+  {
+    name: "margincue_read",
+    description: "Follow an open MarginCue card while its reading and first preview arrive.",
+    inputSchema: {
+      type: "object",
+      required: ["card"],
+      additionalProperties: false,
+      properties: { card: { type: "string" }, after: { type: "integer" } }
+    },
+    annotations: { readOnlyHint: true },
+    _meta: APP_ONLY
+  },
+  {
+    name: "margincue_sketch",
+    description: "Draw the preview for an open MarginCue card with its current choices.",
+    inputSchema: {
+      type: "object",
+      required: ["cardId", "picks"],
+      additionalProperties: false,
+      properties: {
+        cardId: { type: "string" },
+        picks: { type: "object", additionalProperties: { type: "array", items: { type: "integer" } } }
+      }
+    },
+    annotations: { readOnlyHint: true },
+    _meta: APP_ONLY
+  }
+];
+var FOLLOW_MS = 8e3;
+var SKETCH_WAIT_MS = 14e3;
+var output = (record) => ({
+  ...record.card,
+  sketch: record.sketch,
+  version: record.version,
+  state: record.state,
+  sketchState: record.sketchState
+});
+var PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+var RpcError = class extends Error {
+  code;
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+};
+function object(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+var content = (text2) => [{ type: "text", text: text2 }];
+var toolError = (text2) => ({ isError: true, content: content(text2) });
+var sketched = (sketch) => ({
+  structuredContent: { sketch },
+  content: content(sketch ? "Preview drawn." : "There is no preview for this prompt.")
+});
+async function dispatch(reader, method, params) {
+  switch (method) {
+    case "initialize": {
+      const version = typeof params.protocolVersion === "string" ? params.protocolVersion : "";
+      return {
+        protocolVersion: PROTOCOL_VERSIONS.includes(version) ? version : PROTOCOL_VERSIONS[0],
+        serverInfo: { name: "margincue", version: VERSION },
+        capabilities: { tools: {}, resources: {} }
+      };
+    }
+    case "ping":
+      return {};
+    case "tools/list":
+      return { tools: TOOL_LIST };
+    case "resources/list":
+      return { resources: [CARD_RESOURCE] };
+    case "resources/templates/list":
+      return { resourceTemplates: [] };
+    case "resources/read": {
+      if (params.uri !== CARD_URI) throw new RpcError(-32002, "Resource not found");
+      const text2 = readFileSync4(new URL("../dist/card.html", import.meta.url), "utf8");
+      return { contents: [{
+        ...CARD_RESOURCE,
+        text: text2,
+        _meta: { ui: { prefersBorder: false, csp: { connectDomains: [], resourceDomains: [] } } }
+      }] };
+    }
+    case "tools/call": {
+      const args = object(params.arguments);
+      if (params.name === "margincue_card") {
+        let record = isCardId(args.card) ? readRecord(args.card) : null;
+        if (!record) {
+          if (typeof args.prompt !== "string" || !args.prompt.trim() || typeof args.cwd !== "string" || !isAbsolute(args.cwd)) {
+            return toolError("MarginCue needs the card id from its prompt hook, or the prompt and its absolute project directory.");
+          }
+          if (readSettings().mode === "off") return toolError("MarginCue is off.");
+          const id = randomBytes2(6).toString("base64url");
+          record = {
+            id,
+            prompt: args.prompt,
+            cwd: args.cwd,
+            at: Date.now(),
+            version: 1,
+            state: "reading",
+            card: emptyCard(id, args.prompt),
+            sketchState: "none",
+            sketch: null,
+            names: [],
+            pid: process.pid
+          };
+          writeRecord(record);
+          void fillCard(reader, id);
+        }
+        reader.warm(record.cwd);
+        return {
+          structuredContent: output(record),
+          _meta: CARD_META,
+          content: content("The MarginCue card is up. End your turn now, without writing anything more. The user\u2019s choices will arrive as their next message.")
+        };
+      }
+      if (params.name === "margincue_read") {
+        const after = typeof args.after === "number" ? args.after : 0;
+        const record = isCardId(args.card) ? await waitForRecord(args.card, after, FOLLOW_MS) : null;
+        if (!record) return toolError("This card is no longer available.");
+        return { structuredContent: output(record), content: content(record.state === "reading" ? "Reading." : "Read.") };
+      }
+      if (params.name === "margincue_sketch") {
+        let record = isCardId(args.cardId) ? readRecord(args.cardId) : null;
+        if (!record || record.state !== "done") return toolError("This card is no longer available for preview.");
+        const picks2 = validPicks(record.card.rows, args.picks);
+        if (!picks2) return toolError("Invalid card choices.");
+        try {
+          if (!Object.keys(picks2).length && record.sketchState !== "none" && record.sketchState !== "failed") {
+            const until = Date.now() + SKETCH_WAIT_MS;
+            while (record?.sketchState === "drawing" && Date.now() < until) record = await waitForRecord(record.id, record.version, until - Date.now());
+            if (record?.sketchState === "done") return sketched(record.sketch);
+            if (!record) return toolError("This card is no longer available for preview.");
+          }
+          return sketched(await reader.sketch(record, picks2));
+        } catch (error) {
+          return toolError(error instanceof Error ? error.message : "The preview is unavailable.");
+        }
+      }
+      throw new RpcError(-32602, "Unknown tool");
+    }
+    default:
+      throw new RpcError(-32601, "Method not found");
+  }
+}
+async function serveMcp() {
+  const reader = new CardReader(codexCommand());
+  const send = (message) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}
+`);
+  const fail = (id, code, message) => send({ id, error: { code, message } });
+  const pending = /* @__PURE__ */ new Set();
+  for await (const line of createInterface2({ input: process.stdin, crlfDelay: Infinity })) {
+    if (!line.trim()) continue;
+    let request;
+    try {
+      request = object(JSON.parse(line));
+    } catch {
+      fail(null, -32700, "Parse error");
+      continue;
+    }
+    const id = typeof request.id === "string" || typeof request.id === "number" ? request.id : null;
+    if (request.jsonrpc !== "2.0" || typeof request.method !== "string" || request.id !== void 0 && id === null) {
+      fail(id, -32600, "Invalid request");
+      continue;
+    }
+    if (id === null) continue;
+    const task = dispatch(reader, request.method, object(request.params)).then(
+      (result) => send({ id, result }),
+      (error) => fail(id, error instanceof RpcError ? error.code : -32603, error instanceof RpcError ? error.message : "MarginCue could not complete the request")
+    ).finally(() => pending.delete(task));
+    pending.add(task);
+  }
+  await Promise.all(pending);
+  reader.close();
+}
+
+// src/relay.ts
+import { spawn as spawn4, spawnSync as spawnSync2 } from "node:child_process";
+import { chmodSync, copyFileSync, existsSync, mkdirSync as mkdirSync3, renameSync as renameSync3, writeFileSync as writeFileSync4 } from "node:fs";
+import { createHash } from "node:crypto";
+import { dirname as dirname2, join as join4, resolve } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// src/band.ts
+import { statSync as statSync3 } from "node:fs";
+import { performance as performance2 } from "node:perf_hooks";
+import { createInterface as createInterface3 } from "node:readline";
+var PROTOCOL = 1;
+var P2 = DARK;
+var SPIN_MS = 90;
+var now2 = () => performance2.now();
+var Band = class {
+  cwd;
+  send;
+  model;
+  core = createCore(ASSETS);
+  inflight = /* @__PURE__ */ new Map();
+  timer = null;
+  spinner = null;
+  turnTimer = null;
+  view = null;
+  size = { cols: 80, rows: 24, max: 1, full: false };
+  draft = { text: null, approx: false, end: true, plain: false };
+  /** The text the core last saw. */
+  coreText = "";
+  on = true;
+  /** The draft the card was hidden for (ctrl+] d), until it changes. */
+  dismissed = null;
+  agent = null;
+  turnRunning = false;
+  turnStamp = "";
+  ready = false;
+  modelName = null;
+  /** After Enter: how many Decisions went with the prompt, until the next draft. */
+  sent = null;
+  /** Until the box empties after Enter, what it shows is the prompt on its way, not a new draft. */
+  sendingUntil = 0;
+  height = 1;
+  hits = [];
+  frame = 0;
+  lastBand = "";
+  lastClaims = "";
+  marked = "";
+  writes = 0;
+  closed = false;
+  constructor(options) {
+    this.cwd = options.cwd;
+    this.send = options.send;
+    this.model = options.model ?? new CodexModel(options.cwd);
+    const settings = readSettings();
+    this.run(cardConfig(settings));
+    this.run({ type: "learned", picks: readLearned(this.cwd) });
+    void this.model.start().then((name) => {
+      this.ready = true;
+      this.modelName = name;
+      this.render();
+    });
+    if (options.vocabulary !== false) {
+      void collectVocabulary(processEngine, this.cwd).then((vocab) => this.run({ type: "vocabulary", vocab })).catch(() => {
+      });
+    }
+    this.readTurn();
+    this.turnTimer = setInterval(() => this.readTurn(), options.turnEveryMs ?? 1e3);
+    this.turnTimer.unref?.();
+  }
+  close() {
+    this.closed = true;
+    if (this.timer) clearTimeout(this.timer);
+    if (this.spinner) clearInterval(this.spinner);
+    if (this.turnTimer) clearInterval(this.turnTimer);
+    for (const abort of this.inflight.values()) abort.abort();
+    this.model.close();
+  }
+  receive(message) {
+    if (this.closed) return;
+    switch (message.t) {
+      case "hello":
+      case "size":
+        this.size = { cols: message.cols, rows: message.rows, max: message.max, full: message.full };
+        break;
+      case "draft":
+        this.onDraft(message);
+        break;
+      case "key":
+        this.onKey(message.key);
+        break;
+      case "click": {
+        const hit = this.hits.find((h) => h.y === message.y && message.x >= h.x0 && message.x < h.x1);
+        if (hit) this.act(hit.action);
+        break;
+      }
+      case "enter":
+        this.onEnter(message.text, message.approx);
+        break;
+      case "wrote":
+        break;
+      case "toggle":
+        this.on = message.on;
+        break;
+      case "dismiss":
+        this.dismissed = this.draft.text ?? "";
+        this.height = 1;
+        break;
+    }
+    this.render();
+  }
+  // ---- the core, as the composer drives it --------------------------------------------
+  run(event) {
+    for (const fx of this.core.handle(event)) this.effect(fx);
+    this.render();
+  }
+  effect(fx) {
+    if (fx.type === "view") this.view = fx.view;
+    else if (fx.type === "request") this.request(fx.req, fx.system, fx.prompt);
+    else if (fx.type === "cancel") {
+      this.inflight.get(fx.req)?.abort();
+      this.inflight.delete(fx.req);
+    } else if (fx.type === "timer") {
+      if (this.timer) clearTimeout(this.timer);
+      this.timer = null;
+      const at = fx.at;
+      if (at !== null) {
+        this.timer = setTimeout(() => {
+          this.timer = null;
+          this.run({ type: "timer", now: Math.max(now2(), at) });
+        }, Math.max(0, at - now2()));
+      }
+    } else if (fx.type === "fill") {
+      if (!(this.draft.text ?? "").trim()) this.write(fx.text, fx.replaces ?? void 0);
+    } else if (fx.type === "learn") {
+      try {
+        learn(this.cwd, fx.key, fx.label);
+      } catch {
+      }
+    }
+  }
+  request(req, system, prompt) {
+    const abort = new AbortController();
+    this.inflight.set(req, abort);
+    void this.model.complete(system.join("\n\n"), prompt, {
+      signal: abort.signal,
+      onDelta: (delta) => {
+        if (!abort.signal.aborted) this.run({ type: "reply", now: now2(), req, text: delta, done: false });
+      }
+    }).then((outcome) => {
+      if (abort.signal.aborted || this.closed) return;
+      this.inflight.delete(req);
+      this.run(outcome.ok ? { type: "reply", now: now2(), req, text: "", done: true } : { type: "reply", now: now2(), req, text: "", done: true, ok: false });
+    });
+  }
+  // ---- what the relay reports ----------------------------------------------------------
+  onDraft(seen) {
+    const before2 = this.draft.text;
+    this.draft = seen;
+    const text2 = seen.text;
+    if (text2 === null || !this.on) return;
+    if (this.sendingUntil) {
+      if (text2.trim() && Date.now() < this.sendingUntil) return;
+      this.sendingUntil = 0;
+    }
+    if (this.agent && this.agent.text && before2 === this.agent.text && !text2.trim()) {
+      this.agent = null;
+      this.turnStamp = "";
+      this.readTurn();
+    }
+    if (this.agent && text2 === this.agent.text) return;
+    if (text2 !== this.dismissed) this.dismissed = null;
+    if (text2 !== this.coreText) {
+      if (text2.trim()) this.sent = null;
+      const edit = diffSplice(this.coreText, text2);
+      this.coreText = text2;
+      if (!text2.trim()) this.height = 1;
+      this.run({
+        type: "draft",
+        now: now2(),
+        text: text2,
+        origin: "type",
+        edit,
+        cursor: seen.end ? text2.length : edit.start + edit.text.length
+      });
+    }
+  }
+  /** Enter on a plain box while it is claimed: say what goes with the prompt. */
+  onEnter(text2, approx) {
+    if (this.agent && text2 === this.agent.text) {
+      this.send({ t: "enter", do: "pass" });
+      return;
+    }
+    if (text2 !== this.coreText) {
+      this.coreText = text2;
+      this.run({ type: "draft", now: now2(), text: text2, origin: "type", edit: diffSplice(this.view?.text ?? "", text2), cursor: text2.length });
+    }
+    let sent = text2;
+    let decisions = [];
+    for (const fx of this.core.handle({ type: "submit", now: now2(), text: text2, amendable: false })) {
+      if (fx.type === "submit") {
+        sent = fx.text;
+        decisions = fx.decisions;
+      } else this.effect(fx);
+    }
+    this.coreText = "";
+    this.sent = decisions.length;
+    this.sendingUntil = Date.now() + 3e3;
+    this.height = 1;
+    const head = text2.replace(/\s+$/, "");
+    let answer;
+    if (sent === text2 || !decisions.length) answer = { t: "enter", do: "pass" };
+    else if (sent.startsWith(head)) answer = { t: "enter", do: "append", text: sent.slice(head.length) };
+    else if (!approx) answer = { t: "enter", do: "replace", text: sent };
+    else answer = { t: "enter", do: "pass" };
+    const final = answer.do === "append" ? `${head}${answer.text}` : answer.do === "replace" ? sent : text2;
+    this.mark(final, true);
+    this.send(answer);
+  }
+  onKey(key) {
+    const agent = this.shownAgent();
+    if (agent) {
+      if (key === "up") agent.focus = (agent.focus + 1) % agent.blanks.length;
+      else this.switchAgent(agent, agent.focus, "next");
+      return;
+    }
+    const focus = this.view?.card?.focus ?? null;
+    if (key === "up") this.run({ type: "cardFocus", dir: 1 });
+    else this.run({ type: "cardCycle", now: now2(), ...focus && { row: focus } });
+  }
+  act(action) {
+    const agent = this.shownAgent();
+    if (agent) {
+      if (action.type === "cardSet") return this.switchAgent(agent, Number(action.row.slice(1)), action.option);
+      if (action.type === "cardCycle" && action.row) return this.switchAgent(agent, Number(action.row.slice(1)), "next");
+      if (action.type === "cardFocus" && action.row) agent.focus = Number(action.row.slice(1));
+      return;
+    }
+    const t = now2();
+    if (action.type === "cardFocus") this.run({ type: "cardFocus", ...action.dir && { dir: action.dir }, ...action.row && { row: action.row } });
+    else if (action.type === "cardCycle") this.run({ type: "cardCycle", now: t, ...action.row && { row: action.row } });
+    else if (action.type === "cardSet") this.run({ type: "cardSet", now: t, row: action.row, option: action.option });
+    else if (action.type === "cardDismiss") this.run({ type: "cardDismiss", now: t, row: action.row });
+    else if (action.type === "sketch") this.run({ type: "sketch", now: t, action: action.action });
+  }
+  // ---- the agent's choices ---------------------------------------------------------------
+  /** The turn the hooks saw last on this project; its transcript is read again only when it grew. */
+  readTurn() {
+    if (this.closed) return;
+    const record = readJson(PATHS.turn, null);
+    const mine = record && record.cwd === this.cwd ? record : null;
+    const stamp = mine ? `${mine.turn}:${mine.endedAt}:${fileStamp(mine.transcript)}` : "";
+    if (stamp === this.turnStamp) return;
+    this.turnStamp = stamp;
+    const running = Boolean(mine && mine.endedAt === null);
+    const next = mine ? mergeTurn(this.agent, readTurn(this.cwd)) : null;
+    const shape = (agent) => JSON.stringify([agent?.turn, agent?.running, agent?.blanks.map((b) => [b.label, b.choice])]);
+    const changed = shape(next) !== shape(this.agent);
+    this.agent = next;
+    if (changed || running !== this.turnRunning) {
+      this.turnRunning = running;
+      this.render();
+    }
+  }
+  /** The agent's switches show while the box is empty or holds their own amendment. */
+  shownAgent() {
+    const agent = this.agent;
+    if (!agent || !agent.blanks.length || !this.on) return null;
+    const text2 = this.draft.text;
+    if (text2 === null) return null;
+    return !text2.trim() || text2 === agent.text ? agent : null;
+  }
+  switchAgent(agent, row, option) {
+    const before2 = agent.text;
+    const text2 = pick2(agent, row, option);
+    if (text2 !== before2) this.write(text2, before2 || void 0);
+  }
+  write(text2, expect) {
+    this.send({ t: "write", id: ++this.writes, text: text2, ...expect !== void 0 && { expect } });
+  }
+  /** Mark the prompt as one whose card was seen, for the prompt hook. */
+  mark(text2, force = false) {
+    if (!text2.trim() || !force && text2 === this.marked) return;
+    this.marked = text2;
+    try {
+      writeJson(PATHS.composed, { text: text2, at: Date.now() });
+    } catch {
+    }
+  }
+  // ---- drawing ---------------------------------------------------------------------------
+  shownCard() {
+    const agent = this.shownAgent();
+    if (agent) return agentCard(agent);
+    const card = this.view?.card;
+    const text2 = this.draft.text;
+    if (!card || card.stage !== "draft" || text2 === null || !text2.trim()) return null;
+    if (this.dismissed !== null && this.dismissed === text2) return null;
+    if (this.view?.text !== this.coreText) return null;
+    return card;
+  }
+  render() {
+    if (this.closed) return;
+    const { cols, max, full } = this.size;
+    if (this.draft.text === null && this.lastBand && this.on) {
+      this.emit({ t: "claims", enter: false, arrows: false });
+      return;
+    }
+    this.hits = [];
+    let lines = [];
+    const card = this.on && max > 0 ? this.shownCard() : null;
+    if (max > 0) {
+      if (card) {
+        const budget = full ? max : 1;
+        lines = layoutCard(card, cols, budget, { chords: true, extra: [], palette: P2 }).slice(0, budget).map((line, y) => drawLine(line, cols, y, this.hits, this.frame));
+        if (!this.shownAgent()) this.mark(this.coreText);
+      } else lines = [drawLine(this.status(), cols, 0, this.hits, this.frame)];
+    }
+    this.height = !full || !card ? 1 : Math.max(this.height, lines.length);
+    if (full) while (lines.length < this.height) lines.push("");
+    this.emit({ t: "band", lines });
+    const decisions = this.view?.decisions.length ?? 0;
+    const agentShown = Boolean(this.shownAgent());
+    const plan = !agentShown && card?.stage === "draft" && !card.reading;
+    this.emit({
+      t: "claims",
+      enter: this.on && !agentShown && (decisions > 0 || plan) && Boolean(this.draft.text?.trim()),
+      arrows: this.on && Boolean(card?.rows.length)
+    });
+    this.spin(Boolean(card?.reading || card?.sketch?.drawing));
+  }
+  status() {
+    const tag = { kind: "text", text: " MarginCue ", style: P2.tag };
+    const say = (text3, style = { dim: true }) => [tag, { kind: "text", text: `  ${text3}`, style }];
+    if (!this.on) return say("off \xB7 ctrl+] t turns it back on");
+    if (this.model.problem) return say(`readings unavailable: ${this.model.problem}`, { color: "warning" });
+    const text2 = this.draft.text;
+    if (this.sent !== null && !(text2 ?? "").trim()) {
+      return say(this.sent ? `sent with ${this.sent} decision${this.sent === 1 ? "" : "s"}` : "sent");
+    }
+    if (text2 === null) return say("");
+    if (this.dismissed !== null && this.dismissed === text2) return say("card hidden for this prompt \xB7 ctrl+] d");
+    if (!this.ready) return say("starting\u2026");
+    if (!text2.trim()) {
+      if (this.turnRunning) return say("Codex is working \xB7 the choices it makes for you show here");
+      return say(`reads your prompt as you type \xB7 alt\u2191 alt\u2193 change a choice \xB7 ctrl+g full card${this.modelName ? ` \xB7 ${this.modelName}` : ""}`);
+    }
+    return say("reads the prompt once you pause");
+  }
+  spin(busy) {
+    if (busy && !this.spinner) {
+      this.spinner = setInterval(() => {
+        this.frame++;
+        this.render();
+      }, SPIN_MS);
+    } else if (!busy && this.spinner) {
+      clearInterval(this.spinner);
+      this.spinner = null;
+    }
+  }
+  emit(message) {
+    const line = JSON.stringify(message);
+    if (message.t === "band") {
+      if (line === this.lastBand) return;
+      this.lastBand = line;
+    } else if (message.t === "claims") {
+      if (line === this.lastClaims) return;
+      this.lastClaims = line;
+    }
+    this.send(message);
+  }
+};
+function fileStamp(file) {
+  try {
+    const stat = statSync3(file);
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return "";
+  }
+}
+function serveBand(link, cwd, model) {
+  const band = new Band({
+    cwd,
+    send: (message) => {
+      if (!link.destroyed) link.write(`${JSON.stringify(message)}
+`);
+    },
+    ...model && { model }
+  });
+  createInterface3({ input: link }).on("line", (line) => {
+    try {
+      band.receive(JSON.parse(line));
+    } catch {
+    }
+  });
+  link.on("close", () => band.close());
+  link.on("error", () => band.close());
+  return band;
+}
+
+// src/relay.ts
+var RELAY = join4(PATHS.bin, "margincue-relay");
+var RELAY_VERSION = "0.1.0";
+var SUPPORTED = process.platform === "darwin" || process.platform === "linux";
+var VALUE_OPTIONS = /* @__PURE__ */ new Set([
+  "-c",
+  "--config",
+  "--enable",
+  "--disable",
+  "--remote",
+  "--remote-auth-token-env",
+  "-i",
+  "--image",
+  "-m",
+  "--model",
+  "--local-provider",
+  "-p",
+  "--profile",
+  "-s",
+  "--sandbox",
+  "-C",
+  "--cd",
+  "--add-dir",
+  "-a",
+  "--ask-for-approval"
+]);
+var PLAIN = /* @__PURE__ */ new Set([
+  "exec",
+  "e",
+  "review",
+  "login",
+  "logout",
+  "mcp",
+  "mcp-server",
+  "plugin",
+  "app-server",
+  "remote-control",
+  "app",
+  "completion",
+  "update",
+  "doctor",
+  "sandbox",
+  "debug",
+  "apply",
+  "a",
+  "queue",
+  "archive",
+  "delete",
+  "migrate-rollouts",
+  "migrate-nfs-db",
+  "unarchive",
+  "cloud",
+  "exec-server",
+  "features",
+  "help",
+  "proto"
+]);
+function interactive(args, cwd = process.cwd()) {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--") break;
+    if (arg === "-h" || arg === "--help" || arg === "-V" || arg === "--version") return null;
+    if (arg.startsWith("-")) {
+      const [name, inline] = arg.split(/=(.*)/s, 2);
+      if (VALUE_OPTIONS.has(name)) {
+        const value = inline ?? args[++i];
+        if ((name === "-C" || name === "--cd") && value) cwd = resolve(cwd, value);
+      }
+      continue;
+    }
+    return PLAIN.has(arg) ? null : cwd;
+  }
+  return cwd;
+}
+function findRelay(env = process.env) {
+  const choice = env["MARGINCUE_RELAY"];
+  if (choice === "off" || choice === "0" || !SUPPORTED) return null;
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return null;
+  if (readSettings().relay === false) return null;
+  const path = choice || RELAY;
+  return relayWorks(path) ? path : null;
+}
+function relayWorks(path) {
+  if (!existsSync(path)) return false;
+  const version = spawnSync2(path, ["--version"], { encoding: "utf8", timeout: 3e3 });
+  return version.status === 0 && version.stdout.includes(`protocol ${PROTOCOL}`);
+}
+function startRelay(relay, args, env) {
+  const cwd = interactive(args);
+  if (!cwd) return false;
+  let child;
+  try {
+    child = spawn4(relay, ["--fd", "3", "--", "codex", ...args], { stdio: ["inherit", "inherit", "inherit", "pipe"], env });
+  } catch {
+    return false;
+  }
+  const link = child.stdio[3];
+  if (!link) {
+    child.kill();
+    return false;
+  }
+  const band = serveBand(link, cwd);
+  child.on("exit", (code, signal) => {
+    band.close();
+    process.exit(code ?? (signal ? 128 + (SIGNALS[signal] ?? 1) : 1));
+  });
+  child.on("error", (error) => {
+    band.close();
+    process.stderr.write(`margincue: the relay could not start (${error.message}).
+`);
+    process.exit(1);
+  });
+  return true;
+}
+var SIGNALS = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGTERM: 15 };
+var RELEASES = "https://github.com/fus3r/margincue/releases/download";
+function asset() {
+  const os = process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : null;
+  const arch = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "x64" : null;
+  return os && arch ? `margincue-relay-${os}-${arch}` : null;
+}
+async function installRelay(say, source = sourceRoot()) {
+  if (!SUPPORTED) {
+    say("   Not on Windows yet: ctrl+g in Codex opens the card.");
+    return false;
+  }
+  if (relayWorks(RELAY) && spawnSync2(RELAY, ["--version"], { encoding: "utf8" }).stdout.includes(`relay ${RELAY_VERSION}`)) {
+    say("   Already installed.");
+    return true;
+  }
+  mkdirSync3(PATHS.bin, { recursive: true });
+  const name = asset();
+  if (name) {
+    try {
+      const url = `${RELEASES}/v${VERSION}/${name}`;
+      const [binary, sum] = await Promise.all([fetchBytes(url), fetchBytes(`${url}.sha256`)]);
+      const expected = sum.toString("utf8").trim().split(/\s+/)[0];
+      if (createHash("sha256").update(binary).digest("hex") !== expected) throw new Error("checksum mismatch");
+      const temp = `${RELAY}.download`;
+      writeFileSync4(temp, binary);
+      chmodSync(temp, 493);
+      renameSync3(temp, RELAY);
+      if (relayWorks(RELAY)) {
+        say(`   Installed ${name} ${VERSION}.`);
+        return true;
+      }
+    } catch {
+    }
+  }
+  if (source && spawnSync2("cargo", ["--version"], { stdio: "ignore" }).status === 0) {
+    say("   Building it from source with cargo (a minute or two)\u2026");
+    const manifest = join4(source, "crates", "margincue-relay", "Cargo.toml");
+    const built = spawnSync2("cargo", ["build", "--release", "--locked", "--manifest-path", manifest], { stdio: "ignore" });
+    const output2 = join4(source, "crates", "margincue-relay", "target", "release", "margincue-relay");
+    if (built.status === 0 && existsSync(output2)) {
+      copyFileSync(output2, `${RELAY}.download`);
+      chmodSync(`${RELAY}.download`, 493);
+      renameSync3(`${RELAY}.download`, RELAY);
+      if (relayWorks(RELAY)) {
+        say("   Built and installed.");
+        return true;
+      }
+    }
+  }
+  say("   Could not install it: ctrl+g in Codex opens the card instead.");
+  return false;
+}
+async function fetchBytes(url) {
+  const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(3e4) });
+  if (!response.ok) throw new Error(`${response.status}`);
+  return Buffer.from(await response.arrayBuffer());
+}
+function sourceRoot() {
+  try {
+    const here = dirname2(fileURLToPath2(import.meta.url));
+    const root = resolve(here, "..", "..", "..");
+    return existsSync(join4(root, "crates", "margincue-relay", "Cargo.toml")) ? root : null;
+  } catch {
+    return null;
+  }
+}
+
 // src/cli.ts
-var SELF = fileURLToPath(import.meta.url);
-var STABLE = join3(PATHS.bin, "margincue.mjs");
+var SELF = fileURLToPath3(import.meta.url);
+var STABLE = join5(PATHS.bin, "margincue.mjs");
 var slash = (path) => process.platform === "win32" ? path.replace(/\\/g, "/") : path;
 var quote = (path) => `"${slash(path)}"`;
 async function main(argv) {
   const [command, ...rest] = argv;
   if (command === "compose" && rest[0]) return compose(rest[0]);
   if (command === "hook") return hook(rest[0] ?? "");
+  if (command === "mcp") return serveMcp();
+  if (command === "prefetch" && rest[0]) return runPrefetch(rest[0]);
   if (command === "codex") return launch(rest);
   if (command === "setup") return setup();
   if (command === "status") return status2();
-  process.stdout.write("margincue setup | codex [args] | compose FILE | hook prompt|stop|start | status\n");
+  process.stdout.write("margincue setup | codex [args] | compose FILE | hook prompt|stop|start | mcp | status\n");
 }
 async function hook(event) {
   try {
     const input = JSON.parse(await stdin() || "{}");
-    const output = event === "prompt" ? promptHook(input) : event === "stop" ? stopHook(input) : event === "start" ? startHook() : null;
-    if (output) process.stdout.write(`${JSON.stringify(output)}
+    const output2 = event === "prompt" ? promptHook(input) : event === "stop" ? stopHook(input) : event === "start" ? startHook() : null;
+    if (output2) process.stdout.write(`${JSON.stringify(output2)}
 `);
   } catch {
   }
@@ -11110,28 +12308,31 @@ function startHook() {
 function keepCopy() {
   try {
     if (SELF === STABLE) return;
-    if (existsSync(STABLE) && readFileSync3(STABLE).equals(readFileSync3(SELF))) return;
-    mkdirSync2(PATHS.bin, { recursive: true });
-    copyFileSync(SELF, STABLE);
+    if (existsSync2(STABLE) && readFileSync5(STABLE).equals(readFileSync5(SELF))) return;
+    mkdirSync4(PATHS.bin, { recursive: true });
+    copyFileSync2(SELF, STABLE);
   } catch {
   }
 }
 function stdin() {
-  return new Promise((resolve) => {
-    if (process.stdin.isTTY) return resolve("");
+  return new Promise((resolve2) => {
+    if (process.stdin.isTTY) return resolve2("");
     let data = "";
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (chunk) => data += chunk);
-    process.stdin.on("end", () => resolve(data));
+    process.stdin.on("end", () => resolve2(data));
   });
 }
 function launch(args) {
   const own = process.env["MARGINCUE_EDITOR"] || process.env["VISUAL"] || process.env["EDITOR"] || "";
-  const visual = `${quote(process.execPath)} ${quote(existsSync(STABLE) ? STABLE : SELF)} compose`;
-  const child = spawn3("codex", args, {
+  const visual = `${quote(process.execPath)} ${quote(existsSync2(STABLE) ? STABLE : SELF)} compose`;
+  const env = { ...process.env, VISUAL: visual, ...own && !own.includes("margincue") && { MARGINCUE_EDITOR: own } };
+  const relay = findRelay(env);
+  if (relay && startRelay(relay, args, env)) return;
+  const child = spawn5("codex", args, {
     stdio: "inherit",
     shell: process.platform === "win32",
-    env: { ...process.env, VISUAL: visual, ...own && !own.includes("margincue") && { MARGINCUE_EDITOR: own } }
+    env
   });
   child.on("exit", (code) => process.exit(code ?? 0));
   child.on("error", (error) => {
@@ -11141,7 +12342,7 @@ function launch(args) {
   });
 }
 function lineReader() {
-  const rl = createInterface2({ input: process.stdin });
+  const rl = createInterface4({ input: process.stdin });
   const lines = [];
   const waiting = [];
   let closed = false;
@@ -11159,7 +12360,7 @@ function lineReader() {
       process.stdout.write(prompt);
       if (lines.length) return Promise.resolve(lines.shift());
       if (closed) return Promise.resolve(null);
-      return new Promise((resolve) => waiting.push(resolve));
+      return new Promise((resolve2) => waiting.push(resolve2));
     },
     close: () => rl.close()
   };
@@ -11170,15 +12371,15 @@ async function setup() {
 `);
   say("MarginCue for Codex");
   say();
-  const codex = spawnSync2("codex", ["--version"], { encoding: "utf8", shell: process.platform === "win32" });
+  const codex = spawnSync3("codex", ["--version"], { encoding: "utf8", shell: process.platform === "win32" });
   if (codex.status !== 0) {
     say("Codex CLI was not found. Install it first: npm install -g @openai/codex");
     rl.close();
     return;
   }
   say(`1. The plugin (hooks that let you switch the agent's choices during a turn, and the receipt after it).`);
-  const added = spawnSync2("codex", ["plugin", "marketplace", "add", "fus3r/margincue"], { encoding: "utf8", shell: process.platform === "win32" });
-  const installed = spawnSync2("codex", ["plugin", "add", "margincue@margincue"], { encoding: "utf8", shell: process.platform === "win32" });
+  const added = spawnSync3("codex", ["plugin", "marketplace", "add", "fus3r/margincue"], { encoding: "utf8", shell: process.platform === "win32" });
+  const installed = spawnSync3("codex", ["plugin", "add", "margincue@margincue"], { encoding: "utf8", shell: process.platform === "win32" });
   say(installed.status === 0 || /already/i.test(`${installed.stdout}${installed.stderr}`) ? "   Installed. In your next Codex session, trust its hooks when Codex asks (press t), or review them with /hooks." : `   Could not install it automatically (${(added.stderr || installed.stderr || "").trim().split("\n")[0] || "unknown error"}).
    Run: codex plugin marketplace add fus3r/margincue && codex plugin add margincue@margincue`);
   keepCopy();
@@ -11206,18 +12407,21 @@ async function setup() {
     }
     say();
   }
-  say("3. The card while you type: Codex opens MarginCue on ctrl+g when started through it.");
+  say(`3. The card under Codex's prompt, as you type.`);
+  await installRelay(say);
   const line = aliasLine();
-  if (line) {
+  if (line && existsSync2(line.file) && readFileSync5(line.file, "utf8").includes(line.text)) {
+    say(`   The codex alias is already in ${line.file}.`);
+  } else if (line) {
     const answer = (await rl.question(`   Add this to ${line.file}?
      ${line.text}
    [Y/n] `) ?? "n").trim().toLowerCase();
     if (answer === "" || answer === "y" || answer === "yes") {
       appendFileSync(line.file, `
-# MarginCue: Codex opens the MarginCue composer on ctrl+g
+# MarginCue: Codex with MarginCue's card under its prompt
 ${line.text}
 `);
-      say("   Added. Open a new terminal, run codex, and press ctrl+g in the prompt.");
+      say("   Added. Open a new terminal and run codex: the card shows under the prompt as you type.");
     } else say(`   Not added. Start Codex with: node ${quote(STABLE)} codex`);
   }
   rl.close();
@@ -11225,13 +12429,13 @@ ${line.text}
 function aliasLine() {
   const run = `node ${quote(STABLE)}`;
   if (process.platform === "win32") {
-    const profile = join3(homedir2(), "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1");
-    mkdirSync2(join3(homedir2(), "Documents", "PowerShell"), { recursive: true });
+    const profile = join5(homedir2(), "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1");
+    mkdirSync4(join5(homedir2(), "Documents", "PowerShell"), { recursive: true });
     return { file: profile, text: `function codex { & ${run} codex @args }` };
   }
   const shell = process.env["SHELL"] ?? "";
-  if (shell.endsWith("fish")) return { file: join3(homedir2(), ".config", "fish", "config.fish"), text: `function codex; ${run} codex $argv; end` };
-  const file = shell.endsWith("zsh") ? join3(homedir2(), ".zshrc") : join3(homedir2(), ".bashrc");
+  if (shell.endsWith("fish")) return { file: join5(homedir2(), ".config", "fish", "config.fish"), text: `function codex; ${run} codex $argv; end` };
+  const file = shell.endsWith("zsh") ? join5(homedir2(), ".zshrc") : join5(homedir2(), ".bashrc");
   return { file, text: `alias codex='${run} codex'` };
 }
 function status2() {
@@ -11239,7 +12443,7 @@ function status2() {
   process.stdout.write([
     `MarginCue for Codex: ${settings.mode ?? "auto"} \xB7 sketch ${settings.sketch === false ? "off" : "on"} \xB7 blanks ${settings.blanks === false ? "off" : "on"}`,
     settings.user ? `You: ${describeUser(settings.user)}` : "You: not set up yet (margincue setup asks a few questions).",
-    `Composer: ${existsSync(STABLE) ? STABLE : "not installed (margincue setup)"}`
+    `Composer: ${existsSync2(STABLE) ? STABLE : "not installed (margincue setup)"}`
   ].join("\n") + "\n");
 }
 void main(process.argv.slice(2));

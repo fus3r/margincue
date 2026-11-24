@@ -1,0 +1,14 @@
+[package]
+name = "spike-pty"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+libc = "0.2"
+memchr = "2"
+shlex = "1"
+signal-hook = "0.3"
+tempfile = "3"
+unicode-width = "0.2"
+vt100 = "0.18.1"

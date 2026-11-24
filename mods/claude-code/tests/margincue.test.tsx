@@ -33,6 +33,8 @@ const CARD = [
   'row | batch_size | batch | num | Write {} per batch | 500 | 100 | 5000 | rows',
 ].join('\n')
 const SKETCH = ['title | Export dialog', '┌ Export ───────────┐', '│ Rows: filtered    │', '│ [ Download CSV ]  │', '└───────────────────┘'].join('\n')
+/** The preview as it travels with a prompt, once drawn for the choices being sent. */
+const TARGET = `Target output, as sketched (Export dialog):\n\`\`\`text\n${SKETCH.split('\n').slice(1).join('\n')}\n\`\`\``
 
 /** The model as MarginCue calls it: a card reading, a sketch, or anything else. */
 function replies(card = CARD, sketch = SKETCH, other = REPLY) {
@@ -167,7 +169,7 @@ const cli = { origin: { kind: 'composer' as const }, presentation: { isFullscree
 
 const WIDE = { ...BAND, surface: 'terminal' as const, props: { ...BAND.props, maxRows: 18, bodyColumns: 100 } }
 
-test('the card reads a draft, shows typed controls, and attaches only what the person sets', async ($, on) => {
+test('the card reads a draft, shows typed controls, and sends its whole plan with what the person set', async ($, on) => {
   const { clock, calls } = world(on, replies())
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await composer($).edit(edit(DRAFT, '.'))
@@ -189,7 +191,7 @@ test('the card reads a draft, shows typed controls, and attaches only what the p
   expect(await ui.find({ type: 'Text', text: /^710 rows$/ })).toBeDefined()
   await ui.unmount()
   const sent = await $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
-  expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.\n- Write 710 rows per batch.`)
+  expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.\n- Run it in the browser.\n- Write 710 rows per batch.`)
 })
 
 test('a click on a chip or a step sets its row; x drops a row and a newer reading leaves it out', async ($, on) => {
@@ -213,13 +215,13 @@ test('a click on a chip or a step sets its row; x drops a row and a newer readin
   await ui.unmount()
 })
 
-test('an untouched card leaves the submitted text alone', async ($, on) => {
+test('an untouched card sends the plan it showed, with its preview', async ($, on) => {
   const { clock } = world(on, replies())
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await composer($).edit(edit(DRAFT, '.'))
   await clock.settle()
   const sent = await $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
-  expect(sent.text).toBe(`${DRAFT}.`)
+  expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Export the filtered rows.\n- Run it in the browser.\n- Write 500 rows per batch.\n\n${TARGET}`)
 })
 
 test('the clear that precedes a submit does not lose the decisions', async ($, on) => {
@@ -234,7 +236,7 @@ test('the clear that precedes a submit does not lose the decisions', async ($, o
   // Enter: the engine empties the box, then raises prompt.submit.
   await composer($).change({ text: '', cursor: 0, origin: { kind: 'clear' } })
   const sent = await $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
-  expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.`)
+  expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.\n- Run it in the browser.\n- Write 500 rows per batch.`)
 })
 
 test('the band lays out at the terminal; an app draws no draft card', async ($, on) => {
@@ -367,11 +369,11 @@ async function desktopAtEnter($: Parameters<TestBody>[0], on: Engine, card = CAR
   return { clock, gate, pending, ui }
 }
 
-test('in the desktop app MarginCue draws its own card above Claude\'s dialog; Send takes what was picked on it', async ($, on) => {
+test('in the desktop app MarginCue draws its own card above Claude\'s dialog; Go ahead sends its plan', async ($, on) => {
   const { gate, pending, ui } = await desktopAtEnter($, on)
   // Claude's dialog is one question under the card: send, or send as written.
   expect(gate.asked.map((question) => [question.question, question.options.map((option) => option.label)])).toEqual([
-    ['Which prompt should Claude use?', ['Use my picks', 'Use my prompt as written']],
+    ['Which prompt should Claude use?', ['Go ahead with this plan', 'Use my prompt as written']],
   ])
   // The card: how the prompt reads, then one line a choice, its name and what Claude would assume; a click opens
   // the app's own menu there.
@@ -387,8 +389,8 @@ test('in the desktop app MarginCue draws its own card above Claude\'s dialog; Se
   expect(await ui.find({ type: 'Text', text: /^\u2713 yours$/ })).toBeDefined()
   // A range offers every step in its menu.
   expect((await chip('c3')).options?.length).toBe(10)
-  gate.answer('Use my picks')
-  expect((await pending).text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.`)
+  gate.answer('Go ahead with this plan')
+  expect((await pending).text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.\n- Run it in the browser.\n- Write 500 rows per batch.`)
   await ui.unmount()
 })
 
@@ -484,7 +486,7 @@ test('a pick-any choice is one chip too: its menu ticks what is set, and a pick 
   expect(await labels()).toEqual(['sign-ins +1', '\u2713 sign-ins', '\u2713 invitations', '\u25cb billing events'])
   // The first entry shows what is set and changes nothing.
   await pick(ui, 'c1', 'set')
-  gate.answer('Use my picks')
+  gate.answer('Go ahead with this plan')
   expect((await pending).text).toBe('Build an export tool for the dashboard.\n\nDecisions:\n- Include sign-ins and invitations in the report.')
   await ui.unmount()
 })
@@ -493,7 +495,7 @@ test('what the person types under "Other" in Claude\'s dialog is added to the pr
   const { gate, pending, ui } = await desktopAtEnter($, on)
   await pick(ui, 'c1', 1)
   gate.answer('Only owners of paid teams get the CSV.')
-  expect((await pending).text).toBe(`${DRAFT}.\n\nOnly owners of paid teams get the CSV.\n\nDecisions:\n- Export all rows.`)
+  expect((await pending).text).toBe(`${DRAFT}.\n\nOnly owners of paid teams get the CSV.\n\nDecisions:\n- Export all rows.\n- Run it in the browser.\n- Write 500 rows per batch.`)
   await ui.unmount()
 })
 
@@ -516,7 +518,7 @@ test('Skip, like closing the dialog, sends the prompt as written: the picks go o
 test('typed text in brackets under Other is the person\'s words, not a skip', async ($, on) => {
   const { gate, pending, ui } = await desktopAtEnter($, on)
   gate.answer('[include archived teams]')
-  expect((await pending).text).toBe(`${DRAFT}.\n\n[include archived teams]`)
+  expect((await pending).text).toBe(`${DRAFT}.\n\n[include archived teams]\n\nDecisions:\n- Export the filtered rows.\n- Run it in the browser.\n- Write 500 rows per batch.\n\n${TARGET}`)
   await ui.unmount()
 })
 
@@ -542,7 +544,7 @@ test('a name the code lacks reads unmatched on the card until the person picks i
   expect(match.value).toBe('none')
   expect(match.options?.[0]?.label).toBe('Choose a match\u2026')
   // Picking nothing says nothing about it: the card never claims a match it was not given.
-  gate.answer('Use my picks')
+  gate.answer('Go ahead with this plan')
   expect((await pending).text).not.toContain('Old Market" is')
   await ui.unmount()
 })
@@ -621,8 +623,8 @@ test('the desktop app says so in the engine entrypoint: its prompts get the card
   const { gate, pending, ui } = await desktopAtEnter($, on)
   expect((await $.prompt.compose(COMPOSE)).sections.some((section) => section.id === 'margincue:blanks')).toBe(true)
   expect(gate.asked.length).toBe(1)
-  gate.answer('Use my picks')
-  expect((await pending).text).toBe(`${DRAFT}.`)
+  gate.answer('Go ahead with this plan')
+  expect((await pending).text).toBe(`${DRAFT}.\n\nDecisions:\n- Export the filtered rows.\n- Run it in the browser.\n- Write 500 rows per batch.\n\n${TARGET}`)
   await ui.unmount()
 })
 
@@ -713,10 +715,10 @@ test('grounding links names to the code, asks what a missing one means, and says
   const sent = await $.prompt.submit({ ...cli, text: `${draft}.`, wait: false })
   // Only what the draft wrote as code says where things are; Dashboard and Maya stay links on screen.
   expect(sent.text).toBe(`${draft}.\n\nDecisions:\n- "Old Market" is South of Market (src/city/canvas.ts).\n` +
-    '- Where things are: ExportTool (src/dashboard/export.ts).')
+    '- Export the filtered rows.\n- Run it in the browser.\n- Write 500 rows per batch.\n- Where things are: ExportTool (src/dashboard/export.ts).')
 })
 
-test('the sketch shows what done looks like and travels with the prompt once attached', async ($, on) => {
+test('the sketch shows what done looks like and travels with the prompt unless left out', async ($, on) => {
   const { clock, calls } = world(on, replies())
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await composer($).edit(edit(DRAFT, '.'))
@@ -726,11 +728,13 @@ test('the sketch shows what done looks like and travels with the prompt once att
   const ui = await $.ui.mount(WIDE)
   expect((await ui.find({ key: 'sketch-title' }))?.props.label).toBe('Export dialog')
   expect(await ui.find({ type: 'Text', text: /Download CSV/ })).toBeDefined()
-  await ui.press({ key: 'sketch-pin' })
   expect((await ui.find({ key: 'sketch-pin' }))?.props.label).toBe('✓ goes with the prompt')
+  await ui.press({ key: 'sketch-pin' })
+  expect((await ui.find({ key: 'sketch-pin' }))?.props.label).toBe('attach to prompt')
+  await ui.press({ key: 'sketch-pin' })
   await ui.unmount()
   const sent = await $.prompt.submit({ ...cli, text: `${DRAFT}.`, wait: false })
-  expect(sent.text).toBe(`${DRAFT}.\n\nTarget output, as sketched (Export dialog):\n\`\`\`text\n${SKETCH.split('\n').slice(1).join('\n')}\n\`\`\``)
+  expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Export the filtered rows.\n- Run it in the browser.\n- Write 500 rows per batch.\n\n${TARGET}`)
 })
 
 test('choices the agent marks become switches during the turn, then a receipt and a follow-up', async ($, on) => {
@@ -748,8 +752,8 @@ test('choices the agent marks become switches during the turn, then a receipt an
   const text = `${DRAFT}.`
   await composer($).edit(edit(DRAFT, '.'))
   await clock.settle()
-  await $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
-  await $.turn.start({ text, turnId: 'submitted' })
+  const sent = await $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
+  await $.turn.start({ text: sent.text ?? text, turnId: 'submitted' })
   const reply = 'Each run goes to ⟦run log: one JSONL file per run | one SQLite database⟧ and a stay over ' +
     '⟦stuck after: 45 s | 30 s | 60 s⟧ is flagged.'
   const message = await $.ui.mount({

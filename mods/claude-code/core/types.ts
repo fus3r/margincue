@@ -68,7 +68,8 @@ export type Event =
   | { type: 'dismiss'; now?: number; cue: string }
   | { type: 'acceptAll'; now?: number }
   | { type: 'focus'; dir?: 1 | -1; cue?: string }
-  | { type: 'submit'; now: number; text: string; amendable?: boolean }
+  /** `plan: false`: only what the person set travels (they were asked each choice in turn, and skipped the rest). */
+  | { type: 'submit'; now: number; text: string; amendable?: boolean; plan?: boolean }
   | { type: 'loadState'; now: number; state: StateLoad }
   | { type: 'set'; now: number; at?: number; slot: string; option: string; scope?: Scope; text?: string }
   | { type: 'delegate'; now: number; at?: number; slot: string; scope?: Scope }

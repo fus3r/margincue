@@ -1,10 +1,11 @@
 // A stand-in for `codex app-server` in tests: it speaks the same newline-delimited JSON-RPC,
 // lists two models, and answers each turn with a fixed reply in three streamed pieces.
-// FAKE_CODEX_FAIL=1 makes every turn fail.
+// FAKE_CODEX_FAIL=1 makes every turn fail; FAKE_CODEX_LINES=1 streams the reply a line at a time.
 import { createInterface } from 'node:readline'
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`)
 let thread = 0
+const instructions = new Map()
 createInterface({ input: process.stdin }).on('line', (line) => {
   const message = JSON.parse(line)
   if (message.id === undefined) return
@@ -14,7 +15,11 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     return send({ id, result: { data: [{ id: 'gpt-big', isDefault: true }, { id: 'gpt-6-luna', isDefault: false }] } })
   }
   if (method === 'thread/start') {
+    if (process.env.FAKE_CODEX_PROJECT && (params.cwd !== process.env.FAKE_CODEX_PROJECT || !process.argv.includes('features.plugins=false'))) {
+      return send({ id, error: { message: 'unexpected reader configuration' } })
+    }
     thread += 1
+    instructions.set(`thread-${thread}`, params.baseInstructions)
     return send({ id, result: { thread: { id: `thread-${thread}` }, model: params.model, echo: params.baseInstructions } })
   }
   if (method === 'turn/start') {
@@ -24,8 +29,21 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       send({ method: 'error', params: { threadId, turnId: 'turn-1', willRetry: false, error: { message: 'quota' } } })
       return
     }
-    const text = `read | You want ${params.input[0].text.slice(0, 20)}.\nkind | build\n`
-    for (const piece of [text.slice(0, 7), text.slice(7, 30), text.slice(30)]) {
+    const prompt = params.input[0].text
+    let text = `read | You want ${prompt.slice(0, 20)}.\nkind | build\n`
+    if (process.env.FAKE_CODEX_PROJECT) {
+      text = instructions.get(threadId).includes('Draw what the finished result will look like')
+        ? ['title | Activity report', ...prompt.split('\n').filter((line) => line.startsWith('- ')), ''].join('\n')
+        : [
+            'read | A weekly activity report with CSV export.', 'kind | build',
+            'row | week_start | week starts | one | Weeks start on {} | Monday* | Sunday',
+            'row | columns | columns | many | Include {} | sign-ins* | invites',
+            'row | history | history | num | Show {} of history | 4 | 1 | 8 | wk',
+            '',
+          ].join('\n')
+    }
+    const pieces = process.env.FAKE_CODEX_LINES ? text.split(/(?<=\n)/) : [text.slice(0, 7), text.slice(7, 30), text.slice(30)]
+    for (const piece of pieces) {
       send({ method: 'item/agentMessage/delta', params: { threadId, turnId: 'turn-1', itemId: 'm', delta: piece } })
     }
     send({ method: 'turn/completed', params: { threadId, turn: { id: 'turn-1', status: 'completed' } } })

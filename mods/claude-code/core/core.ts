@@ -9,7 +9,7 @@ import { Lru } from './lru'
 import { normalize, parseReply } from './parse'
 import { parseProfile } from './profile'
 import { buildPrompt, buildSystem, isTerminated, lastSentenceStart } from './request'
-import { CARD_MAX_TOKENS, cycleSelection, parseCard, parseSketch, rowValue, sameSelection, SKETCH_MAX_TOKENS, toggleSelection } from './card'
+import { buildSketchPrompt, canSketch, CARD_MAX_TOKENS, cycleSelection, parseCard, parseSketch, rowValue, sameSelection, SKETCH_MAX_TOKENS, toggleSelection } from './card'
 import type { CardKind, ParsedCard, ParsedRow, ParsedSketch, RowType } from './card'
 import { ground, indexVocabulary, nameKey, relatedFolders } from './grounding'
 import type { GroundIndex, Mention } from './grounding'
@@ -145,8 +145,6 @@ const LEARNED_AFTER = 2
 /** Characters of a draft a card reading looks at. */
 const DRAFT_MAX = 8000
 const REFS_MAX = 4
-/** A sketch draws what it can know: something new, or an analysis. A change to existing code or screens it has not seen is not drawn. */
-const SKETCH_KINDS = new Set<CardKind>(['build', 'explore'])
 /** How a project's stakes are put to the reader. */
 const STAKES: Record<Rigor, string> = {
   explore: 'exploring', build: 'building something to use', compete: 'a challenge or competition, scored on held-out data',
@@ -160,8 +158,8 @@ const LENS_WORDS: [string, RegExp][] = [
 
 const EMPTY_PROFILE: Profile = { name: 'general', description: '', maxCues: 3, rubric: '', examples: [] }
 
-export function createCore(assets: Assets): Core {
-  return new Core(assets)
+export function createCore(assets: Assets, options?: { readSubmittedPrompt?: boolean }): Core {
+  return new Core(assets, options)
 }
 
 /**
@@ -175,6 +173,7 @@ export function sameCue(a: { anchor: string | null; options: string[] }, b: { an
 
 export class Core {
   private readonly assets: Assets
+  private readonly readSubmittedPrompt: boolean
   private configured = false
   private enabled = false
   private generation = 0
@@ -255,8 +254,9 @@ export class Core {
   private sentView = ''
   private out: Effect[] = []
 
-  constructor(assets: Assets) {
+  constructor(assets: Assets, options: { readSubmittedPrompt?: boolean } = {}) {
     this.assets = assets
+    this.readSubmittedPrompt = options.readSubmittedPrompt === true
     this.state = new DecisionState(assets.bundles ?? [], assets.personalProfiles ?? [])
     this.cache = new Lru<ParsedCue[]>(DEFAULT_TIMING.cacheSize)
   }
@@ -293,7 +293,7 @@ export class Core {
         this.onFocus(event.dir, event.cue)
         break
       case 'submit':
-        this.onSubmit(event.text, event.amendable !== false)
+        this.onSubmit(event.text, event.amendable !== false, event.plan !== false)
         break
       case 'loadState':
         this.state.load(event.state)
@@ -720,15 +720,18 @@ export class Core {
     this.focus = (visible[(at + step + visible.length) % visible.length] as Cue).id
   }
 
-  private onSubmit(text: string, amendable: boolean): void {
+  private onSubmit(text: string, amendable: boolean, plan = true): void {
     const prompt = !isHostCommand(text) && text.trim() !== ''
     const isPrompt = this.enabled && prompt
     if (this.mode !== undefined && text !== this.text) this.refreshState(text)
     const exact = text === this.text
-    const decisions = isPrompt ? this.decisions(exact) : []
+    const card = this.card
+    // The card is the plan the person saw only if its reading is for this very prompt and finished.
+    const whole = plan && exact && card?.stage === 'draft' && card.req === null && card.readFor === text
+    const decisions = isPrompt ? this.decisions(exact, whole) : []
     const attached = attachDecisions(text, decisions)
     const added = attached.added
-    const target = isPrompt && exact ? this.pinnedSketch() : null
+    const target = isPrompt && exact ? this.targetSketch(plan) : null
     const sent = target ? `${attached.text.replace(/\s+$/, '')}\n\n${target}` : attached.text
     if (this.sheetEnabled !== undefined) this.onCardSubmit(prompt, exact, amendable, added)
     if (this.mode !== undefined) {
@@ -1014,6 +1017,8 @@ export class Core {
   // the turn, a receipt and one-key follow-ups.
 
   private cardText(text = this.text): boolean {
+    // A host that only sees Enter can read short prompts and headings too.
+    if (this.readSubmittedPrompt) return Boolean(text.trim())
     return !isHostCommand(text) && wordCount(text) >= CARD_MIN_WORDS
   }
 
@@ -1271,7 +1276,7 @@ export class Core {
     card.rows = [...card.rows.filter((row) => row.origin === 'repo'), ...next]
     this.fixCardFocus()
     // A reading for the draft as it stands means the draft has rested since it was asked: sketch at once.
-    if (!partial && this.sketchEnabled && this.assets.sketchSystem && card.kind && SKETCH_KINDS.has(card.kind) && text === this.text) {
+    if (!partial && this.sketchEnabled && this.assets.sketchSystem && canSketch(card.kind) && text === this.text) {
       card.sketchDue = this.now
     }
   }
@@ -1341,7 +1346,7 @@ export class Core {
       if (commit) this.sendAgentChanges()
       else card.amendDue = this.now + AMEND_DELAY_MS
     } else if (card.stage === 'after') this.fillFollowUp()
-    else if (card.sketch && card.kind && SKETCH_KINDS.has(card.kind)) card.sketchDue = this.now + SKETCH_DELAY_MS
+    else if (card.sketch && canSketch(card.kind)) card.sketchDue = this.now + SKETCH_DELAY_MS
   }
 
   private onCardSay(rowId: string, text: string): void {
@@ -1367,10 +1372,16 @@ export class Core {
     if (card.stage === 'after') this.fillFollowUp()
   }
 
-  private cardDecisions(): Decision[] {
+  /**
+   * The card's choices that travel with the prompt. What the person switched always does. With `whole`, the
+   * choices they saw and left as they were travel too: the card showed them as the plan, so the agent must not
+   * decide them again. A name the code lacks has no default, so only a pick of it travels.
+   */
+  private cardDecisions(whole = false): Decision[] {
     const card = this.card!
-    const out: Decision[] = card.rows.filter((row) => row.picked !== null)
-      .map((row) => ({ statement: row.statement, option: row.said ?? this.rowText(row, row.picked!) }))
+    const out: Decision[] = card.rows
+      .filter((row) => row.picked !== null || whole && row.origin !== 'repo' && (row.learned ?? row.defaults).length > 0)
+      .map((row) => ({ statement: row.statement, option: row.said ?? this.rowText(row, row.picked ?? row.learned ?? row.defaults) }))
     if (this.refsEnabled) {
       // Only what the draft wrote as code (a path, a file, an identifier, backticks): a product name or a
       // plain word that happens to match a file would send the agent to the wrong place.
@@ -1433,7 +1444,8 @@ export class Core {
     const prior = card.sketch
     if (prior && prior.key === key) return
     if (prior && prior.req !== null) this.out.push({ type: 'cancel', req: prior.req })
-    const base = { key, buffer: '', title: prior?.title ?? '', lines: prior?.lines ?? [], pinned: prior?.pinned ?? false, open: prior?.open ?? true }
+    // A preview goes with the prompt unless the person leaves it out: it is part of the plan they saw.
+    const base = { key, buffer: '', title: prior?.title ?? '', lines: prior?.lines ?? [], pinned: prior?.pinned ?? true, open: prior?.open ?? true }
     const cached = this.sketchCache.get(key)
     if (cached !== undefined) {
       card.sketch = cached ? { ...base, req: null, title: cached.title, lines: cached.lines } : null
@@ -1451,15 +1463,9 @@ export class Core {
 
   private sketchPrompt(card: Card): string {
     const choices = card.rows.filter((row) => row.origin !== 'repo' || row.picked !== null).map((row) =>
-      `- ${decisionLine({ statement: row.statement, option: this.rowText(row, row.picked ?? row.learned ?? row.defaults) })}`)
+      decisionLine({ statement: row.statement, option: this.rowText(row, row.picked ?? row.learned ?? row.defaults) }))
     const found = this.mentions.filter((m) => m.status === 'found').slice(0, 8)
-    return [
-      'Draft:', '<<<', this.text, '>>>',
-      ...(card.read ? [`Read as: ${card.read}`] : []),
-      ...(choices.length ? ['Choices:', ...choices] : []),
-      ...(found.length ? [`Names in the code: ${found.map((m) => m.match ?? m.phrase).join(', ')}`] : []),
-      ...(this.today ? [`Today is ${this.today}: sample dates are recent.`] : []),
-    ].join('\n')
+    return buildSketchPrompt({ draft: this.text, read: card.read, choices, names: found.map((m) => m.match ?? m.phrase), today: this.today })
   }
 
   private onSketchReply(chunk: string, done: boolean, ok: boolean): void {
@@ -1477,9 +1483,16 @@ export class Core {
     this.metric('sketch-reply', { req, card: card.id, ok, lines: parsed?.lines.length ?? 0 })
   }
 
-  private pinnedSketch(): string | null {
-    const sketch = this.card?.stage === 'draft' ? this.card.sketch : null
-    if (!sketch?.pinned || !sketch.lines.length) return null
+  /**
+   * The preview travels as the target when the person saw it (`plan`: the card, not choices asked one at a time),
+   * did not leave it out, and it was drawn for the very choices being sent: a preview of other choices would
+   * contradict them.
+   */
+  private targetSketch(plan = true): string | null {
+    const card = this.card?.stage === 'draft' ? this.card : null
+    const sketch = card?.sketch
+    if (!plan || !card || !sketch?.lines.length || !sketch.pinned) return null
+    if (sketch.req !== null || sketch.key !== `${this.language}\n${this.sketchPrompt(card)}`) return null
     return `Target output, as sketched (${sketch.title}):\n\`\`\`text\n${sketch.lines.join('\n')}\n\`\`\``
   }
 
@@ -1898,7 +1911,8 @@ ${prompt}` }
     return null
   }
 
-  private decisions(includeCard = true): Decision[] {
+  /** `whole`: the card's untouched choices too (at send, when the card was read for exactly what is sent). */
+  private decisions(includeCard = true, whole = false): Decision[] {
     const out: Decision[] = []
     for (const cue of this.cues) {
       if (cue.provisional || cue.chosen === null) continue
@@ -1906,7 +1920,7 @@ ${prompt}` }
       if (option !== undefined) out.push({ statement: cue.statement, option })
     }
     if (this.mode === undefined) return out
-    if (includeCard && this.card?.stage === 'draft') out.push(...this.cardDecisions())
+    if (includeCard && this.card?.stage === 'draft') out.push(...this.cardDecisions(whole))
     const standing: Decision[] = []
     const draft = this.stateDraft
     if (draft && this.enabled) {

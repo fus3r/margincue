@@ -10,30 +10,23 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
-import { parseBlanks } from '../../claude-code/core/card'
-import type { ParsedBlank } from '../../claude-code/core/card'
 import { createCore } from '../../claude-code/core/index'
 import type { Effect, Event, View } from '../../claude-code/core/index'
 import { ASSETS } from '../../claude-code/hooks/assets'
 import { layoutCard } from '../../claude-code/hooks/card-view'
-import { depthFor, describeUser, preferredProfiles } from '../../claude-code/hooks/onboarding'
 import { collectVocabulary } from '../../claude-code/hooks/repo-index'
 import { DARK } from '../../claude-code/hooks/segments'
 import type { Action, Segment, Style } from '../../claude-code/hooks/segments'
-import type { MargincueCard, MargincueRow } from '../../claude-code/types'
+import { cardConfig } from './card-config'
 import { Draft } from './editor'
 import { CodexModel } from './model'
-import { PATHS, learn, processEngine, readJson, readLearned, readSettings, turnMessages, writeJson } from './store'
-import type { TurnRecord } from './store'
+import { PATHS, learn, processEngine, readLearned, readSettings, writeJson } from './store'
 import { drawLine, parseKeys, sgr } from './terminal'
 import type { Hit, Key } from './terminal'
+import { agentCard, pick, readTurn } from './turn-card'
 
 const P = DARK
 const now = () => performance.now()
-/** A turn this recent still has its choices on offer when the composer opens empty. */
-const RECENT_MS = 30 * 60 * 1000
-
-type Agent = { running: boolean; blanks: ParsedBlank[]; picked: number[]; focus: number; text: string }
 
 export async function compose(file: string): Promise<void> {
   const seed = readFileSync(file, 'utf8')
@@ -52,7 +45,8 @@ export async function compose(file: string): Promise<void> {
   let spinner: NodeJS.Timeout | null = null
   let modelName = 'starting Codex…'
   let finished = false
-  const agent = openTurn(cwd, draft.text)
+  // Opened empty on this project during or soon after a turn: its choices become switches.
+  const agent = draft.text.trim() ? null : readTurn(cwd)
 
   // ---- the core, as Claude Code's host drives it ----------------------------------------
 
@@ -102,17 +96,6 @@ export async function compose(file: string): Promise<void> {
     })
   }
 
-  function configEvent(): Event {
-    const user = settings.user
-    const depths = Object.fromEntries(Object.entries(user?.levels ?? {}).map(([profile, level]) => [profile, depthFor(level)]))
-    return {
-      type: 'config', enabled: settings.mode !== 'off', mode: settings.mode ?? 'auto', language: 'en', sheet: true,
-      sketch: settings.sketch !== false, refs: settings.refs !== false, today: localDate(), profile: 'general',
-      streaming: false, eagerPlan: false, depths,
-      ...(user && { user: describeUser(user), prefer: preferredProfiles(user) }),
-    }
-  }
-
   function edited(splice: { start: number; end: number; text: string } | null, origin: 'type' | 'paste'): void {
     if (!splice) return draw()
     if (agent && draft.text !== agent.text) leaveAgent()
@@ -126,35 +109,9 @@ export async function compose(file: string): Promise<void> {
 
   // ---- the agent's choices, during and after a turn -------------------------------------
 
-  function agentCard(state: Agent): MargincueCard {
-    const rows: MargincueRow[] = state.blanks.map((blank, i) => ({
-      id: `a${i}`, key: `agent_${i}`, label: blank.label, type: 'one', statement: `${blank.label}: {}`,
-      options: [blank.choice, ...blank.alternatives], defaults: [0], selected: [state.picked[i] ?? 0],
-      chosen: (state.picked[i] ?? 0) !== 0, origin: 'agent',
-    }))
-    return {
-      id: 1, stage: state.running ? 'turn' : 'after', reading: false, error: false, read: null, kind: null, rows,
-      focus: rows[state.focus]?.id ?? null, mentions: [], language: 'en', collapsed: false,
-    }
-  }
-
   function switchAgent(row: number, option: number | 'next'): void {
-    if (!agent) return
-    const blank = agent.blanks[row]
-    if (!blank) return
-    const count = blank.alternatives.length + 1
-    agent.picked[row] = option === 'next' ? ((agent.picked[row] ?? 0) + 1) % count : Math.min(option, count - 1)
-    agent.focus = row
-    const lines = agent.blanks.flatMap((b, i) => {
-      const picked = agent.picked[i] ?? 0
-      if (picked === 0) return []
-      const value = b.alternatives[picked - 1]!
-      return agent.running
-        ? [`Amendment to my last prompt: for ${b.label}, use ${value} instead of ${b.choice}.`]
-        : [`Change ${b.label}: ${value} instead of ${b.choice}.`]
-    })
-    const text = lines.length ? (agent.running ? lines.join('\n') : `${lines.join(' ')} Keep everything else as it is.`) : ''
-    agent.text = text
+    if (!agent || !agent.blanks[row]) return
+    const text = pick(agent, row, option)
     draft.replace(0, draft.text.length, text)
     draw()
   }
@@ -459,7 +416,7 @@ export async function compose(file: string): Promise<void> {
   process.stdin.on('data', onKeys)
   process.stdout.on('resize', draw)
   process.on('SIGTERM', cancel)
-  run(configEvent())
+  run(cardConfig(settings))
   run({ type: 'learned', picks: readLearned(cwd) })
   void model.start().then((name) => {
     modelName = name ? `readings by ${name}` : 'Codex unavailable'
@@ -472,23 +429,3 @@ export async function compose(file: string): Promise<void> {
   } else if (draft.text.trim()) run({ type: 'draft', now: now(), text: draft.text, origin: 'open', cursor: draft.cursor })
   draw()
 }
-
-/** The turn the hooks saw last, when the composer opens empty on this project: its choices become switches. */
-function openTurn(cwd: string, text: string): Agent | null {
-  if (text.trim()) return null
-  const turn = readJson<TurnRecord | null>(PATHS.turn, null)
-  if (!turn || turn.cwd !== cwd) return null
-  const running = turn.endedAt === null
-  if (!running && Date.now() - (turn.endedAt ?? 0) > RECENT_MS) return null
-  const seen = new Map<string, ParsedBlank>()
-  for (const message of turnMessages(turn.transcript, turn.turn)) for (const blank of parseBlanks(message)) seen.set(blank.label, blank)
-  const blanks = [...seen.values()]
-  if (!blanks.length) return null
-  return { running, blanks, picked: blanks.map(() => 0), focus: 0, text: '' }
-}
-
-function localDate(): string {
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-

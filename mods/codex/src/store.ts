@@ -110,6 +110,39 @@ export function turnMessages(transcript: string, turn: string): string[] {
   return out
 }
 
+/** How Codex words the user message when an MCP app (the desktop card) sends one for the person. */
+export const APP_MESSAGE = /^An MCP app initiated this message\b/
+
+/**
+ * The text an MCP app sent as the person's message. Codex does not put it in the prompt: it hands it to the agent
+ * as the output of an `untrusted_input` call, recorded just before the turn starts. Null when the latest message
+ * the person sent is not an app's.
+ */
+export function appMessage(transcript: string): string | null {
+  const lines = readTail(transcript, 512 * 1024).split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!
+    if (!line.includes('"response_item"')) continue
+    try {
+      const entry = JSON.parse(line) as { type?: string; payload?: { type?: string; role?: string; call_id?: string; output?: unknown; content?: { text?: string }[] } }
+      const payload = entry.payload
+      if (entry.type !== 'response_item' || !payload) continue
+      if (payload.type === 'message' && payload.role === 'user') {
+        const text = (payload.content ?? []).map((part) => part.text ?? '').join('')
+        if (APP_MESSAGE.test(text)) continue
+        return null
+      }
+      if (payload.type !== 'function_call_output' || !String(payload.call_id ?? '').startsWith('untrusted_input')) continue
+      const raw = Array.isArray(payload.output) ? payload.output.map((part: { text?: string }) => part.text ?? '').join('') : String(payload.output ?? '')
+      const message = JSON.parse(raw) as { kind?: string; source?: string; text?: unknown }
+      return message.kind === 'message' && message.source === 'mcp_app' && typeof message.text === 'string' ? message.text : null
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
 function readHead(file: string, bytes: number): string {
   try {
     const fd = openSync(file, 'r')

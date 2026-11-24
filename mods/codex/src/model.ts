@@ -1,12 +1,14 @@
 // Readings through the person's own Codex login. One `codex app-server` lives as long
 // as the composer; each reading is an ephemeral thread (never written to the person's
-// history) whose base instructions are MarginCue's reader prompt, on the lightest model
-// the account offers, at low effort. Hooks, memories and project docs are off for it, so
-// nothing of the person's setup runs on MarginCue's own readings.
+// history) whose base instructions are MarginCue's reader prompt, at low effort: on the
+// lightest model the account offers, or on its default model where a reading must not
+// miss (the desktop card reads each prompt once). Hooks, memories and project docs are
+// off for it, so nothing of the person's setup runs on MarginCue's own readings.
 
 import { spawn } from 'node:child_process'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createInterface } from 'node:readline'
+import { VERSION } from './version'
 
 export type Completion = { ok: true; text: string; ms: number } | { ok: false; reason: string; ms: number }
 
@@ -23,14 +25,18 @@ export class CodexModel {
   private turns = new Map<string, Turn>()
   private next = 1
   private ready: Promise<string | null> | null = null
+  /** The account's default model, for readings that ask for `strong`. */
+  private strongModel: string | null = null
   private failure: string | null = null
   private readonly cwd: string
   /** The Codex command and any leading arguments (tests run a fake app-server through Node). */
   private readonly command: string[]
+  private readonly disablePlugins: boolean
 
-  constructor(cwd: string, command: string | string[] = process.env['MARGINCUE_CODEX'] ?? 'codex') {
+  constructor(cwd: string, command: string | string[] = process.env['MARGINCUE_CODEX'] ?? 'codex', disablePlugins = false) {
     this.cwd = cwd
     this.command = Array.isArray(command) ? command : [command]
+    this.disablePlugins = disablePlugins
   }
 
   /** Starts the app-server and picks the model; resolves to the model id, or null when Codex is not usable. */
@@ -48,12 +54,14 @@ export class CodexModel {
 
   private async boot(): Promise<string | null> {
     const args = ['app-server', '-c', 'features.hooks=false', '-c', 'features.memories=false', '-c', 'project_doc_max_bytes=0']
+    // A widget reading must not start its own copy of the widget server.
+    if (this.disablePlugins) args.push('-c', 'features.plugins=false')
     const [program, ...lead] = this.command
     const child = spawn(program!, [...lead, ...args], {
       cwd: this.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       // Codex is a .cmd shim on Windows when installed with npm.
-      shell: process.platform === 'win32' && this.command.length === 1,
+      shell: process.platform === 'win32' && this.command.length === 1 && !/\.exe$/i.test(program!),
       env: { ...process.env, MARGINCUE_READER: '1' },
       windowsHide: true,
     })
@@ -62,26 +70,35 @@ export class CodexModel {
     child.on('error', (error) => this.fail(`codex could not start: ${error.message}`))
     child.on('exit', () => this.fail('codex app-server exited'))
     createInterface({ input: child.stdout }).on('line', (line) => this.receive(line))
-    const init = await this.call('initialize', { clientInfo: { name: 'margincue', title: 'MarginCue', version: '0.4.10' }, capabilities: null })
+    const init = await this.call('initialize', { clientInfo: { name: 'margincue', title: 'MarginCue', version: VERSION }, capabilities: null })
     if (init.error) throw new Error(init.error.message ?? 'initialize failed')
     this.notify('initialized')
     const preferred = process.env.MARGINCUE_CODEX_MODEL
-    if (preferred) return preferred
+    if (preferred) {
+      this.strongModel = preferred
+      return preferred
+    }
     const listed = await this.call('model/list', {})
     const models = ((listed.result as { data?: { id: string; hidden?: boolean; isDefault?: boolean }[] } | undefined)?.data ?? [])
       .filter((model) => !model.hidden)
+    const fallback = models.find((model) => model.isDefault)?.id ?? models[0]?.id ?? null
+    this.strongModel = fallback
     for (const pattern of LIGHT) {
       const light = models.find((model) => pattern.test(model.id))
       if (light) return light.id
     }
-    return models.find((model) => model.isDefault)?.id ?? models[0]?.id ?? null
+    return fallback
   }
 
-  /** One reading: `system` replaces Codex's own instructions, `prompt` is the only input; `onDelta` hears the text as it streams. */
-  async complete(system: string, prompt: string, options: { signal?: AbortSignal; onDelta?: (delta: string) => void } = {}): Promise<Completion> {
+  /**
+   * One reading: `system` replaces Codex's own instructions, `prompt` is the only input; `onDelta` hears the text as it
+   * streams. `strong` reads on the account's default model instead of its lightest.
+   */
+  async complete(system: string, prompt: string, options: { signal?: AbortSignal; onDelta?: (delta: string) => void; strong?: boolean } = {}): Promise<Completion> {
     const { signal, onDelta } = options
     const started = Date.now()
-    const model = await this.start()
+    const light = await this.start()
+    const model = options.strong ? this.strongModel ?? light : light
     if (!model) return { ok: false, reason: this.failure ?? 'no Codex model', ms: Date.now() - started }
     const thread = await this.call('thread/start', {
       model, cwd: this.cwd, approvalPolicy: 'never', sandbox: 'read-only', baseInstructions: system, ephemeral: true,
