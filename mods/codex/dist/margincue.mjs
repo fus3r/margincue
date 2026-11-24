@@ -2204,6 +2204,9 @@ var Core = class {
       case "cardDismiss":
         this.onCardDismiss(event.row);
         break;
+      case "cardSay":
+        this.onCardSay(event.row, event.text);
+        break;
       case "cardShown":
         if (this.card?.id === event.id && this.card.shownAt === null && this.card.rows.length) {
           this.card.shownAt = this.now;
@@ -3174,6 +3177,24 @@ ${lines.join("\n")}` : "";
     } else if (card.stage === "after") this.fillFollowUp();
     else if (card.sketch && card.kind && SKETCH_KINDS.has(card.kind)) card.sketchDue = this.now + SKETCH_DELAY_MS;
   }
+  onCardSay(rowId, text2) {
+    const card = this.card;
+    const row = card?.rows.find((entry) => entry.id === rowId);
+    const said = text2.trim();
+    if (!card || !row || card.stage !== "draft" || !said) return;
+    row.said = said;
+    row.picked = [];
+    this.actionAt = this.now;
+    this.metric("card-pick", {
+      card: card.id,
+      row: row.key,
+      origin: row.origin,
+      stage: card.stage,
+      option: "said",
+      commit: true,
+      ms: card.shownAt === null ? null : this.now - card.shownAt
+    });
+  }
   onCardDismiss(rowId) {
     const card = this.card;
     const row = card?.rows.find((entry) => entry.id === rowId);
@@ -3186,7 +3207,7 @@ ${lines.join("\n")}` : "";
   }
   cardDecisions() {
     const card = this.card;
-    const out = card.rows.filter((row) => row.picked !== null).map((row) => ({ statement: row.statement, option: this.rowText(row, row.picked) }));
+    const out = card.rows.filter((row) => row.picked !== null).map((row) => ({ statement: row.statement, option: row.said ?? this.rowText(row, row.picked) }));
     if (this.refsEnabled) {
       const refs = this.mentions.filter((m) => m.status === "found" && m.files.length > 0 && m.as === "code").slice(0, REFS_MAX);
       if (refs.length) out.push({ statement: "Where things are: {}", option: refs.map((m) => `${m.phrase} (${m.files[0]})`).join(", ") });
@@ -10049,7 +10070,7 @@ var CodexModel = class {
     child.on("error", (error) => this.fail(`codex could not start: ${error.message}`));
     child.on("exit", () => this.fail("codex app-server exited"));
     createInterface({ input: child.stdout }).on("line", (line) => this.receive(line));
-    const init = await this.call("initialize", { clientInfo: { name: "margincue", title: "MarginCue", version: "0.4.6" }, capabilities: null });
+    const init = await this.call("initialize", { clientInfo: { name: "margincue", title: "MarginCue", version: "0.4.7" }, capabilities: null });
     if (init.error) throw new Error(init.error.message ?? "initialize failed");
     this.notify("initialized");
     const preferred = process.env.MARGINCUE_CODEX_MODEL;

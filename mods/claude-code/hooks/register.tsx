@@ -10,8 +10,8 @@ import type { Elements, EngineInterface, PromptDecoration, Register, RenderSurfa
 
 import { createCore, DEPTHS, isHostCommand, MODES, SCOPES } from '../core/index'
 import type { Assets, Core, Depth, Effect, Event, LanguageSetting, Mode, Origin, Scope, StateLoad, Timing, View } from '../core/index'
-import type { MargincueBand, MargincueExpert, MargincueReceipt } from '../types'
-import { BLANK_CLOSE, BLANK_OPEN, parseBlanks, renderBlanks } from '../core/card'
+import type { MargincueBand, MargincueExpert, MargincueReceipt, MargincueRow } from '../types'
+import { BLANK_CLOSE, BLANK_OPEN, joinList, parseBlanks, renderBlanks } from '../core/card'
 import type { ParsedBlank } from '../core/card'
 import { nameKey } from '../core/grounding'
 import { ASSETS } from './assets'
@@ -62,9 +62,12 @@ const expert = atom({ plugin: 'margincue', key: 'expert' } as const, null)
 // The module's own state. A hot reload starts it over; session.start then
 // rebuilds the core from the stored settings and the box as it stands.
 /** How long a prompt sent from an app waits on its card before it goes as it stands. */
-const HOLD_MS = 90000
-/** How long a read card waits for the app to draw the band before it is asked as the app's own dialog instead. */
-const BAND_WAIT_MS = 1200
+/** Longest wait for the reading at Enter. A model call never counts against a hook's own 10 s, so this is wall time. */
+const READ_WAIT_MS = 60000
+/** Claude's own dialog under MarginCue's card in an app: send with the card, or as written; "Other" adds to the prompt. */
+const GATE_QUESTION = 'Send your prompt with these choices?'
+const GATE_SEND = 'Send'
+const GATE_RAW = 'Send as written'
 
 /**
  * A prompt the person wrote: Enter at the terminal, or sent from an app attached to this session (the desktop
@@ -108,10 +111,10 @@ const host = {
   turn: null as { text: string; id: string | null } | null,
   activeTurn: null as string | null,
   interactive: false,
-  /** A prompt sent from an app (desktop, VS Code, phone) waiting on its card: Send resolves it. */
-  held: null as null | { resolve: (send: boolean) => void },
-  /** The band was drawn for the held card: the app shows plugin rows. */
-  bandDrawn: false,
+  /** MarginCue's card is up in an app, above Claude's own dialog, waiting for the person to send. */
+  gate: false,
+  /** The choice whose options are open under the card's plan, if any. */
+  openRow: null as string | null,
   /** The app running this session (the desktop app, VS Code), from the engine's entrypoint; null at a terminal or in a script. */
   appHost: null as string | null,
   /** MARGINCUE_NO_SETUP: no first-run questions in this session (a recording, a test harness). */
@@ -539,93 +542,309 @@ function cycleScope(slot: string, fallback: Scope): void {
   host.scopes.set(slot, scopes[(scopes.indexOf(current) + 1) % scopes.length]!)
 }
 
-/**
- * The card for a prompt sent from an app whose draft MarginCue never saw: read at once, shown above the box, and
- * held until the person sends it. Nothing to decide (no rows, no unknown name): it goes as soon as it is read.
- * Resolves true to send with what is set, false to send as written.
- */
-function holdForCard($: $, text: string): Promise<boolean> {
-  run($, { type: 'draft', now: now(), text, origin: 'paste', cursor: text.length })
-  const card = host.view?.card
-  if (!card || card.stage !== 'draft') return Promise.resolve(true)
-  host.bandDrawn = false
-  return new Promise<boolean>((resolve) => {
-    // Counted in the watcher's own ticks, so the wait holds under any clock.
-    let readTicks = 0
-    let asking = false
-    const timer = $.clock.after(HOLD_MS, () => done(true))
-    const watch = $.clock.every(250, () => {
-      const shown = host.view?.card
-      if (!shown || shown.stage !== 'draft') return done(true)
-      if (shown.reading) return
-      const open = shown.rows.length > 0 || shown.mentions.some((mention) => mention.status === 'missing')
-      if (!open) return done(true)
-      readTicks++
-      // The band is where the card belongs. An app that does not draw it (the desktop app as shipped) gets the
-      // same card as its own dialog: the reading and sketch in the transcript, one question per open choice.
-      if (!host.bandDrawn && !asking && readTicks * 250 >= BAND_WAIT_MS) {
-        asking = true
-        void askCard($, shown).then(() => done(true), () => done(true))
-      }
-    })
-    const done = (send: boolean) => {
-      if (host.held !== held) return
-      timer.cancel()
-      watch.cancel()
-      host.held = null
-      if (host.view) publish($, host.view)
-      resolve(send)
-    }
-    const held = { resolve: done }
-    host.held = held
-    if (host.view) publish($, host.view)
-  })
+type Held = 'send' | 'raw'
+
+/** A question of the app's own panel and the card row it answers. */
+type PanelQuestion = {
+  row: string
+  many: boolean
+  question: string
+  header: string
+  /** The labels as the panel shows them, and the row option each stands for. */
+  labels: string[]
+  indexes: number[]
 }
 
 /**
- * The card as the app's own dialog, for an app that does not draw plugin rows: what MarginCue read (and the
- * sketch) as a line of the transcript, then each open choice as a question. Closing a question sends the prompt
- * with what is set so far.
+ * The card for a prompt sent from an app whose draft MarginCue never saw (the desktop app, VS Code, a phone): read at
+ * Enter, then its open choices asked in Claude's own question panel, one after another. Each keeps the panel's
+ * "Other", where the person adds what the question made them think of: their words go as that choice's Decision.
+ * The panel is the engine's own (`$.ui.ask`), never counted against a hook's 10 s, so the person answers in their
+ * own time. Closing it stops the questions; what is set so far goes. Nothing open: the prompt goes once read.
  */
-async function askCard($: $, card: NonNullable<View['card']>): Promise<void> {
-  const missing = card.mentions.filter((mention) => mention.status === 'missing')
-  const lines = [
-    `MarginCue · ${card.read ?? 'read your prompt'}`,
-    ...missing.map((mention) => `Not in the code: "${mention.phrase}"${mention.near.length ? ` (closest: ${mention.near.map((near) => near.name).join(', ')})` : ''}`),
-    ...(card.sketch?.lines.length ? ['', card.sketch.title, ...card.sketch.lines] : []),
-  ]
-  $.ui.log(lines.join('\n'))
-  for (const row of card.rows.slice(0, 4)) {
-    const options = row.options.slice(0, 4)
-    if (options.length < 2) continue
-    const question = `${row.statement.replace('{}', '…').replace(/[.:]?\s*$/, '')}?`
+async function askAtEnter($: $, text: string): Promise<{ how: Held; addition?: string }> {
+  run($, { type: 'draft', now: now(), text, origin: 'paste', cursor: text.length })
+  const card = await readAtEnter($)
+  if (!card) return { how: 'send' }
+  if (host.appHost) return gateAtEnter($)
+  for (const question of panelQuestions(card)) {
     let answer: string
     try {
-      answer = await $.ui.ask(question, { options, header: row.label.slice(0, 12), ...(row.type === 'many' && { multiSelect: true as const }) })
+      answer = await $.ui.ask(question.question, { options: question.labels, header: question.header, ...(question.many && { multiSelect: true as const }) })
     } catch {
-      return
+      break
     }
-    const wanted = new Set(answer.split(',').map((part) => options.indexOf(part.trim())).filter((i) => i >= 0))
-    if (row.type === 'many') {
-      for (let i = 0; i < row.options.length; i++) {
-        if (wanted.has(i) !== row.selected.includes(i)) run($, { type: 'cardSet', now: now(), row: row.id, option: i })
-      }
-    } else {
-      const [first] = wanted
-      if (first !== undefined) run($, { type: 'cardSet', now: now(), row: row.id, option: first })
-    }
+    // Skip answers with a bracketed marker ("[No preference]"): that choice is left to Claude.
+    if (skipped(answer)) continue
+    answerRow($, question, answer)
+  }
+  return { how: 'send' }
+}
+
+const skipped = (answer: string) => !answer.trim() || /^\s*\[[^\]]*\]\s*$/.test(answer)
+
+/**
+ * In an app (the desktop app, VS Code), MarginCue draws its own card where Claude's dialog opens (`ui.render` on
+ * AskUserQuestion): the reading, every open choice as buttons, the preview. Claude's dialog stays under it as one
+ * question, send or send as written, and what the person types under its "Other" is added to the prompt. The
+ * dialog is the engine's own (`$.ui.ask`): the prompt waits on the person, never on a hook's 10 s.
+ */
+async function gateAtEnter($: $): Promise<{ how: Held; addition?: string }> {
+  host.gate = true
+  host.openRow = null
+  if (host.view) publish($, host.view)
+  try {
+    const answer = await $.ui.ask(GATE_QUESTION, { options: [GATE_SEND, GATE_RAW], header: 'MarginCue' })
+    if (answer === GATE_RAW) return { how: 'raw' }
+    if (answer === GATE_SEND || skipped(answer)) return { how: 'send' }
+    return { how: 'send', addition: answer.trim() }
+  } catch {
+    return { how: 'send' }
+  } finally {
+    host.gate = false
   }
 }
 
-/** Under the card held at Enter: send with what is set, or as written. */
-function heldRow(): Segment[] {
-  return [
-    { kind: 'text', text: '  ' },
-    { kind: 'button', key: 'card-send', label: 'Send', face: ' Send ↵ ', primary: true, style: host.palette.yours, action: { type: 'held', send: true } },
-    { kind: 'text', text: '  ' },
-    { kind: 'button', key: 'card-send-raw', label: 'Send as written', face: ' Send as written ', dim: true, action: { type: 'held', send: false } },
-    { kind: 'text', text: '   Claude starts when you send.', style: { dim: true } },
-  ]
+/** The options a card shows of a row: a long range shows its ends, the assumed step and one between. */
+function shownOptions(row: MargincueRow): number[] {
+  const last = row.options.length - 1
+  if (row.type !== 'range' || last <= 4) return row.options.map((_, i) => i)
+  const at = row.selected[0] ?? 0
+  return [...new Set([0, at, Math.round((at + last) / 2), last])].sort((a, b) => a - b)
+}
+
+/** Where a pressed word of the card's plan points: a click opens nothing; a cmd-click opens MarginCue's page. */
+const PICK = 'https://github.com/fus3r/margincue#pick-'
+const md = (text: string) => text.replace(/([\\`*_{}\[\]()#+!|<>~])/g, '\\$1')
+
+/** A press on a word of the plan opens its options; a press on an option picks it. */
+function pickFromLink($: $, href: string): void {
+  if (!href.startsWith(PICK)) return
+  const [row, option] = href.slice(PICK.length).split('~')
+  if (!row) return
+  if (option === undefined) host.openRow = host.openRow === row ? null : row
+  else {
+    act($, { type: 'cardSet', row, option: Number(option) })
+    const picked = host.view?.card?.rows.find((entry) => entry.id === row)
+    if (picked?.type !== 'many') host.openRow = null
+  }
+  // Which part is open lives here, not in the card the drawing reads: ask for the redraw.
+  $.ui.invalidate('ui.render')
+}
+
+/**
+ * MarginCue's card above Claude's dialog in an app, FeedForward-style: the plan as plain sentences in the app's
+ * own type, each part Claude would decide a link (the prompt it reads sits just above, in the transcript). A click opens that part's options on
+ * the line below; a pick rewrites the sentence. The app takes at most 48 rows there, counted at 40 columns, and
+ * draws nothing of a tree past that: the card keeps under it, the preview only whole.
+ */
+function drawGateCard($: $, ui: Elements[RenderSurface], card: NonNullable<MargincueBand['card']>) {
+  const { Box, Text, Markdown, Code } = ui
+  // Inside the frame: 40 columns less its padding; a Code block draws its own inset too.
+  const rowsOf = (text: string, cols = 34) => text.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(line.length / cols)), 0)
+  const valueOf = (row: MargincueRow) => row.type === 'many'
+    ? (row.selected.length ? joinList(row.selected.map((i) => row.options[i]!)) : 'nothing more')
+    : row.options[row.selected[0] ?? 0] ?? ''
+  const sentence = (row: MargincueRow) => {
+    const link = `[${md(valueOf(row))}](${PICK}${row.id})`
+    if (row.origin === 'repo') {
+      const name = row.statement.replace(/\s+is\s+\{\}\s*$/, '').replace(/^"(.*)"$/, '\u201c$1\u201d')
+      return row.chosen ? `${md(name)} is ${link}.` : `${md(name)} isn't in your code: it's ${link}?`
+    }
+    const at = row.statement.indexOf('{}')
+    const before = at < 0 ? row.statement : row.statement.slice(0, at)
+    const after = (at < 0 ? '' : row.statement.slice(at + 2)).replace(/\s*[.:]?\s*$/, '')
+    return `${md(before)}${link}${md(after)}.`
+  }
+  const count = card.rows.length
+  const yours = card.rows.filter((row) => row.chosen).length
+  const head = `\u00b7 ${count} decision${count === 1 ? '' : 's'}${yours ? `, ${yours} yours` : ''} \u00b7 click one to change it`
+  const hint = 'Anything to add? Pick Other below.'
+  // 48 rows, less the frame (border and padding, 4), the gaps between its parts (4) and the dialog's (1), a margin (2).
+  let budget = 48 - 4 - 4 - 1 - 2 - rowsOf(`MarginCue ${head}`) - rowsOf(hint)
+  const shown: MargincueRow[] = []
+  for (const row of card.rows) {
+    const need = rowsOf(sentence(row).replace(/\]\([^)]*\)/g, ']'))
+    if (need > budget) break
+    budget -= need
+    shown.push(row)
+  }
+  const open = shown.find((row) => row.id === host.openRow)
+  const options = open ? shownOptions(open).map((i) => {
+    const mark = open.selected.includes(i) ? '\u2713 ' : ''
+    return `${mark}[${md(open.options[i]!)}](${PICK}${open.id}~${i})`
+  }).join(' \u00b7 ') : ''
+  if (open) budget -= rowsOf(`${open.label}: ${options.replace(/\]\([^)]*\)/g, ']')}`) + 1
+  const left = card.rows.length - shown.length
+  if (left) budget -= 1
+  const sketch = card.sketch && card.sketch.lines.length && 1 + rowsOf(card.sketch.lines.join('\n'), 28) <= budget ? card.sketch : null
+  const plan = shown.map(sentence).join(' ')
+  const links = [...shown.map((row) => `${PICK}${row.id}`), ...(open ? shownOptions(open).map((i) => `${PICK}${open.id}~${i}`) : [])]
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={2} paddingY={1} rowGap={1}>
+      <Box flexDirection="row" columnGap={1} flexWrap="wrap">
+        <Text weight="semibold" color={host.palette.accent}>MarginCue</Text>
+        <Text dimColor>{head}</Text>
+      </Box>
+      <Markdown key="card-plan" text={plan} pressableLinks={links} onLinkPress={(link) => pickFromLink($, link.href)} />
+      {open ? (
+        <Box flexDirection="column">
+          <Text dimColor>{`${open.label.charAt(0).toUpperCase()}${open.label.slice(1)}${open.type === 'many' ? ', any of these' : ''}`}</Text>
+          <Markdown key="card-options" text={options} pressableLinks={links} onLinkPress={(link) => pickFromLink($, link.href)} />
+        </Box>
+      ) : null}
+      {left ? <Text dimColor>{`${left} more left to Claude`}</Text> : null}
+      {sketch ? (
+        <Box flexDirection="column">
+          <Text dimColor>{`Preview \u00b7 ${sketch.title}`}</Text>
+          <Code source={sketch.lines.join('\n')} />
+        </Box>
+      ) : null}
+      <Text dimColor>{hint}</Text>
+    </Box>
+  )
+}
+
+/** The card once read, or null when nothing in it is open. A model call in flight costs the hook nothing. */
+function readAtEnter($: $): Promise<NonNullable<View['card']> | null> {
+  return new Promise((resolve) => {
+    const timer = $.clock.after(READ_WAIT_MS, () => finish(null))
+    const watch = $.clock.every(250, () => {
+      const card = host.view?.card
+      if (!card || card.stage !== 'draft') return finish(null)
+      if (card.reading) return
+      const open = card.rows.length > 0 || card.mentions.some((mention) => mention.status === 'missing')
+      finish(open ? card : null)
+    })
+    const finish = (card: NonNullable<View['card']> | null) => {
+      timer.cancel()
+      watch.cancel()
+      resolve(card)
+    }
+  })
+}
+
+/** The panel's questions: names the code lacks first, then the open choices; four at most. */
+function panelQuestions(card: NonNullable<View['card']>): PanelQuestion[] {
+  const rows = [...card.rows.filter((row) => row.origin === 'repo'), ...card.rows.filter((row) => row.origin !== 'repo')]
+  const out: PanelQuestion[] = []
+  for (const row of rows) {
+    if (out.length === 4) break
+    // The panel takes four options and preselects the first: the one Claude would assume goes first, and says so.
+    // A range offers the assumed step, its ends and one between.
+    const last = row.options.length - 1
+    const assumed = row.selected[0]
+    let indexes = row.options.map((_, i) => i).slice(0, 4)
+    if (row.type === 'range' && last > 3) {
+      const at = assumed ?? 0
+      indexes = [...new Set([0, at, Math.round((at + last) / 2), last])].sort((a, b) => a - b)
+    } else if (assumed !== undefined && !indexes.includes(assumed) && indexes.length === 4) indexes[3] = assumed
+    if (row.origin !== 'repo' && assumed !== undefined && indexes.includes(assumed)) indexes = [assumed, ...indexes.filter((i) => i !== assumed)]
+    const mark = row.learned ? ' (your usual)' : ' (assumed)'
+    const labels = indexes.map((i) => `${row.options[i]}${row.origin !== 'repo' && row.selected.includes(i) ? mark : ''}`)
+    if (new Set(labels).size < 2 || new Set(labels).size !== labels.length) continue
+    const repo = row.origin === 'repo'
+    const name = repo ? row.statement.replace(/\s+is\s+\{\}\s*$/, '') : ''
+    // The app shows the question alone, not its header chip: a choice's label leads its question.
+    const label = row.label.charAt(0).toUpperCase() + row.label.slice(1)
+    const ask = row.statement.replace('{}', '…').replace(/[.:]?\s*$/, '')
+    // …unless the question already opens on it ("Placed: place the page" reads as a stutter).
+    const [said, named] = [ask, row.label].map((text) => (text.toLowerCase().match(/[a-z]+/) ?? [''])[0]!)
+    let common = 0
+    while (common < said!.length && common < named!.length && said![common] === named![common]) common++
+    const echoes = common >= 3 && common >= Math.min(said!.length, named!.length) - 1
+    const question = repo ? `${name} isn't in your code. Which do you mean?`
+      : echoes ? `${ask}?` : `${label}: ${ask.charAt(0).toLowerCase()}${ask.slice(1)}?`
+    if (out.some((entry) => entry.question === question)) continue
+    const header = (repo ? name.replace(/["“”]/g, '') : label).slice(0, 12)
+    out.push({ row: row.id, many: row.type === 'many', question, header, labels, indexes })
+  }
+  return out
+}
+
+/** One answer onto its row: the options it names, or else the person's own words. */
+function answerRow($: $, question: PanelQuestion, answer: string): void {
+  const row = host.view?.card?.rows.find((entry) => entry.id === question.row)
+  if (!row) return
+  // A label can hold a comma and a multi-select answer comes comma-joined: find the labels in it, longest first.
+  let rest = answer
+  const named = new Set<number>()
+  const order = question.labels.map((label, k) => ({ label, k })).sort((a, b) => b.label.length - a.label.length)
+  for (const { label, k } of order) {
+    if (question.many ? rest.includes(label) : rest === label) {
+      named.add(question.indexes[k]!)
+      rest = rest.replace(label, '')
+    }
+  }
+  if (!named.size || rest.replace(/[\s,]+/g, '')) {
+    run($, { type: 'cardSay', now: now(), row: row.id, text: answer })
+    return
+  }
+  if (!question.many) {
+    run($, { type: 'cardSet', now: now(), row: row.id, option: [...named][0]! })
+    return
+  }
+  for (let i = 0; i < row.options.length; i++) {
+    if (named.has(i) !== row.selected.includes(i)) run($, { type: 'cardSet', now: now(), row: row.id, option: i })
+  }
+}
+
+/**
+ * What a prompt carries once the person sends it: the Decisions they set (and the sketch they attached), with the
+ * turn noted for the switches and the follow-up.
+ */
+async function submitted($: $, typed: string, turnId?: string, addition?: string): Promise<{ text: string; amendable: boolean }> {
+  const core = ensure($)
+  const values = core.storedDecisions()
+  if (host.settings.mode !== 'off' && values.some((value) => value.scope === 'model')) {
+    const model = await $.session.model().catch(() => null)
+    if (model !== host.view?.state?.model) run($, {
+      type: 'loadState', now: now(), state: { ...host.sample, model, values },
+    }, false)
+  }
+  host.lastDraft = ''
+  host.scopes.clear()
+  const amendable = !turnId && !host.activeTurn && !host.turn
+  const effects = run($, { type: 'submit', now: now(), text: typed, amendable }, false)
+  const sent = effects.find((fx): fx is SubmitEffect => fx.type === 'submit')
+  const decided = sent?.text ?? typed
+  // What the person added under "Other" joins the prompt itself, ahead of its Decisions.
+  const at = decided.lastIndexOf('\n\nDecisions:\n')
+  const text = !addition ? decided : at < 0 ? `${decided.replace(/\s+$/, '')}\n\n${addition}` : `${decided.slice(0, at)}\n\n${addition}${decided.slice(at)}`
+  if (amendable) host.turn = { id: null, text }
+  return { text, amendable }
+}
+
+/**
+ * The agent's marked choices in an app (the desktop app, VS Code, a phone), in the app's own type and buttons:
+ * one line each, its label then its options, the one in force filled. Switching one reaches the agent at its
+ * next step, or after the turn writes the follow-up.
+ */
+function drawChoicesApp($: $, ui: Elements[RenderSurface], card: NonNullable<MargincueBand['card']>, maxRows: number) {
+  const { Box, Text, Button } = ui
+  const turn = card.stage === 'turn'
+  const count = card.rows.length
+  const shown = card.rows.slice(0, Math.max(1, maxRows - 2))
+  return (
+    <Box flexDirection="column" paddingX={1} rowGap={0}>
+      <Box flexDirection="row" columnGap={1}>
+        <Text bold color={host.palette.accent}>MarginCue</Text>
+        <Text dimColor>{`Claude made ${count} choice${count === 1 ? '' : 's'} for you. ${turn ? 'Switch one and it adapts at its next step.' : 'Switch one to write the follow-up.'}`}</Text>
+      </Box>
+      {shown.map((row: MargincueRow) => (
+        <Box key={`row-${row.id}`} flexDirection="row" flexWrap="wrap" columnGap={1} alignItems="center">
+          <Text dimColor>{row.label}</Text>
+          {row.options.map((label, i) => (
+            <Button key={`card-${row.id}-${i}`} label={label} variant={row.selected.includes(i) ? 'primary' : 'secondary'}
+              onPress={() => act($, { type: 'cardSet', row: row.id, option: i })}>
+              <Text>{label}</Text>
+            </Button>
+          ))}
+        </Box>
+      ))}
+      {count > shown.length ? <Text dimColor>{`${count - shown.length} more in the terminal card`}</Text> : null}
+    </Box>
+  )
 }
 
 function act($: $, action: Action): void | Promise<void> {
@@ -636,7 +855,6 @@ function act($: $, action: Action): void | Promise<void> {
   else if (action.type === 'cardDismiss') run($, { type: 'cardDismiss', now: t, row: action.row })
   else if (action.type === 'sketch') run($, { type: 'sketch', now: t, action: action.action })
   else if (action.type === 'receiptPick') return followUp($, action.receipt, action.item, action.option)
-  else if (action.type === 'held') host.held?.resolve(action.send)
   else if (action.type === 'pick' || action.type === 'cycle') {
     run($, { type: 'pick', now: t, cue: action.cue, option: action.option })
     if (action.type === 'cycle') run($, { type: 'focus', cue: action.cue })
@@ -1222,28 +1440,18 @@ export const register: Register = (on) => {
       return next(e)
     }
     dropClear()
+    let addition: string | undefined
     // An app (desktop, VS Code, phone) never shows MarginCue the draft while it is typed: the card comes at Enter,
     // before Claude starts, and the prompt goes when the person sends it (or as written).
     // The engine stamps the desktop app's typed prompts `composer` as well: the app, not the stamp, says the draft was unseen.
     if ((host.appHost || e.origin.kind !== 'composer') && !e.turnId && !host.activeTurn && host.view?.text !== e.text && host.settings.mode !== 'off') {
-      const send = await holdForCard($, e.text)
-      if (!send) run($, { type: 'draft', now: now(), text: '', origin: 'type', cursor: 0 }, false)
+      const asked = await askAtEnter($, e.text)
+      addition = asked.addition
+      if (asked.how === 'raw') run($, { type: 'draft', now: now(), text: '', origin: 'type', cursor: 0 }, false)
     }
-    const core = ensure($)
-    const values = core.storedDecisions()
-    if (host.settings.mode !== 'off' && values.some((value) => value.scope === 'model')) {
-      const model = await $.session.model().catch(() => null)
-      if (model !== host.view?.state?.model) run($, {
-        type: 'loadState', now: now(), state: { ...host.sample, model, values },
-      }, false)
-    }
-    host.lastDraft = ''
-    host.scopes.clear()
-    const amendable = !e.turnId && !host.activeTurn && !host.turn
-    const effects = run($, { type: 'submit', now: now(), text: e.text, amendable }, false)
-    const sent = effects.find((fx): fx is SubmitEffect => fx.type === 'submit')
-    const text = sent?.text ?? e.text
-    if (amendable) host.turn = { id: null, text }
+    const { text, amendable } = await submitted($, e.text, e.turnId, addition)
+    // An app never clears its box through MarginCue: once the prompt goes, its card goes too.
+    if (host.appHost || e.origin.kind !== 'composer') run($, { type: 'draft', now: now(), text: '', origin: 'type', cursor: 0 }, false)
     const result = await next(text === e.text ? e : { ...e, text })
     if (amendable && 'drop' in result && host.turn?.text === text) {
       host.turn = null
@@ -1289,6 +1497,19 @@ export const register: Register = (on) => {
     return next(e)
   })
 
+  // Claude's dialog while MarginCue's card is up in an app: the card above, Claude's send question under it. Any
+  // other question (Claude's own) is drawn as asked.
+  on('ui.render', { component: 'AskUserQuestion' }, async ($, e, next) => {
+    const asked = (e.props.questions[0] as { question?: unknown } | undefined)?.question
+    if (!host.gate || asked !== GATE_QUESTION || e.surface === 'terminal') return next(e)
+    const state = await read($, band)
+    const card = state?.card
+    if (!card || card.stage !== 'draft') return next(e)
+    const ui = $.ui.resolve(e)
+    const drawing = await next(e)
+    return <ui.Box flexDirection="column" rowGap={1}>{drawGateCard($, ui, card)}{drawing}</ui.Box>
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) {
       host.bandChoices = []
@@ -1296,16 +1517,19 @@ export const register: Register = (on) => {
     }
     const state = await read($, band)
     const card = state?.card
+    // An app (the desktop app, VS Code, a phone) asks the card's questions in its own panel at Enter; above its box
+    // it shows only the agent's marked choices, in its own type and buttons.
+    if (e.surface !== 'terminal') {
+      if (!state?.enabled || !card || card.stage === 'draft' || !card.rows.length || e.props.isCollapsed) return next(e)
+      run($, { type: 'cardShown', now: now(), id: card.id }, false)
+      return drawChoicesApp($, $.ui.resolve(e), card, e.props.maxRows ?? 12)
+    }
     const rows = state?.enabled && (state.hasDraft || state.amendment || card || state.reviewPending)
       ? layoutBandRows(state, e.props.bodyColumns, 'ctrl+x tab', e.props.maxRows, host.palette) : []
     const focused = card?.stage === 'turn' && !e.props.isCollapsed ? card.rows.find((row) => row.id === card.focus) : undefined
     host.bandChoices = e.surface === 'terminal' && focused ? focused.options.map((_, option) => ({ row: focused.id, option })) : []
     if (!rows.length) return next(e)
     if (card && !e.props.isCollapsed) run($, { type: 'cardShown', now: now(), id: card.id }, false)
-    if (host.held && card?.stage === 'draft') {
-      rows.push(heldRow())
-      host.bandDrawn = true
-    }
     return drawRows($, $.ui.resolve(e), rows)
   })
 

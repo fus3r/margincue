@@ -96,6 +96,8 @@ type CardRow = {
   learned?: number[]
   /** Agent rows: the selection last sent to the agent. */
   sent?: number[]
+  /** The person's own words for the row (typed under "Other"): its Decision, verbatim. */
+  said?: string
 }
 
 type Sketch = { key: string; req: number | null; buffer: string; title: string; lines: string[]; pinned: boolean; open: boolean }
@@ -361,6 +363,9 @@ export class Core {
         break
       case 'cardDismiss':
         this.onCardDismiss(event.row)
+        break
+      case 'cardSay':
+        this.onCardSay(event.row, event.text)
         break
       case 'cardShown':
         if (this.card?.id === event.id && this.card.shownAt === null && this.card.rows.length) {
@@ -1339,6 +1344,18 @@ export class Core {
     else if (card.sketch && card.kind && SKETCH_KINDS.has(card.kind)) card.sketchDue = this.now + SKETCH_DELAY_MS
   }
 
+  private onCardSay(rowId: string, text: string): void {
+    const card = this.card
+    const row = card?.rows.find((entry) => entry.id === rowId)
+    const said = text.trim()
+    if (!card || !row || card.stage !== 'draft' || !said) return
+    row.said = said
+    row.picked = []
+    this.actionAt = this.now
+    this.metric('card-pick', { card: card.id, row: row.key, origin: row.origin, stage: card.stage, option: 'said', commit: true,
+      ms: card.shownAt === null ? null : this.now - card.shownAt })
+  }
+
   private onCardDismiss(rowId: string): void {
     const card = this.card
     const row = card?.rows.find((entry) => entry.id === rowId)
@@ -1353,7 +1370,7 @@ export class Core {
   private cardDecisions(): Decision[] {
     const card = this.card!
     const out: Decision[] = card.rows.filter((row) => row.picked !== null)
-      .map((row) => ({ statement: row.statement, option: this.rowText(row, row.picked!) }))
+      .map((row) => ({ statement: row.statement, option: row.said ?? this.rowText(row, row.picked!) }))
     if (this.refsEnabled) {
       // Only what the draft wrote as code (a path, a file, an identifier, backticks): a product name or a
       // plain word that happens to match a file would send the agent to the wrong place.

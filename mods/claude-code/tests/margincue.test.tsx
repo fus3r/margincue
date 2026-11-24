@@ -2,6 +2,7 @@
 // own test kit. Every hook the test registers with `on` stands for the engine.
 import type { On, PromptChangeInput, PromptChangeResult, PromptEditInput, PromptEditResult } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import type { MountPressTarget, TestBody } from 'claude-code/testing'
 import { ASSETS } from '../hooks/assets'
 import type { ProfileBundle } from '../core/bundle'
 
@@ -52,7 +53,7 @@ const composer = ($: { prompt: unknown }) => $.prompt as Composer
 
 /** The engine beneath: a box that applies splices, a model that answers REPLY, a clock and a store. */
 function world(on: Engine, reply: string | ((prompt: string, system: string) => Promise<string>) = REPLY,
-  options: { git?: (args: string) => string | undefined; env?: Record<string, string> } = {}) {
+  options: { git?: (args: string) => string | undefined; env?: Record<string, string>; submitted?: { text: string; origin: string }[] } = {}) {
   const clock = mock.clock(on, { now: 1000 })
   const store = new Map<string, unknown>()
   const files = new Map<string, string>()
@@ -131,7 +132,10 @@ function world(on: Engine, reply: string | ((prompt: string, system: string) => 
     Object.assign(box, { text, cursor: e.start + e.inputText.length })
     return { ...box }
   })
-  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('prompt.submit', (_, e) => {
+    options.submitted?.push({ text: e.text, origin: e.origin.kind })
+    return { text: e.text }
+  })
   on('prompt.change', (_, e) => {
     Object.assign(box, { text: e.text, cursor: e.cursor })
     return { text: e.text }
@@ -233,20 +237,23 @@ test('the clear that precedes a submit does not lose the decisions', async ($, o
   expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.`)
 })
 
-test('the band lays out on every surface', async ($, on) => {
+test('the band lays out at the terminal; an app draws no draft card', async ($, on) => {
   const { clock } = world(on, replies())
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await composer($).edit(edit(DRAFT, '.'))
   await clock.settle()
-  // The desktop app's Code tab, VS Code and the phone draw the same card and take the same presses.
-  for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
-    const ui = await $.ui.mount({ ...WIDE, surface })
-    expect(await ui.find({ type: 'Text', text: /You want a CSV export/ })).toBeDefined()
-    expect(await ui.find({ key: 'card-c1-0' })).toBeDefined()
-    await ui.press({ key: 'card-c1-1' })
-    expect((await ui.find({ key: 'card-c1-1' }))?.props.label).toBe('● all rows')
-    await ui.press({ key: 'card-c1-0' })
-    await ui.unmount()
+  const ui = await $.ui.mount(WIDE)
+  expect(await ui.find({ type: 'Text', text: /You want a CSV export/ })).toBeDefined()
+  await ui.press({ key: 'card-c1-1' })
+  expect((await ui.find({ key: 'card-c1-1' }))?.props.label).toBe('● all rows')
+  await ui.press({ key: 'card-c1-0' })
+  await ui.unmount()
+  // The desktop app's Code tab, VS Code and the phone ask a draft's choices in their own panel at Enter: no card
+  // is drawn above their box for it.
+  for (const surface of ['desktop', 'vscode', 'mobile'] as const) {
+    const app = await $.ui.mount({ ...WIDE, surface })
+    expect(await app.find({ key: 'card-c1-0' })).toBeUndefined()
+    await app.unmount()
   }
 })
 
@@ -286,8 +293,24 @@ test('a session the desktop app or VS Code drives through the SDK gains a person
   expect(await marks()).toBe(true)
 })
 
-test('in the desktop app the draft is unseen while typed: the card comes at Enter, and Send takes what is set', async ($, on) => {
+/** The engine's question panel as a person answers it: `answer` gives the reply to each question, or null to close it. */
+type PanelSpec = { question: string; header: string; options: { label: string; description: string }[]; multiSelect: boolean }
+function panel(on: Engine, answer: (question: PanelSpec) => string | null) {
+  const asked: PanelSpec[] = []
+  on('tool.call', (_, e) => {
+    if (e.tool !== 'AskUserQuestion') return { deny: `no ${e.tool} here` }
+    const questions = e.questions as unknown as PanelSpec[]
+    asked.push(...questions)
+    const reply = answer(questions[0]!)
+    return reply === null ? { deny: 'The user closed the question.' } : { result: { questions, answers: { [questions[0]!.question]: reply } } }
+  })
+  return asked
+}
+const replyTo = (answers: Record<string, string>) => (question: PanelSpec) => answers[question.question] ?? null
+
+test('in the desktop app the draft is unseen while typed: its open choices come at Enter, in Claude\'s own question panel', async ($, on) => {
   const { clock } = world(on, replies())
+  const asked = panel(on, replyTo({ 'Rows: export …?': 'all rows', 'Run it …?': 'from the terminal' }))
   on('prompt.compose', () => ({ sections: [] }))
   on('session.attach', (_, e) => ({ clientId: e.clientId }))
   await $.session.start({ cwd: '/', surface: null, isInteractive: false })
@@ -295,27 +318,206 @@ test('in the desktop app the draft is unseen while typed: the card comes at Ente
   await clock.settle()
   const pending = $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'sdk' }, wait: false })
   await clock.settle()
-  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /You want a CSV export/ })).toBeDefined()
-  expect(await ui.find({ key: 'card-send' })).toBeDefined()
-  await ui.press({ key: 'card-c1-1' })
-  await ui.press({ key: 'card-send' })
-  const sent = await pending
-  expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.`)
-  await ui.unmount()
+  await clock.advance(1000)
+  // Two answered; the third question was closed, which stops the questions: what is set goes.
+  expect((await pending).text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.\n- Run it from the terminal.`)
+  expect(asked.map((question) => question.header)).toEqual(['Rows', 'Runs in', 'Batch'])
+  // The app shows the question alone: the label leads it, unless the question already opens on it.
+  expect(asked.map((question) => question.question)).toEqual(['Rows: export …?', 'Run it …?', 'Batch: write … per batch?'])
+  // What Claude would assume is said so.
+  expect(asked[0]!.options.map((option) => option.label)).toEqual(['the filtered rows (assumed)', 'all rows', 'the selected rows'])
+  // The panel preselects its first option: what Claude would assume comes first. A range offers the assumed step,
+  // its ends and one between.
+  expect(asked[2]!.options.map((option) => option.label)).toEqual(['500 rows (assumed)', '100 rows', '1900 rows', '5000 rows'])
 })
 
-test('the desktop app\'s typed prompt reaches hooks stamped composer, like the terminal\'s: it still gets the card at Enter', async ($, on) => {
-  const { clock } = world(on, replies(), { env: { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' } })
+/** Claude's dialog in the desktop app, held open until the test answers it (null closes it unanswered). */
+function heldPanel(on: Engine) {
+  const asked: PanelSpec[] = []
+  let reply: (answer: string | null) => void = () => {}
+  const answered = new Promise<string | null>((resolve) => {
+    reply = resolve
+  })
+  on('tool.call', async (_, e) => {
+    if (e.tool !== 'AskUserQuestion') return { deny: `no ${e.tool} here` }
+    const questions = e.questions as unknown as PanelSpec[]
+    asked.push(...questions)
+    const answer = await answered
+    return answer === null ? { deny: 'The user closed the question.' } : { result: { questions, answers: { [questions[0]!.question]: answer } } }
+  })
+  return { asked, answer: (answer: string | null) => reply(answer) }
+}
+const DIALOG = { plugin: 'margincue', component: 'AskUserQuestion', requestId: 'dialog', surface: 'desktop' } as const
+/** Where the card's links point; a click on one picks, it opens nothing. */
+const PICK = 'https://github.com/fus3r/margincue#pick-'
+/** A click on a part of the card's plan, then on one of its options. */
+async function pick(ui: { press: (target: MountPressTarget) => Promise<unknown> }, row: string, option: number) {
+  await ui.press({ key: 'card-plan', link: { href: `${PICK}${row}` } })
+  await ui.press({ key: 'card-options', link: { href: `${PICK}${row}~${option}` } })
+}
+
+/** A desktop session as the app starts one, with a prompt sent at Enter and its dialog open. */
+async function desktopAtEnter($: Parameters<TestBody>[0], on: Engine, card = CARD) {
+  const { clock } = world(on, replies(card), { env: { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' } })
+  const gate = heldPanel(on)
   await $.session.start({ cwd: '/', surface: null, isInteractive: false })
   await clock.settle()
   const pending = $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
   await clock.settle()
-  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
-  await ui.press({ key: 'card-c1-1' })
-  await ui.press({ key: 'card-send' })
+  await clock.advance(1000)
+  const ui = await $.ui.mount({ ...DIALOG, props: { tool: 'AskUserQuestion', questions: gate.asked } })
+  return { clock, gate, pending, ui }
+}
+
+test('in the desktop app MarginCue draws its own card above Claude\'s dialog; Send takes what was picked on it', async ($, on) => {
+  const { gate, pending, ui } = await desktopAtEnter($, on)
+  // Claude's dialog is one question under the card: send, or send as written.
+  expect(gate.asked.map((question) => [question.question, question.options.map((option) => option.label)])).toEqual([
+    ['Send your prompt with these choices?', ['Send', 'Send as written']],
+  ])
+  // The card: the plan in plain sentences, each part Claude would decide a link.
+  expect(await ui.find({ type: 'Text', text: /3 decisions · click one to change it/ })).toBeDefined()
+  const plan = async () => String((await ui.find({ key: 'card-plan' }))?.props.text)
+  expect(await plan()).toContain(`Export [the filtered rows](${PICK}c1). Run it [in the browser](${PICK}c2).`)
+  // A click on a part opens its options under the plan, what is set ticked; a pick rewrites the sentence.
+  await ui.press({ key: 'card-plan', link: { href: `${PICK}c1` } })
+  expect(String((await ui.find({ key: 'card-options' }))?.props.text)).toBe(
+    `\u2713 [the filtered rows](${PICK}c1~0) \u00b7 [all rows](${PICK}c1~1) \u00b7 [the selected rows](${PICK}c1~2)`)
+  await ui.press({ key: 'card-options', link: { href: `${PICK}c1~1` } })
+  expect(await plan()).toContain(`Export [all rows](${PICK}c1).`)
+  expect(await ui.find({ key: 'card-options' })).toBeUndefined()
+  gate.answer('Send')
   expect((await pending).text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.`)
   await ui.unmount()
+})
+
+test('the card keeps within the 48 rows the app allows there: the preview joins it once drawn, whole, and only if it fits', async ($, on) => {
+  const { clock, gate, pending, ui } = await desktopAtEnter($, on)
+  await clock.advance(5000)
+  expect(await ui.find({ key: 'card-plan' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Preview · Export dialog/ })).toBeDefined()
+  gate.answer(null)
+  await pending
+  await ui.unmount()
+})
+
+test('a preview the size of a page sketch fits in the card, and the app takes the card', async ($, on) => {
+  const page = ['title | Reports page', ...Array.from({ length: 12 }, (_, i) => `│ ${String(i).padEnd(2)} ${'─'.repeat(38)} │`)].join('\n')
+  const { clock } = world(on, replies(CARD, page), { env: { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' } })
+  const gate = heldPanel(on)
+  await $.session.start({ cwd: '/', surface: null, isInteractive: false })
+  await clock.settle()
+  const pending = $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
+  await clock.settle()
+  await clock.advance(6000)
+  const ui = await $.ui.mount({ ...DIALOG, props: { tool: 'AskUserQuestion', questions: gate.asked } })
+  expect(await ui.find({ type: 'Text', text: /Preview · Reports page/ })).toBeDefined()
+  await ui.drawn()
+  gate.answer(null)
+  await pending
+  await ui.unmount()
+})
+
+test('a card too tall for the app leaves the preview out rather than lose the card', async ($, on) => {
+  const tall = ['title | Weekly report', ...Array.from({ length: 30 }, (_, i) => `│ row ${i} ${'·'.repeat(50)} │`)].join('\n')
+  const { clock } = world(on, replies(CARD, tall), { env: { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' } })
+  const gate = heldPanel(on)
+  await $.session.start({ cwd: '/', surface: null, isInteractive: false })
+  await clock.settle()
+  const pending = $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
+  await clock.settle()
+  await clock.advance(6000)
+  const ui = await $.ui.mount({ ...DIALOG, props: { tool: 'AskUserQuestion', questions: gate.asked } })
+  expect(await ui.find({ key: 'card-plan' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Preview ·/ })).toBeUndefined()
+  gate.answer(null)
+  await pending
+  await ui.unmount()
+})
+
+test('what the person types under "Other" in Claude\'s dialog is added to the prompt, ahead of its Decisions', async ($, on) => {
+  const { gate, pending, ui } = await desktopAtEnter($, on)
+  await pick(ui, 'c1', 1)
+  gate.answer('Only owners of paid teams get the CSV.')
+  expect((await pending).text).toBe(`${DRAFT}.\n\nOnly owners of paid teams get the CSV.\n\nDecisions:\n- Export all rows.`)
+  await ui.unmount()
+})
+
+test('Send as written drops what was picked on the card; Skip or closing the dialog sends what is set', async ($, on) => {
+  const raw = await desktopAtEnter($, on)
+  await pick(raw.ui, 'c1', 1)
+  raw.gate.answer('Send as written')
+  expect((await raw.pending).text).toBe(`${DRAFT}.`)
+  await raw.ui.unmount()
+})
+
+test('Skip in Claude\'s dialog sends the prompt with what was set on the card', async ($, on) => {
+  const { gate, pending, ui } = await desktopAtEnter($, on)
+  await pick(ui, 'c1', 1)
+  gate.answer('[No preference]')
+  expect((await pending).text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.`)
+  await ui.unmount()
+})
+
+test('Claude\'s own questions are drawn as Claude asked them: the card only joins MarginCue\'s', async ($, on) => {
+  const { gate, pending, ui } = await desktopAtEnter($, on)
+  const other = await $.ui.mount({ ...DIALOG, requestId: 'claude', props: { tool: 'AskUserQuestion', questions: [
+    { question: 'Which database should I use?', header: 'Database', multiSelect: false, options: [{ label: 'Postgres', description: '' }, { label: 'SQLite', description: '' }] },
+  ] } })
+  expect(await other.find({ key: 'card-plan' })).toBeUndefined()
+  expect(await ui.find({ key: 'card-plan' })).toBeDefined()
+  gate.answer(null)
+  expect((await pending).text).toBe(`${DRAFT}.`)
+  await other.unmount()
+  await ui.unmount()
+})
+
+/** A session an app drives through the SDK without naming itself: its open choices come one question at a time. */
+async function attachedApp($: Parameters<TestBody>[0], on: Engine, card = CARD) {
+  const { clock } = world(on, replies(card))
+  on('session.attach', (_, e) => ({ clientId: e.clientId }))
+  await $.session.start({ cwd: '/', surface: null, isInteractive: false })
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  await clock.settle()
+  return clock
+}
+
+test('one question at a time: a pick-any answer comes comma-joined, and labels with commas in them are still read right', async ($, on) => {
+  const card = [
+    'read | You want a weekly activity report for team owners.',
+    'kind | build',
+    'row | covers | covers | many | Include {} in the report | sign-ins, invitations and changes | billing events | role changes',
+  ].join('\n')
+  const asked = panel(on, (question) => question.options.map((option) => option.label).filter((label) => !label.startsWith('billing')).join(', '))
+  const clock = await attachedApp($, on, card)
+  const pending = $.prompt.submit({ text: 'Build a weekly activity report for team owners.', origin: { kind: 'sdk' }, wait: false })
+  await clock.settle()
+  await clock.advance(1000)
+  expect(asked[0]!.multiSelect).toBe(true)
+  const sent = (await pending).text
+  expect(sent).toContain('sign-ins, invitations and changes')
+  expect(sent).toContain('role changes')
+  expect(sent).not.toContain('billing events')
+  expect(sent).not.toContain('none of these')
+})
+
+test('one question at a time: what the person types under "Other" goes as that choice\'s Decision, in their words', async ($, on) => {
+  panel(on, replyTo({ 'Rows: export …?': 'only the rows changed since the last export, newest first' }))
+  const clock = await attachedApp($, on)
+  const pending = $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'sdk' }, wait: false })
+  await clock.settle()
+  await clock.advance(1000)
+  expect((await pending).text).toBe(`${DRAFT}.\n\nDecisions:\n- Export only the rows changed since the last export, newest first.`)
+})
+
+test('one question at a time: Skip leaves a question to Claude, and the next question still comes', async ($, on) => {
+  const asked = panel(on, replyTo({ 'Rows: export …?': '[No preference]', 'Run it …?': 'from the terminal' }))
+  const clock = await attachedApp($, on)
+  const pending = $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'sdk' }, wait: false })
+  await clock.settle()
+  await clock.advance(1000)
+  expect((await pending).text).toBe(`${DRAFT}.\n\nDecisions:\n- Run it from the terminal.`)
+  expect(asked.length).toBe(3)
 })
 
 test('a script\'s prompt through the SDK, with no app attached, goes through untouched and unheld', async ($, on) => {
@@ -327,36 +529,13 @@ test('a script\'s prompt through the SDK, with no app attached, goes through unt
 })
 
 test('the desktop app says so in the engine entrypoint: its prompts get the card at Enter without any attach', async ($, on) => {
-  const { clock } = world(on, replies(), { env: { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' } })
   on('prompt.compose', () => ({ sections: [] }))
-  await $.session.start({ cwd: '/', surface: null, isInteractive: false })
-  await clock.settle()
+  const { gate, pending, ui } = await desktopAtEnter($, on)
   expect((await $.prompt.compose(COMPOSE)).sections.some((section) => section.id === 'margincue:blanks')).toBe(true)
-  const pending = $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'sdk' }, wait: false })
-  await clock.settle()
-  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
-  await ui.press({ key: 'card-c1-1' })
-  await ui.press({ key: 'card-send' })
-  expect((await pending).text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.`)
-  await ui.unmount()
-})
-
-test('where the app draws no band and no dialog answers, a held prompt still goes, as written', async ($, on) => {
-  const { clock } = world(on, replies(), { env: { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' } })
-  on('ui.log', () => ({ value: undefined }))
-  const asked: string[] = []
-  on('tool.call', (_, e) => {
-    asked.push(e.tool)
-    return { deny: 'no dialog in this app' }
-  })
-  await $.session.start({ cwd: '/', surface: null, isInteractive: false })
-  await clock.settle()
-  const pending = $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'sdk' }, wait: false })
-  await clock.settle()
-  await clock.advance(3000)
+  expect(gate.asked.length).toBe(1)
+  gate.answer('Send')
   expect((await pending).text).toBe(`${DRAFT}.`)
-  // The band was never drawn, so the card was asked as the app's own dialog.
-  expect(asked).toContain('AskUserQuestion')
+  await ui.unmount()
 })
 
 test('language defaults to English and auto persists across sessions', async ($, on) => {

@@ -89,6 +89,8 @@ export type Event =
   | { type: 'cardCycle'; now: number; row?: string; dir?: 1 | -1 }
   /** A number key or a click: select option `option` (a pick-any row toggles it). */
   | { type: 'cardSet'; now: number; row: string; option: number }
+  /** The person's own words for a row, typed under "Other" in the app's question panel: they go as its Decision. */
+  | { type: 'cardSay'; now: number; row: string; text: string }
   | { type: 'cardDismiss'; now: number; row: string }
   | { type: 'cardShown'; now: number; id: number }
   | { type: 'sketch'; now: number; action: 'toggle' | 'pin' | 'refresh' }

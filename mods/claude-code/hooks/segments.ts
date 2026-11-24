@@ -46,7 +46,6 @@ export type Action =
   | { type: 'sketch'; action: 'toggle' | 'pin' | 'refresh' }
   | { type: 'receiptPick'; receipt: number; item: number; option: number }
   /** The card shown at Enter (an app that never shows MarginCue the draft): send with what is set, or as written. */
-  | { type: 'held'; send: boolean }
 
 /**
  * Engine keybinding actions whose chords press a band Button from the prompt
