@@ -249,7 +249,9 @@ function summary(band: MargincueBand, columns: number, controls: boolean, compac
   const tail = compact || marks.length === 0 ? count : count ? ` · ${count}` : ''
   const content = markText ? `✓ ${truncate(markText, Math.max(1, room - 2 - cells(tail)))}${tail}`
     : count || (controls ? status : '')
-  const segments: Segment[] = content ? [{ kind: 'text', text: truncate(content, room), style: { dim: true } }] : []
+  // Key names alone (before the card comes) say nothing: the row waits for something to show.
+  if (!content) return []
+  const segments: Segment[] = [{ kind: 'text', text: truncate(content, room), style: { dim: true } }]
   return spaced([...segments, ...buttons])
 }
 

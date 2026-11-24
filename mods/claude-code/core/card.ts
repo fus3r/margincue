@@ -119,8 +119,9 @@ function parseRow(fields: string[]): ParsedRow | null {
   const options: string[] = []
   for (const value of values) {
     // The default mark comes after the option as asked, or before it as models sometimes write it.
-    const star = /^\s*\*|\*\s*$/.test(value)
-    const option = clean(value.replace(/^\s*\*\s*|\s*\*\s*$/g, ''))
+    // Models also star items inside one option ("sign-ins*, invites*, changes"): every such mark goes.
+    const star = /(?:^|[\s,;(])\*|\*(?:$|[\s,;)])/.test(value)
+    const option = clean(value.replace(/\s*\*(?=$|[\s,;)])/g, '').replace(/(^|[\s,;(])\*\s*/g, '$1'))
     // Cutting is the layout's job: text that travels with the prompt is whole or left out,
     // and an option the model cut short itself ("running live in Claude Code and…") is left out too.
     if (!option || option.length > MAX_OPTION || /(?:…|\.\.\.)$/.test(option)) continue
@@ -208,7 +209,11 @@ export function cycleSelection(row: Pick<ParsedRow, 'type' | 'options' | 'defaul
   }
   const all = row.options.map((_, i) => i)
   const defaults = [...row.defaults].sort((a, b) => a - b)
-  const states = sameSelection(defaults, all) ? [all, [0]] : [defaults, all, [defaults[0] ?? 0]]
+  // Each press adds the next extra, then back to the defaults: one press never ticks two at once.
+  const extras = all.filter((i) => !defaults.includes(i))
+  const states = extras.length
+    ? [defaults, ...extras.map((_, k) => [...defaults, ...extras.slice(0, k + 1)].sort((a, b) => a - b))]
+    : [all, [0]]
   const at = states.findIndex((state) => sameSelection(selected, state))
   return states[((at === -1 ? 0 : at + dir) % states.length + states.length) % states.length]!
 }

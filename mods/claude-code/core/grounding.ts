@@ -200,6 +200,12 @@ function where(index: GroundIndex, entries: number[]): { match: string; kind: En
   return { match: best.name, kind: best.kind, files }
 }
 
+/** Products and companies a prompt names in passing: "Claude Desktop", "GitHub Actions" are not the code's names. */
+const BRANDS = new Set(['claude', 'codex', 'chatgpt', 'openai', 'anthropic', 'github', 'gitlab', 'vercel', 'netlify', 'google',
+  'apple', 'microsoft', 'windows', 'macos', 'linux', 'ubuntu', 'chrome', 'firefox', 'safari', 'slack', 'notion', 'figma',
+  'stripe', 'aws', 'azure', 'docker', 'kubernetes', 'react', 'next', 'vue', 'svelte', 'node', 'python', 'vscode', 'cursor',
+  'twitter', 'discord', 'telegram', 'whatsapp', 'youtube', 'tiktok', 'instagram', 'linkedin', 'supabase', 'firebase', 'postgres'])
+
 /** Head words that name a kind of thing, not a thing: "Codex Desktop App" says nothing about which app. */
 const GENERIC_HEAD = new Set(['app', 'page', 'screen', 'view', 'panel', 'button', 'file', 'tool', 'list', 'table', 'form',
   'modal', 'dialog', 'window', 'tab', 'menu', 'card', 'row', 'field', 'section', 'component', 'module', 'service',
@@ -310,6 +316,7 @@ export function ground(text: string, index: GroundIndex | null): Mention[] {
     const multi = c.phrase.trim().split(/\s+/).length >= 2
     if (c.strength === 'prose') continue
     if (introduced(text.slice(Math.max(0, c.start - 90), c.start))) continue
+    if (c.strength === 'proper' && BRANDS.has(nameTokens(c.phrase)[0] ?? '')) continue
     const near = c.strength === 'word' ? [] : nearest(index, c.phrase, c.strength === 'proper' || c.strength === 'quoted')
     const names = c.strength === 'code' || c.strength === 'ident' ||
       (c.strength === 'quoted' && /\p{Lu}/u.test(c.phrase)) ||

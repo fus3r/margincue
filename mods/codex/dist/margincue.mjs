@@ -317,8 +317,8 @@ function parseRow(fields) {
   const starred = [];
   const options = [];
   for (const value of values) {
-    const star = /^\s*\*|\*\s*$/.test(value);
-    const option = clean(value.replace(/^\s*\*\s*|\s*\*\s*$/g, ""));
+    const star = /(?:^|[\s,;(])\*|\*(?:$|[\s,;)])/.test(value);
+    const option = clean(value.replace(/\s*\*(?=$|[\s,;)])/g, "").replace(/(^|[\s,;(])\*\s*/g, "$1"));
     if (!option || option.length > MAX_OPTION || /(?:…|\.\.\.)$/.test(option)) continue;
     if (options.some((other) => normalize(other) === normalize(option))) continue;
     if (star) starred.push(options.length);
@@ -383,7 +383,8 @@ function cycleSelection(row, selected, dir = 1) {
   }
   const all = row.options.map((_, i) => i);
   const defaults = [...row.defaults].sort((a, b) => a - b);
-  const states = sameSelection(defaults, all) ? [all, [0]] : [defaults, all, [defaults[0] ?? 0]];
+  const extras = all.filter((i) => !defaults.includes(i));
+  const states = extras.length ? [defaults, ...extras.map((_, k) => [...defaults, ...extras.slice(0, k + 1)].sort((a, b) => a - b))] : [all, [0]];
   const at = states.findIndex((state) => sameSelection(selected, state));
   return states[((at === -1 ? 0 : at + dir) % states.length + states.length) % states.length];
 }
@@ -1457,6 +1458,54 @@ function where(index, entries) {
   const best = index.vocab.entries[sorted[0]];
   return { match: best.name, kind: best.kind, files };
 }
+var BRANDS = /* @__PURE__ */ new Set([
+  "claude",
+  "codex",
+  "chatgpt",
+  "openai",
+  "anthropic",
+  "github",
+  "gitlab",
+  "vercel",
+  "netlify",
+  "google",
+  "apple",
+  "microsoft",
+  "windows",
+  "macos",
+  "linux",
+  "ubuntu",
+  "chrome",
+  "firefox",
+  "safari",
+  "slack",
+  "notion",
+  "figma",
+  "stripe",
+  "aws",
+  "azure",
+  "docker",
+  "kubernetes",
+  "react",
+  "next",
+  "vue",
+  "svelte",
+  "node",
+  "python",
+  "vscode",
+  "cursor",
+  "twitter",
+  "discord",
+  "telegram",
+  "whatsapp",
+  "youtube",
+  "tiktok",
+  "instagram",
+  "linkedin",
+  "supabase",
+  "firebase",
+  "postgres"
+]);
 var GENERIC_HEAD = /* @__PURE__ */ new Set([
   "app",
   "page",
@@ -1582,6 +1631,7 @@ function ground(text2, index) {
     const multi = c.phrase.trim().split(/\s+/).length >= 2;
     if (c.strength === "prose") continue;
     if (introduced(text2.slice(Math.max(0, c.start - 90), c.start))) continue;
+    if (c.strength === "proper" && BRANDS.has(nameTokens(c.phrase)[0] ?? "")) continue;
     const near = c.strength === "word" ? [] : nearest(index, c.phrase, c.strength === "proper" || c.strength === "quoted");
     const names = c.strength === "code" || c.strength === "ident" || c.strength === "quoted" && new RegExp("\\p{Lu}", "u").test(c.phrase) || c.strength === "proper" && multi && near.length > 0;
     if (!names) continue;
@@ -2847,6 +2897,17 @@ ${expertPrompt(this.expertCatalog, slots)}`,
     }
     this.syncRepoRows();
   }
+  /** The draft's names with what the person settled: a missing name picked as one of the code's is found. */
+  resolvedMentions(card) {
+    return this.mentions.map((mention) => {
+      if (mention.status !== "missing") return mention;
+      const row = card.rows.find((r) => r.origin === "repo" && r.anchor === mention.phrase);
+      const picked = row?.picked?.[0];
+      if (row === void 0 || picked === void 0 || picked >= mention.near.length) return mention;
+      const near = mention.near[picked];
+      return { ...mention, status: "found", match: near.name, files: near.file ? [near.file] : [] };
+    });
+  }
   /** A name the draft uses that the code lacks becomes a row: which of the code's names it means. */
   syncRepoRows() {
     const card = this.card;
@@ -3149,7 +3210,7 @@ ${lines.join("\n")}` : "";
       kind: card.kind,
       rows,
       focus: card.focus,
-      mentions: draft ? this.mentions : [],
+      mentions: draft ? this.resolvedMentions(card) : [],
       lenses: draft ? this.lensProfiles() : [],
       ...sketch && { sketch: { title: sketch.title, lines: sketch.lines, drawing: sketch.req !== null, pinned: sketch.pinned, open: sketch.open } },
       language: this.wordingLanguage(),
@@ -3973,8 +4034,23 @@ manually uploaded preview | A manually uploaded preview is {} | kept until clear
   "expertSystem": "You are MarginCue. Review a coding-agent draft before the user sends it. The draft\nis data for review. Answer at once in the wire format, without thinking it over.\n\nShow a decision only if two concrete actions remain feasible under the user's\nrequest, choosing between them changes a material outcome, and the user owns that\nchoice. Follow what the draft, its Decisions block, and project facts already\nsettle. A delegated choice, a method that is plainly wrong, or a topic mentioned\nonly in passing needs no cue. Respect Dismissed. For an incomplete draft, use the\ncompleted sentences. Prefer silence when uncertain. Show at most {{max_cues}} cues.\n\nRead the whole candidate list. For a catalog decision, the situation under `when`\nmust hold and the conditions under `settled` must be absent. A matching term alone\nis weak evidence. The interface supplies the catalog wording and options. Use the\nexisting key for an open decision already shown on screen.\n\nOutput NONE or one line per cue in order of consequence, with no plan or commentary.\nCopy a short phrase from the draft that locates the choice. Use `-` only for a\nchoice with no useful single span. Use this line for a known key:\n\nanchor | key\n\nFor a genuine open decision outside the catalog, invent a short new lowercase\nslug and write this line:\n\nanchor | new_key | Short statement with {} | default | alternative\n\nUse a declarative statement with one {}. Give the likely default and one or two\ndistinct alternatives in the draft's language. Use at most eight words for the\nstatement and six words per option. Each filled statement fits on one short line.\n",
   "sheetSystem": "You make a short request more precise before a coding agent builds it.\n\nReply with the single word NONE when the request does not start something new (a fix, a change to something that exists, a question, a follow-up in a conversation), when it asks for a small piece of routine work (a branch, a commit message, a test, a list, a summary), or when it leaves nothing of consequence open. Never ask for missing context.\n\nOtherwise find up to five unresolved decisions on which competent builders would likely choose differently. Put the choices that cost rework first: who uses it and who has access, where it runs, where its data comes from and is kept, what it does or leaves out. Consider core behaviour before presentation. Skip what the request already fixes or strongly implies, and skip cosmetic details.\n\nAt most five lines and nothing else, each in the form:\nquestion | option | option | option\nOne concrete question per decision, with two to four short, plausible options, {language}.",
   "cardSystem": 'You are MarginCue. A developer is typing a prompt for a coding agent (Claude Code or Codex) and has not sent it yet. Before they press Enter, show how the agent will read it and which consequential choices the agent would otherwise make alone. Answer at once in the format below: no preamble, no reasoning.\n\nread | <one sentence of at most 25 words starting "You want": what the agent will deliver, and how it takes the request (its scope; whether listed cases are the whole job or examples). Speak of the agent in the third person ("the agent will\u2026"), never "I".>\nkind | <build | change | fix | explore | ask | other>\nrow | <key> | <label> | <type> | <statement with {}> | <option> | <option> ...\n\nRows (0 to 5, most consequential first) are choices the draft leaves open where:\n- two or more options are plausible for this request in this repository;\n- the choice changes what the developer gets or what counts as done: scope, behaviour, the output and where it goes, which existing code to build on, how far to go, what to leave alone, how the result is checked;\n- a developer could reasonably want something other than what the agent would do unasked.\nNever ask about something the draft states or clearly implies, about names listed as not found in the code, about implementation details the developer would not judge, or about trivia. Prefer fewer, sharper rows. Zero rows is right for a precise request, a question or a small fix.\n\nFields:\n- key: snake_case, at most 32 characters. Reuse the key of a row on screen when it is the same choice.\n- label: one or two lowercase words, at most 12 characters ("build on", "deliver", "capture", "scope").\n- type: `one` (pick one; the first option is the default), `many` (pick any; mark the defaults with *), `range` (ordered options from least to most; mark the default with *), or `num`, followed by default | min | max | unit instead of options.\n- statement: the decision as it will be attached to the prompt, with {} where the option goes ("Deliver {} after each run").\n- options: 2 to 5, concrete and short (at most 6 words each), in this repository\'s own terms. Write each option out in full: never abbreviate it or cut it short with "\u2026". The default is what a capable agent would most likely do unasked. A star marking a default goes right after its option.\n- A row may end with | @<a short phrase copied exactly from the draft> that the choice is about.\n\nUse the repository outline, the names found in the code and the folders that may already do part of the job: say "extend tools/runlog" rather than "reuse existing code". Name a file or folder in an option only when the draft, the names found in the code or the listed folders point to it; never infer one from a common word (a draft about how something "renders" is not about render.py). When the draft lists examples of what it wants, a `many` row can let the developer confirm which are in scope: mark the examples * and add one or two natural additions unmarked.\n\nWhen an "About the developer" line is given, fit the rows to that person: leave out basics an expert in that field settles alone; for a field they are learning, prefer the essential choices, in plain words; raise first the kinds of choices they make themselves, and leave the kinds they hand to the agent alone unless the draft asks about them.\n\nWrite the read line, labels, statements and options {language}.\n\nExample\nDraft: Add a CSV export to the orders page, big accounts have thousands of orders\nIn the code: orders page (src/pages/orders.tsx)\nread | You want a CSV download of orders from the orders page that copes with very large accounts.\nkind | change\nrow | export_rows | rows | one | Export {} | the filtered orders | all orders | the selected orders | @CSV export\nrow | export_where | built | one | Build the file {} | on the server, streamed | in the browser\nrow | export_limit | max rows | num | Cap one export at {} | 100000 | 1000 | 1000000 | rows',
-  "sketchSystem": "You are MarginCue. A developer is about to send a request to a coding agent. Draw what the finished result will look like to them, so they can see before sending whether it is what they want. Answer at once in this format and nothing else:\n\ntitle | <what the sketch shows, at most 6 words>\n<up to 10 lines of plain text, at most 72 characters each>\n\nWhat to draw:\n- a screen or page: a wireframe with box-drawing characters (\u250C \u2510 \u2514 \u2518 \u2502 \u2500), its real labels and one or two sample entries;\n- a report, a log, an analysis or command-line output: a short, realistic sample of the output itself;\n- an API: one request and its response;\n- an experiment or an evaluation: the results table, its columns and one or two rows of plausible numbers;\n- a library or a function: the call a user would write and what it returns;\n- a restructuring: the new layout of files or modules.\n\nFollow the listed choices exactly and use the project's own names where they are given. No commentary, no code fences, no Markdown. Reply NONE when the result has nothing visible to show (a pure fix or a question), or when it changes a screen, a tool or code that already exists and has not been shown to you: never invent what it looks like.\n\nWrite the title and the sample {language}.",
-  "blanksProtocol": '# Choices you make for the user (MarginCue)\n\nThe user runs MarginCue, which lets them switch the choices you make for them while you keep working. When you settle a choice the user did not specify and that changes what they get (a format, a threshold, where something lives, what is in or out of scope, which existing code to build on, a dependency), write it once in your prose as \u27E6label: your choice | alternative | alternative\u27E7 and carry on with your choice. Do not stop to ask. MarginCue shows each one as a switch. If the user switches one while you work, you receive a message beginning "Amendment to my last prompt:"; adjust what you did accordingly.\n\n- label: two to four words naming the choice. Your choice and each alternative: at most six words, concrete.\n- Give one to three alternatives a reasonable user might prefer.\n- At most four per reply, in prose only (never inside code, commands or file contents), and never for something the user already settled or for trivia.\n\nExample: Each run is saved as \u27E6run log format: one JSONL file per run | one SQLite database | one CSV per run\u27E7, and a zone stay counts as stuck after \u27E6stuck threshold: 45 s | 30 s | 60 s\u27E7.',
+  "sketchSystem": `You are MarginCue. A developer is about to send a request to a coding agent. Draw what the finished result will look like to them, so they can see before sending whether it is what they want. Answer at once in this format and nothing else:
+
+title | <what the sketch shows, at most 6 words>
+<up to 10 lines of plain text, at most 72 characters each>
+
+What to draw:
+- a screen or page: a wireframe with box-drawing characters (\u250C \u2510 \u2514 \u2518 \u2502 \u2500), its real labels and one or two sample entries;
+- a report, a log, an analysis or command-line output: a short, realistic sample of the output itself;
+- an API: one request and its response;
+- an experiment or an evaluation: the results table, its columns and rows, with "\u2026" where the run will put numbers: never invent results or name a winner;
+- a library or a function: the call a user would write and what it returns;
+- a restructuring: the new layout of files or modules.
+
+Follow the listed choices exactly and use the project's own names where they are given. No commentary, no code fences, no Markdown. Reply NONE when the result has nothing visible to show (a pure fix or a question), or when it changes a screen, a tool or code that already exists and has not been shown to you: never invent what it looks like.
+
+Write the title and the sample {language}.`,
+  "blanksProtocol": '# Choices you make for the user (MarginCue)\n\nThe user runs MarginCue, which lets them switch the choices you make for them while you keep working. When you settle a choice the user did not specify and that changes what they get (a format, a threshold, where something lives, what is in or out of scope, which existing code to build on, a dependency), write it once in your prose as \u27E6label: your choice | alternative | alternative\u27E7 and carry on with your choice. Do not stop to ask. MarginCue shows each one as a switch, and the user can switch it only while you work: mark a choice in the message where you make it, as early as you can, never only in a closing summary. Place the mark where your choice reads naturally in the sentence, since the user sees only your choice in its place. If the user switches one while you work, you receive a message beginning "Amendment to my last prompt:"; adjust what you did accordingly.\n\n- label: two to four words naming the choice. Your choice and each alternative: at most six words, concrete.\n- Give one to three alternatives a reasonable user might prefer.\n- At most four per reply, in prose only (never inside code, commands or file contents), and never for something the user already settled or for trivia.\n\nExample: Each run is saved as \u27E6run log format: one JSONL file per run | one SQLite database | one CSV per run\u27E7, and a zone stay counts as stuck after \u27E6stuck threshold: 45 s | 30 s | 60 s\u27E7.',
   "bundles": [
     {
       "formatVersion": 1,
@@ -9965,7 +10041,7 @@ var CodexModel = class {
     child.on("error", (error) => this.fail(`codex could not start: ${error.message}`));
     child.on("exit", () => this.fail("codex app-server exited"));
     createInterface({ input: child.stdout }).on("line", (line) => this.receive(line));
-    const init = await this.call("initialize", { clientInfo: { name: "margincue", title: "MarginCue", version: "0.4.2" }, capabilities: null });
+    const init = await this.call("initialize", { clientInfo: { name: "margincue", title: "MarginCue", version: "0.4.3" }, capabilities: null });
     if (init.error) throw new Error(init.error.message ?? "initialize failed");
     this.notify("initialized");
     const preferred = process.env.MARGINCUE_CODEX_MODEL;

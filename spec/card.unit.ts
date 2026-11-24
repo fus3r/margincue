@@ -71,8 +71,11 @@ test('values, cycling and toggling follow the row type', () => {
   assert.equal(card.rowValue(many, [1, 0]), 'a and b')
   assert.equal(card.rowValue(many, []), 'none of these')
   assert.deepEqual(card.cycleSelection(many, [0, 1]), [0, 1, 2])
-  assert.deepEqual(card.cycleSelection(many, [0, 1, 2]), [0])
+  assert.deepEqual(card.cycleSelection(many, [0, 1, 2]), [0, 1])
   assert.deepEqual(card.cycleSelection(many, [0]), [0, 1])
+  // Each press adds one more extra: never two at once.
+  const wide = { type: 'many' as const, options: ['a', 'b', 'c', 'd'], defaults: [0] }
+  assert.deepEqual([[0], [0, 1], [0, 1, 2], [0, 1, 2, 3]].map((s) => card.cycleSelection(wide, s)), [[0, 1], [0, 1, 2], [0, 1, 2, 3], [0]])
   const one = { type: 'one' as const, options: ['x', 'y', 'z'], defaults: [0] }
   assert.deepEqual(card.cycleSelection(one, [2]), [0])
   assert.deepEqual(card.cycleSelection(one, [0], -1), [2])
@@ -415,4 +418,31 @@ test('a streamed reading shows its line first and each row as it completes; the 
 test('picks that are lists themselves stay apart in a decision', () => {
   assert.equal(card.joinList(['sign-ins', 'invitations', 'role changes']), 'sign-ins, invitations and role changes')
   assert.equal(card.joinList(['name, email, message', 'company and role', 'phone number']), 'name, email, message; company and role; phone number')
+})
+
+test('stars inside an option mark it a default and never reach the text', () => {
+  const parsed = card.parseCard('read | You want a report.\nkind | build\nrow | covers | covers | many | Cover {} | sign-ins*, invites*, changes | + role changes | failed sign-ins')
+  assert.deepEqual(parsed.rows[0]?.options, ['sign-ins, invites, changes', '+ role changes', 'failed sign-ins'])
+  assert.deepEqual(parsed.rows[0]?.defaults, [0])
+})
+
+test('a product named in a prompt (Claude Desktop, GitHub Actions) never asks which code name it is', () => {
+  const repo = grounding.indexVocabulary(grounding.buildVocabulary({
+    files: ['hooks/surfaces.ts'], declarations: 'hooks/surfaces.ts:1:export const desktopSurface\nhooks/surfaces.ts:2:export function actionsDesktop\n', names: '',
+  }))
+  const mentions = grounding.ground('Make it work in the Claude Desktop app and with GitHub Actions.', repo)
+  assert.deepEqual(mentions.filter((m) => m.status === 'missing').map((m) => m.phrase), [])
+})
+
+test('a missing name the person matched to a code name shows as found', () => {
+  const core = createCore(ASSETS)
+  core.handle(config())
+  core.handle({ type: 'vocabulary', vocab: grounding.buildVocabulary({
+    files: ['lib/db/schema.ts'], declarations: 'lib/db/schema.ts:9:export type ActivityLog\n', names: '' }) })
+  const text = 'Build a weekly report for team owners from the Audit Log page.'
+  const first = lastView(core.handle({ type: 'draft', now: 100, text, origin: 'paste' }))!
+  const row = first.card!.rows.find((r) => r.origin === 'repo')!
+  assert.equal(first.card!.mentions.find((m) => m.phrase === 'Audit Log')?.status, 'missing')
+  const picked = lastView(core.handle({ type: 'cardSet', now: 200, row: row.id, option: 0 }))!
+  assert.deepEqual(picked.card!.mentions.filter((m) => m.phrase === 'Audit Log').map((m) => [m.status, m.match]), [['found', 'ActivityLog']])
 })

@@ -1063,6 +1063,18 @@ export class Core {
     this.syncRepoRows()
   }
 
+  /** The draft's names with what the person settled: a missing name picked as one of the code's is found. */
+  private resolvedMentions(card: Card): Mention[] {
+    return this.mentions.map((mention) => {
+      if (mention.status !== 'missing') return mention
+      const row = card.rows.find((r) => r.origin === 'repo' && r.anchor === mention.phrase)
+      const picked = row?.picked?.[0]
+      if (row === undefined || picked === undefined || picked >= mention.near.length) return mention
+      const near = mention.near[picked]!
+      return { ...mention, status: 'found', match: near.name, files: near.file ? [near.file] : [] }
+    })
+  }
+
   /** A name the draft uses that the code lacks becomes a row: which of the code's names it means. */
   private syncRepoRows(): void {
     const card = this.card!
@@ -1361,7 +1373,7 @@ export class Core {
     const sketch = card.sketch && (card.sketch.lines.length || card.sketch.req !== null) ? card.sketch : null
     return {
       id: card.id, stage: card.stage, reading, error: card.error, read: card.read, kind: card.kind, rows,
-      focus: card.focus, mentions: draft ? this.mentions : [], lenses: draft ? this.lensProfiles() : [],
+      focus: card.focus, mentions: draft ? this.resolvedMentions(card) : [], lenses: draft ? this.lensProfiles() : [],
       ...(sketch && { sketch: { title: sketch.title, lines: sketch.lines, drawing: sketch.req !== null, pinned: sketch.pinned, open: sketch.open } }),
       language: this.wordingLanguage(), collapsed: this.mode === 'quiet',
     }

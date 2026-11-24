@@ -11,7 +11,7 @@ import type { Elements, EngineInterface, PromptDecoration, Register, RenderSurfa
 import { createCore, DEPTHS, isHostCommand, MODES, SCOPES } from '../core/index'
 import type { Assets, Core, Depth, Effect, Event, LanguageSetting, Mode, Origin, Scope, StateLoad, Timing, View } from '../core/index'
 import type { MargincueBand, MargincueExpert, MargincueReceipt } from '../types'
-import { BLANK_OPEN, parseBlanks, renderBlanks } from '../core/card'
+import { BLANK_CLOSE, BLANK_OPEN, parseBlanks, renderBlanks } from '../core/card'
 import type { ParsedBlank } from '../core/card'
 import { nameKey } from '../core/grounding'
 import { ASSETS } from './assets'
@@ -61,6 +61,16 @@ const expert = atom({ plugin: 'margincue', key: 'expert' } as const, null)
 
 // The module's own state. A hot reload starts it over; session.start then
 // rebuilds the core from the stored settings and the box as it stands.
+/** How long a prompt sent from an app waits on its card before it goes as it stands. */
+const HOLD_MS = 90000
+
+/**
+ * A prompt the person wrote: Enter at the terminal, or sent from an app attached to this session (the desktop
+ * app and VS Code send theirs through the SDK, a phone through the bridge). A script's prompt (claude -p, the SDK
+ * with no app) is not, and is left alone.
+ */
+const personal = (kind: string) => kind === 'composer' || ((kind === 'sdk' || kind === 'bridge') && host.interactive)
+
 const host = {
   core: null as Core | null,
   settings: { ...DEFAULTS } as Settings,
@@ -94,6 +104,8 @@ const host = {
   turn: null as { text: string; id: string | null } | null,
   activeTurn: null as string | null,
   interactive: false,
+  /** A prompt sent from an app (desktop, VS Code, phone) waiting on its card: Send resolves it. */
+  held: null as null | { resolve: (send: boolean) => void },
   sentExpert: '',
   view: null as View | null,
   timer: null as { cancel: () => void } | null,
@@ -517,6 +529,48 @@ function cycleScope(slot: string, fallback: Scope): void {
   host.scopes.set(slot, scopes[(scopes.indexOf(current) + 1) % scopes.length]!)
 }
 
+/**
+ * The card for a prompt sent from an app whose draft MarginCue never saw: read at once, shown above the box, and
+ * held until the person sends it. Nothing to decide (no rows, no unknown name): it goes as soon as it is read.
+ * Resolves true to send with what is set, false to send as written.
+ */
+function holdForCard($: $, text: string): Promise<boolean> {
+  run($, { type: 'draft', now: now(), text, origin: 'paste', cursor: text.length })
+  const card = host.view?.card
+  if (!card || card.stage !== 'draft') return Promise.resolve(true)
+  return new Promise<boolean>((resolve) => {
+    const timer = $.clock.after(HOLD_MS, () => done(true))
+    const watch = $.clock.every(250, () => {
+      const shown = host.view?.card
+      if (!shown || shown.stage !== 'draft') return done(true)
+      const open = shown.rows.length > 0 || shown.mentions.some((mention) => mention.status === 'missing')
+      if (!shown.reading && !open) done(true)
+    })
+    const done = (send: boolean) => {
+      if (host.held !== held) return
+      timer.cancel()
+      watch.cancel()
+      host.held = null
+      if (host.view) publish($, host.view)
+      resolve(send)
+    }
+    const held = { resolve: done }
+    host.held = held
+    if (host.view) publish($, host.view)
+  })
+}
+
+/** Under the card held at Enter: send with what is set, or as written. */
+function heldRow(): Segment[] {
+  return [
+    { kind: 'text', text: '  ' },
+    { kind: 'button', key: 'card-send', label: 'Send', face: ' Send ↵ ', primary: true, style: host.palette.yours, action: { type: 'held', send: true } },
+    { kind: 'text', text: '  ' },
+    { kind: 'button', key: 'card-send-raw', label: 'Send as written', face: ' Send as written ', dim: true, action: { type: 'held', send: false } },
+    { kind: 'text', text: '   Claude starts when you send.', style: { dim: true } },
+  ]
+}
+
 function act($: $, action: Action): void | Promise<void> {
   const t = now()
   if (action.type === 'cardFocus') run($, { type: 'cardFocus', dir: action.dir, row: action.row })
@@ -525,6 +579,7 @@ function act($: $, action: Action): void | Promise<void> {
   else if (action.type === 'cardDismiss') run($, { type: 'cardDismiss', now: t, row: action.row })
   else if (action.type === 'sketch') run($, { type: 'sketch', now: t, action: action.action })
   else if (action.type === 'receiptPick') return followUp($, action.receipt, action.item, action.option)
+  else if (action.type === 'held') host.held?.resolve(action.send)
   else if (action.type === 'pick' || action.type === 'cycle') {
     run($, { type: 'pick', now: t, cue: action.cue, option: action.option })
     if (action.type === 'cycle') run($, { type: 'focus', cue: action.cue })
@@ -1101,11 +1156,17 @@ export const register: Register = (on) => {
   })
 
   on('prompt.submit', async ($, e, next) => {
-    if (e.command !== undefined || e.isMeta === true || e.origin.kind !== 'composer' || isHostCommand(e.text) || host.shell) {
+    if (e.command !== undefined || e.isMeta === true || !personal(e.origin.kind) || isHostCommand(e.text) || host.shell) {
       flushClear($)
       return next(e)
     }
     dropClear()
+    // An app (desktop, VS Code, phone) never shows MarginCue the draft while it is typed: the card comes at Enter,
+    // before Claude starts, and the prompt goes when the person sends it (or as written).
+    if (e.origin.kind !== 'composer' && !e.turnId && !host.activeTurn && host.view?.text !== e.text && host.settings.mode !== 'off') {
+      const send = await holdForCard($, e.text)
+      if (!send) run($, { type: 'draft', now: now(), text: '', origin: 'type', cursor: 0 }, false)
+    }
     const core = ensure($)
     const values = core.storedDecisions()
     if (host.settings.mode !== 'off' && values.some((value) => value.scope === 'model')) {
@@ -1175,13 +1236,18 @@ export const register: Register = (on) => {
     host.bandChoices = e.surface === 'terminal' && focused ? focused.options.map((_, option) => ({ row: focused.id, option })) : []
     if (!rows.length) return next(e)
     if (card && !e.props.isCollapsed) run($, { type: 'cardShown', now: now(), id: card.id }, false)
+    if (host.held && card?.stage === 'draft') rows.push(heldRow())
     return drawRows($, $.ui.resolve(e), rows)
   })
 
   // The agent's marked choices: drawn as their value in bold, registered as levers while the turn runs.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    const text = e.props.text
-    if (!text.includes(BLANK_OPEN) || host.settings.mode === 'off') return next(e)
+    // A mark still streaming in ("⟦week starts: Mon") is held back until it closes: the reader never sees the markup.
+    const full = e.props.text
+    const open = full.lastIndexOf(BLANK_OPEN)
+    const text = open > full.lastIndexOf(BLANK_CLOSE) ? full.slice(0, open) : full
+    if (!full.includes(BLANK_OPEN) || host.settings.mode === 'off') return next(e)
+    if (text !== full && !text.includes(BLANK_OPEN)) return next({ ...e, props: { ...e.props, text } })
     const blanks = parseBlanks(text)
     if (!blanks.length) return next(e)
     const live = host.activeTurn !== null
@@ -1215,7 +1281,7 @@ export const register: Register = (on) => {
 
   // The prompt as sent: what MarginCue attached is listed under it rather than shown as raw text.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
-    if (e.props.isExpanded || e.props.origin.kind !== 'composer' || host.settings.mode === 'off') return next(e)
+    if (e.props.isExpanded || !personal(e.props.origin.kind) || host.settings.mode === 'off') return next(e)
     const sent = splitSent(e.props.text)
     if (!sent) return next(e)
     const drawn = await next({ ...e, props: { ...e.props, text: sent.body } })

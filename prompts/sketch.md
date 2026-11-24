@@ -7,7 +7,7 @@ What to draw:
 - a screen or page: a wireframe with box-drawing characters (┌ ┐ └ ┘ │ ─), its real labels and one or two sample entries;
 - a report, a log, an analysis or command-line output: a short, realistic sample of the output itself;
 - an API: one request and its response;
-- an experiment or an evaluation: the results table, its columns and one or two rows of plausible numbers;
+- an experiment or an evaluation: the results table, its columns and rows, with "…" where the run will put numbers: never invent results or name a winner;
 - a library or a function: the call a user would write and what it returns;
 - a restructuring: the new layout of files or modules.
 

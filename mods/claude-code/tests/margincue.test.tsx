@@ -286,6 +286,33 @@ test('a session the desktop app or VS Code drives through the SDK gains a person
   expect(await marks()).toBe(true)
 })
 
+test('in the desktop app the draft is unseen while typed: the card comes at Enter, and Send takes what is set', async ($, on) => {
+  const { clock } = world(on, replies())
+  on('prompt.compose', () => ({ sections: [] }))
+  on('session.attach', (_, e) => ({ clientId: e.clientId }))
+  await $.session.start({ cwd: '/', surface: null, isInteractive: false })
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  await clock.settle()
+  const pending = $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'sdk' }, wait: false })
+  await clock.settle()
+  const ui = await $.ui.mount({ ...WIDE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /You want a CSV export/ })).toBeDefined()
+  expect(await ui.find({ key: 'card-send' })).toBeDefined()
+  await ui.press({ key: 'card-c1-1' })
+  await ui.press({ key: 'card-send' })
+  const sent = await pending
+  expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.`)
+  await ui.unmount()
+})
+
+test('a script\'s prompt through the SDK, with no app attached, goes through untouched and unheld', async ($, on) => {
+  const { clock } = world(on, replies())
+  await $.session.start({ cwd: '/', surface: null, isInteractive: false })
+  await clock.settle()
+  const sent = await $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'sdk' }, wait: false })
+  expect(sent.text).toBe(`${DRAFT}.`)
+})
+
 test('language defaults to English and auto persists across sessions', async ($, on) => {
   const frenchDraft = 'Crée un tableau de bord pour le club de foot'
   const english = 'read | You want a dashboard for the football club.\nkind | build\nrow | access | access | one | Open it to {} | club members | anyone'
