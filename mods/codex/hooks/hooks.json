@@ -2,25 +2,22 @@
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "resume|fork",
         "hooks": [
-          {
-            "type": "command",
-            "command": "exec \"${PLUGIN_ROOT}/bin/margincue\" hook",
-            "timeout": 2
-          }
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/dist/margincue.mjs\" hook start", "timeout": 5 }
         ]
       }
     ],
     "UserPromptSubmit": [
       {
         "hooks": [
-          {
-            "type": "command",
-            "command": "exec \"${PLUGIN_ROOT}/bin/margincue\" hook",
-            "timeout": 2,
-            "statusMessage": "MarginCue Thinking..."
-          }
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/dist/margincue.mjs\" hook prompt", "timeout": 5 }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/dist/margincue.mjs\" hook stop", "timeout": 5 }
         ]
       }
     ]

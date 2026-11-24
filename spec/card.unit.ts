@@ -396,3 +396,18 @@ test('"to the X page" points at something that should exist; only a renaming "to
   assert.deepEqual(grounding.ground('Rename the Activity page to the Audit Log page.', repo).filter((m) => m.status === 'missing'), [])
   assert.deepEqual(grounding.ground('Add a new Audit Log page next to Activity.', repo).filter((m) => m.status === 'missing'), [])
 })
+
+test('a streamed reading shows its line first and each row as it completes; the sketch waits for the end', () => {
+  const core = createCore(ASSETS)
+  core.handle(config())
+  const [req] = requests(core.handle({ type: 'draft', now: 100, text: DRAFT, origin: 'paste' }))
+  const [line, ...rows] = READING.split('\n')
+  const first = lastView(core.handle({ type: 'reply', now: 300, req: req!.req, text: `${line}\n${rows[0]}\nro`, done: false }))!
+  assert.equal(first.card?.read, 'You want a CSV download of orders that copes with very large accounts.')
+  assert.deepEqual(first.card?.rows.map((row) => row.key), [])
+  const more = core.handle({ type: 'reply', now: 400, req: req!.req, text: `w | export_rows | rows | one | Export {} | the filtered orders | all orders | @CSV export\n`, done: false })
+  assert.deepEqual(lastView(more)!.card?.rows.map((row) => row.key), ['export_rows'])
+  assert.equal(requests(more).length, 0)
+  const end = core.handle({ type: 'reply', now: 500, req: req!.req, text: `${rows[2]}\n`, done: true })
+  assert.deepEqual(lastView(end)!.card?.rows.map((row) => row.key), ['export_rows', 'export_limit'])
+})

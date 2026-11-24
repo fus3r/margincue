@@ -1,35 +1,66 @@
 # MarginCue for Codex CLI
 
-MarginCue checks each submitted prompt for signs that you're starting something new. If the check passes, it asks the acting model to get your choices before opening files, running commands, or editing. The questions appear after Enter and use the running Codex session.
+The same card as in Claude Code, in Codex:
+- **Before you send:** how the agent will read the prompt, your names checked against the code, a control for each open choice, and a sketch of the result.
+- **While Codex works:** its own choices become switches.
+- **After the turn:** a receipt.
 
 ## Install
 
-Tested with Codex CLI 0.171.0 on Apple silicon. Download [margincue-codex-macos-arm64.tar.gz](https://github.com/fus3r/margincue/releases/download/v0.2.0/margincue-codex-macos-arm64.tar.gz). Extract it and run the installer from the extracted directory.
+Codex CLI 0.171 or later, and Node 20 or later:
 
 ```sh
-./mods/codex/margincue install
+npx -y github:fus3r/margincue setup
 ```
 
-Start a new Codex session. Review and trust the two MarginCue hooks at startup or through `/hooks`. Then send a prompt such as `Build a site to share our club's photos.`
+Setup does three things:
+1. It installs the Codex plugin (`codex plugin marketplace add fus3r/margincue`, then `codex plugin add margincue@margincue`).
+2. It asks three or four questions about your work, so the card fits it.
+3. It offers to add a `codex` alias, so Codex opens MarginCue when you press ctrl+g.
 
-To build from source on another Unix system, clone the repository and run the same installer from the checkout. It builds with Cargo when the bundled executable is absent.
+In your next Codex session, trust the plugin's hooks when Codex asks (press `t`), or review them first with `/hooks`.
+
+## Use
+
+Write the prompt in Codex as usual and press **ctrl+g**. Codex hands the draft to MarginCue, which shows the card above it while you edit:
+
+| Key | What it does |
+| --- | --- |
+| `alt+↑` / `alt+↓` (or `ctrl+↑` / `ctrl+↓`) | Next row / change its value |
+| `tab`, then `1`–`9`, `x`, `s`, `p` | Pick an option, drop a row, show the sketch, attach it to the prompt |
+| `enter` | Back to Codex with the prompt and the Decisions you set; `enter` there sends it |
+| `shift+enter` (or `alt+enter`) | New line |
+| `ctrl+e` | Your own editor on the draft |
+| `esc` | Back to Codex, draft unchanged |
+
+The card's readings use your own Codex login: each is a one-off thread on the lightest model your account offers, at low effort, never saved to your history. MarginCue's own readings skip your hooks.
+
+**While Codex works**, press ctrl+g in the empty prompt: the choices the agent made for you are listed as switches. Switch one and MarginCue writes the amendment. Press `enter` there, then `enter` in Codex, and the change reaches the running turn. **After the turn**, the same keys write the follow-up prompt, and the receipt line lists who decided what.
+
+## The Codex desktop app and the IDE extension
+
+Codex gives plugins no hook before you send, and the app has no ctrl+g editor. So there, the agent opens its reply with MarginCue's card instead:
+- the reading;
+- any name the code does not have;
+- the choices it settles, marked like this: ⟦label: choice | alternative⟧.
+
+The receipt follows the turn. The same applies when you press Enter in the CLI without ctrl+g.
+
+## Settings and removal
+
+`margincue status` shows what MarginCue knows about you. Settings live in `~/.margincue/settings.json` (`"mode": "off" | "quiet" | "auto"`, `"sketch": false`, `"blanks": false`).
+
+To remove MarginCue:
+1. Run `codex plugin remove margincue@margincue`.
+2. Delete the `codex` alias from your shell profile.
+3. Delete `~/.margincue`.
+
+## Development
 
 ```sh
-git clone https://github.com/fus3r/margincue.git
-cd margincue
-./mods/codex/margincue install
+cd mods/codex
+npm run build                      # src/ → dist/margincue.mjs (one file, no dependencies)
+node --test ../../spec/codex.unit.ts
 ```
 
-## How to answer
-
-- **Codex picker.** To enable the experimental picker outside plan mode, run `./mods/codex/margincue picker on`. It shows up to three questions. Press an option number to advance. This setting also makes the picker available to Codex on other prompts. Run `./mods/codex/margincue picker off` to undo it.
-- **MarginCue form.** Approval policies that allow MCP forms can show up to five questions in a terminal dialog. Press a number to answer, or Esc to skip the dialog. `./mods/codex/margincue run` starts a session with a policy that allows MCP forms.
-- **Reply.** When the picker and form are unavailable, Codex can ask in its reply. Answer with one number per question, such as `2 1 3`, or `0` to let it decide.
-
-`./mods/codex/margincue status` reports which path your Codex settings allow. `./mods/codex/margincue off` disables the hook's questions. `on` re-enables them. Use `timeout 90` to set the form timeout in seconds or `timeout 0` for no limit.
-
-To uninstall, run `./mods/codex/margincue remove` from the package or checkout. To install a newer downloaded package, remove the old installation first, then run the new package's installer and review the hooks again.
-
-## Local data
-
-Settings and event counts live in `$XDG_STATE_HOME/margincue/codex` or `~/.local/state/margincue/codex` by default. The MarginCue event log records timings and question and answer counts. It omits prompt text.
+The composer shares its core, layout and prompts with the Claude Code mod in `../claude-code`.

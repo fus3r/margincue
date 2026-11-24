@@ -113,6 +113,8 @@ type Card = {
   reqKey: string
   reqAt: number
   buffer: string
+  /** How much of a streamed reading has been shown. */
+  partialAt: number
   /** The draft the applied reading was for. */
   readFor: string | null
   /** The draft changed while a reading was on its way. */
@@ -1019,7 +1021,7 @@ export class Core {
   private newCard(stage: CardStage): Card {
     return {
       id: this.nextCard++, stage, read: null, kind: null, rows: [], focus: null, dismissed: new Set(),
-      req: null, reqText: '', reqKey: '', reqAt: 0, buffer: '', readFor: null, dirty: false, error: false,
+      req: null, reqText: '', reqKey: '', reqAt: 0, buffer: '', partialAt: 0, readFor: null, dirty: false, error: false,
       shownAt: null, sketch: null, sketchDue: null, amendDue: null, submittedAt: null, sent: [], fill: null,
     }
   }
@@ -1111,7 +1113,7 @@ export class Core {
       return
     }
     const req = this.nextReq++
-    Object.assign(card, { req, reqText: this.text, reqKey: key, reqAt: this.now, buffer: '', dirty: false })
+    Object.assign(card, { req, reqText: this.text, reqKey: key, reqAt: this.now, buffer: '', partialAt: 0, dirty: false })
     this.lastCardAt = this.now
     this.out.push({ type: 'request', req, kind: 'card', tier: 'cloud', system, prompt, maxTokens: CARD_MAX_TOKENS })
     this.metric('card-requested', { req, card: card.id, words: wordCount(this.text), mentions: this.mentions.length })
@@ -1199,7 +1201,17 @@ export class Core {
   private onCardReply(chunk: string, done: boolean, ok: boolean): void {
     const card = this.card!
     card.buffer += chunk
-    if (ok && !done) return
+    if (ok && !done) {
+      // A streamed reading shows as it comes: its line first, then each row once its line is complete.
+      const complete = card.buffer.slice(0, card.buffer.lastIndexOf('\n') + 1)
+      if (complete.length > card.partialAt) {
+        card.partialAt = complete.length
+        const parsed = parseCard(complete)
+        if (parsed.read !== null || parsed.rows.length) this.applyCard(card, parsed, card.reqText, true)
+      }
+      return
+    }
+    card.partialAt = 0
     const req = card.req
     card.req = null
     if (ok) {
@@ -1219,10 +1231,11 @@ export class Core {
     }
   }
 
-  private applyCard(card: Card, parsed: ParsedCard, text: string): void {
+  /** `partial`: part of a streamed reading. Rows it has not reached yet stay, and no sketch is asked for until it ends. */
+  private applyCard(card: Card, parsed: ParsedCard, text: string, partial = false): void {
     card.read = parsed.read ?? card.read
     card.kind = parsed.kind ?? card.kind
-    card.readFor = text
+    if (!partial) card.readFor = text
     card.error = false
     // A question is answered, not built: its card is the reading alone.
     const fresh = this.stateDraft?.directive === 'delegate' || card.kind === 'ask' ? [] : parsed.rows.filter((row) => !card.dismissed.has(row.key))
@@ -1237,11 +1250,11 @@ export class Core {
       else next.push(this.withLearned({ ...row, id: match?.id ?? this.newId(), picked: null }))
     }
     // A choice the person made stands until they dismiss it, whatever a newer reading says.
-    for (const row of old) if (!used.has(row.id) && row.picked !== null) next.push(row)
+    for (const row of old) if (!used.has(row.id) && (partial || row.picked !== null)) next.push(row)
     card.rows = [...card.rows.filter((row) => row.origin === 'repo'), ...next]
     this.fixCardFocus()
     // A reading for the draft as it stands means the draft has rested since it was asked: sketch at once.
-    if (this.sketchEnabled && this.assets.sketchSystem && card.kind && SKETCH_KINDS.has(card.kind) && text === this.text) {
+    if (!partial && this.sketchEnabled && this.assets.sketchSystem && card.kind && SKETCH_KINDS.has(card.kind) && text === this.text) {
       card.sketchDue = this.now
     }
   }

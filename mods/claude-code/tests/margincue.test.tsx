@@ -66,23 +66,25 @@ function world(on: Engine, reply: string | ((prompt: string, system: string) => 
   on('session.model', () => ({ value: model.name }))
   on('session.turns', () => ({ value: 0 }))
   on('session.id', () => ({ value: identity.id }))
+  // Windows hands hooks its own form of a path (C:\\test-home\\…): the fake disk keys every path in one form.
+  const norm = (path: string) => path.replace(/\\/g, '/').replace(/^[A-Za-z]:(?=\/)/, '')
   on('fs.read', (_, e) => {
-    const text = files.get(e.path)
+    const text = files.get(norm(e.path))
     if (text === undefined) throw new Error('ENOENT')
     return { value: text }
   })
-  on('fs.exists', (_, e) => ({ value: files.has(e.path) }))
+  on('fs.exists', (_, e) => ({ value: files.has(norm(e.path)) }))
   on('fs.list', (_, e) => ({
-    value: [...files.keys()].filter((path) => path.slice(0, path.lastIndexOf('/')) === e.path)
+    value: [...files.keys()].filter((path) => path.slice(0, path.lastIndexOf('/')) === norm(e.path).replace(/\/+$/, ''))
       .map((path) => ({ name: path.slice(path.lastIndexOf('/') + 1), kind: 'file' as const, size: 1, mtimeMs: 1, isLink: false })),
   }))
   on('fs.stat', (_, e) => {
-    if (!files.has(e.path)) throw new Error('ENOENT')
-    return { value: { kind: 'file' as const, size: files.get(e.path)!.length, mtimeMs: writes.length, isLink: false } }
+    if (!files.has(norm(e.path))) throw new Error('ENOENT')
+    return { value: { kind: 'file' as const, size: files.get(norm(e.path))!.length, mtimeMs: writes.length, isLink: false } }
   })
   on('fs.write', (_, e) => {
-    files.set(e.path, e.text)
-    writes.push(e.path)
+    files.set(norm(e.path), e.text)
+    writes.push(norm(e.path))
     return { value: undefined }
   })
   on('store.keys', () => ({ value: [...store.keys()] }))

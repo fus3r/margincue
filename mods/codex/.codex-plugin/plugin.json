@@ -1,10 +1,13 @@
 {
   "name": "margincue",
-  "version": "0.1.0",
-  "description": "Ask about consequential decisions when a request starts something new.",
+  "version": "0.4.0",
+  "description": "Shows how Codex will read your prompt before you send it (ctrl+g), checks your names against the code, gives each open choice a control, sketches the result, and turns the agent's own choices into switches.",
   "hooks": "./hooks/hooks.json",
-  "mcpServers": "./.mcp.json",
   "interface": {
-    "displayName": "MarginCue"
+    "displayName": "MarginCue",
+    "shortDescription": "See how Codex reads your prompt before you send it, and switch the choices it makes for you.",
+    "developerName": "MarginCue",
+    "category": "Productivity",
+    "websiteURL": "https://github.com/fus3r/margincue"
   }
 }

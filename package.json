@@ -1,0 +1,10 @@
+{
+  "name": "margincue",
+  "version": "0.4.0",
+  "description": "See how your coding agent will read a prompt before you send it, and switch the choices it makes while it works.",
+  "license": "MIT",
+  "type": "module",
+  "bin": { "margincue": "mods/codex/dist/margincue.mjs" },
+  "engines": { "node": ">=20" },
+  "repository": { "type": "git", "url": "https://github.com/fus3r/margincue.git" }
+}

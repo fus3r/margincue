@@ -219,3 +219,9 @@ test('a sketch longer than the limit keeps the line that closes its frame', () =
   assert.equal(sketch.lines.length, 14)
   assert.match(sketch.lines.at(-1)!, /^└─+┘$/)
 })
+
+test('a sketch line the model left open is closed with the rest of its frame', () => {
+  const tidy = tidySketch(['┌──────────┐', '│ Reports  │', '│ Team owners  [Download CSV]', '└──────────┘'])
+  assert.deepEqual(tidy.map((line) => line.at(-1)), ['┐', '│', '│', '┘'])
+  assert.equal(new Set(tidy.map((line) => [...line].length)).size, 1)
+})

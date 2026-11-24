@@ -2,7 +2,7 @@
 
 [![test](https://github.com/fus3r/margincue/actions/workflows/test.yml/badge.svg)](https://github.com/fus3r/margincue/actions/workflows/test.yml)
 
-See how Claude Code will read your prompt before you press Enter, and steer the choices it makes while it works.
+See how Claude Code or Codex will read your prompt before you press Enter, and steer the choices it makes while it works.
 
 <!-- Demo video goes here. -->
 
@@ -24,13 +24,21 @@ It adapts to you and to the project. The first run asks what you work on and you
 
 ## Install
 
-In Claude Code 2.1.275 or later, at the prompt:
+**Claude Code** 2.1.275 or later, at the prompt:
 
 ```
 /plugin install margincue --marketplace fus3r/margincue
 ```
 
 Answer `y` to add the marketplace, then choose a scope. In the desktop app: + next to the prompt box, Plugins, Add marketplace `fus3r/margincue`, then Add plugin.
+
+**Codex CLI** 0.171 or later, with Node 20 or later:
+
+```sh
+npx -y github:fus3r/margincue setup
+```
+
+Then press ctrl+g in Codex's prompt to see the card. [Codex guide](mods/codex/README.md)
 
 ## Keys
 
@@ -44,13 +52,17 @@ Everything on the card also takes clicks, in the terminal and in the desktop app
 
 ## What it costs and what leaves your machine
 
-Each reading and each sketch is one small Haiku call through your own Claude Code session, so it counts toward your plan. A reading runs when you finish a sentence or pause, one at a time; a prompt usually takes a few. `/margincue mode quiet` keeps the card to one line, `/margincue sketch off` drops sketches, and `/margincue mode off` stops everything.
+In Claude Code, each reading and each sketch is one small Haiku call through your own session, so it counts toward your plan. In Codex, it is one short thread through your own Codex login, on the lightest model your account offers, never saved to your history. A reading runs when you finish a sentence or pause, one at a time; a prompt usually takes a few. `/margincue mode quiet` keeps the card to one line, `/margincue sketch off` drops sketches, and `/margincue mode off` stops everything.
 
 Your draft goes to Claude the same way your prompt does. The project index (file names and declared names, read with git or ripgrep) stays on your machine, and so do your first-run answers and learned picks. There is no telemetry; `/margincue log <path>` writes a local log of counts and timings, never your text.
 
 ## Where it runs
 
-Claude Code 2.1.275 or later: the terminal on macOS, Linux and Windows, the Code tab of the desktop app, and VS Code. For Codex CLI, [`mods/codex`](mods/codex/README.md) holds the earlier version, which asks its questions after you press Enter; the card is coming to Codex next.
+| | Card while you type | Choices as switches | Receipt |
+| --- | --- | --- | --- |
+| Claude Code: terminal (macOS, Linux, Windows), desktop app (Code tab), VS Code | above the prompt | on the card, during the turn | under the answer |
+| Codex CLI | on ctrl+g | on ctrl+g, sent into the running turn | after the turn |
+| Codex desktop app and IDE extension | at the top of the agent's reply (they have no hook before Enter) | marked in the reply | after the turn |
 
 ## Commands
 

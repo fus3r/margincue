@@ -30,6 +30,12 @@ jobs:
         run: node --test spec/*.unit.ts
       - name: Traces
         run: node spec/run-traces.ts
+      - name: Codex bundle matches its sources
+        if: runner.os == 'Linux'
+        run: |
+          cd mods/codex
+          npm run build
+          git diff --exit-code -- dist
       - name: Claude Code plugin
         run: |
           npm install -g @anthropic-ai/claude-code

@@ -453,9 +453,11 @@ const BOX = /[─-╿]+/g
  * spaces, one cell clear of the edge). Lines outside the frame are kept as is.
  */
 export function tidySketch(lines: string[]): string[] {
+  // A side line the model left open ("│ Team owners  [Download CSV]") still belongs to the frame.
+  const closed = (t: string[]) => RIGHT.includes(t.at(-1)!)
   const framed = lines.map((line) => {
     const t = [...line.trim()]
-    return t.length >= 2 && LEFT.includes(t[0]!) && RIGHT.includes(t.at(-1)!)
+    return t.length >= 2 && LEFT.includes(t[0]!) && (closed(t) || SIDE.includes(t[0]!))
   })
   if (framed.filter(Boolean).length < 2) return lines
   const indent = Math.min(...lines.filter((_, i) => framed[i]).map((line) => line.length - line.trimStart().length))
@@ -463,7 +465,8 @@ export function tidySketch(lines: string[]): string[] {
     if (!framed[i]) return null
     const t = [...line.trim()]
     const side = SIDE.includes(t[0]!)
-    return { left: t[0]!, right: t.at(-1)!, body: t.slice(1, -1).join('').replace(/\s+$/, ''), side }
+    const shut = closed(t)
+    return { left: t[0]!, right: shut ? t.at(-1)! : t[0]!, body: (shut ? t.slice(1, -1) : t.slice(1)).join('').replace(/\s+$/, ''), side }
   })
   const inner = Math.max(...parts.map((part) => part ? cells(part.body) + (part.side ? 1 : 0) : 0))
   return lines.map((line, i) => {
