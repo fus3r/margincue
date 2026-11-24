@@ -10070,7 +10070,7 @@ var CodexModel = class {
     child.on("error", (error) => this.fail(`codex could not start: ${error.message}`));
     child.on("exit", () => this.fail("codex app-server exited"));
     createInterface({ input: child.stdout }).on("line", (line) => this.receive(line));
-    const init = await this.call("initialize", { clientInfo: { name: "margincue", title: "MarginCue", version: "0.4.9" }, capabilities: null });
+    const init = await this.call("initialize", { clientInfo: { name: "margincue", title: "MarginCue", version: "0.4.10" }, capabilities: null });
     if (init.error) throw new Error(init.error.message ?? "initialize failed");
     this.notify("initialized");
     const preferred = process.env.MARGINCUE_CODEX_MODEL;

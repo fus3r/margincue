@@ -65,9 +65,9 @@ const expert = atom({ plugin: 'margincue', key: 'expert' } as const, null)
 /** Longest wait for the reading at Enter. A model call never counts against a hook's own 10 s, so this is wall time. */
 const READ_WAIT_MS = 60000
 /** Claude's own dialog under MarginCue's card in an app: send with the card, or as written; "Other" adds to the prompt. */
-const GATE_QUESTION = 'Send your prompt with these choices?'
-const GATE_SEND = 'Send'
-const GATE_RAW = 'Send as written'
+const GATE_QUESTION = 'Which prompt should Claude use?'
+const GATE_SEND = 'Use my picks'
+const GATE_RAW = 'Use my prompt as written'
 
 /**
  * A prompt the person wrote: Enter at the terminal, or sent from an app attached to this session (the desktop
@@ -584,7 +584,8 @@ async function askAtEnter($: $, text: string): Promise<{ how: Held; addition?: s
   return { how: 'send' }
 }
 
-const skipped = (answer: string) => !answer.trim() || /^\s*\[[^\]]*\]\s*$/.test(answer)
+/** The dialog's Skip answers "[No preference]"; typed text in brackets is still the person's words. */
+const skipped = (answer: string) => !answer.trim() || /^\s*\[no preference\]\s*$/i.test(answer)
 
 /**
  * In an app (the desktop app, VS Code), MarginCue draws its own card where Claude's dialog opens (`ui.render` on
@@ -607,28 +608,21 @@ async function gateAtEnter($: $): Promise<{ how: Held; addition?: string }> {
   if (host.view) publish($, host.view)
   try {
     const answer = await $.ui.ask(GATE_QUESTION, { options: [GATE_SEND, GATE_RAW], header: 'MarginCue' })
-    if (answer === GATE_RAW) return { how: 'raw' }
-    if (answer === GATE_SEND || skipped(answer)) return { how: 'send' }
+    // The picks go only on a yes: Skip, like closing the dialog, sends the prompt as the person wrote it.
+    if (answer === GATE_RAW || skipped(answer)) return { how: 'raw' }
+    if (answer === GATE_SEND) return { how: 'send' }
     return { how: 'send', addition: answer.trim() }
   } catch {
-    return { how: 'send' }
+    return { how: 'raw' }
   } finally {
     pump.cancel()
     host.gate = false
   }
 }
 
-/** The options a card shows of a row: a long range shows its ends, the assumed step and one between. */
-function shownOptions(row: MargincueRow): number[] {
-  const last = row.options.length - 1
-  if (row.type !== 'range' || last <= 4) return row.options.map((_, i) => i)
-  const at = row.selected[0] ?? 0
-  return [...new Set([0, at, Math.round((at + last) / 2), last])].sort((a, b) => a - b)
-}
-
 /** A choice's name on its chip: the card's label, acronyms kept whole. */
 function chipName(row: MargincueRow): string {
-  if (row.origin === 'repo') return `${row.statement.replace(/\s+is\s+\{\}\s*$/, '').replace(/^"(.*)"$/, '\u201c$1\u201d')} is`
+  if (row.origin === 'repo') return `${quotedName(row)} is`
   const words = row.label.split(' ').map((word) => /^(csv|api|ui|url|id|ids|db|sql|pdf|json|ux)$/i.test(word) ? word.toUpperCase() : word)
   const name = words.join(' ')
   return name.charAt(0).toUpperCase() + name.slice(1)
@@ -640,13 +634,28 @@ function chipSummary(row: MargincueRow): string {
   return set.length === 0 ? 'nothing more' : set.length === 1 ? set[0]! : `${set[0]} +${set.length - 1}`
 }
 
+/** A name the code lacks, as the card writes it: "Audit Log" in curly quotes. */
+const quotedName = (row: MargincueRow) => row.statement.replace(/\s+is\s+\{\}\s*$/, '').replace(/^"(.*)"$/, '\u201c$1\u201d')
+
 /**
- * One choice as a chip in an app: its name, then the app's own dropdown with the value in force. A pick-any chip's
- * menu ticks what is set; each entry names the state it leads to, so a pick that arrives twice still lands once.
+ * One choice in an app: its name, then the app's own dropdown with the value in force; the menu opens where it is
+ * clicked. A name the code lacks reads unmatched until the person picks its match. A pick-any choice's menu ticks
+ * what is set; each entry names the state it leads to, so a pick that arrives twice still lands once.
  */
 function choiceChip($: $, ui: Elements[RenderSurface], row: MargincueRow) {
-  const { Select } = ui
-  const options = shownOptions(row)
+  const { Box, Text, Select } = ui
+  const options = row.options.map((_, i) => i)
+  const yours = row.chosen ? <Text dimColor>{'\u2713 yours'}</Text> : null
+  if (row.origin === 'repo' && !row.chosen) {
+    const items = [{ key: `card-${row.id}-none`, value: 'none', label: 'Choose a match\u2026' }, ...options.map((i) => ({ key: `card-${row.id}-${i}`, value: String(i), label: row.options[i]! }))]
+    return (
+      <Box key={`row-${row.id}`} flexDirection="row" flexWrap="wrap" columnGap={1} alignItems="center">
+        <Text color="warning">{`No match for ${quotedName(row)} in your code`}</Text>
+        <Select key={`card-${row.id}`} value="none" options={items}
+          onSelect={(value) => value === 'none' ? undefined : act($, { type: 'cardSet', row: row.id, option: Number(value) })} />
+      </Box>
+    )
+  }
   if (row.type === 'many') {
     // The menu's first entry is what the chip shows; each one under it adds or drops its option.
     const items: { key: string; value: string; label: string }[] = [{ key: `card-${row.id}-set`, value: 'set', label: chipSummary(row) }]
@@ -661,12 +670,20 @@ function choiceChip($: $, ui: Elements[RenderSurface], row: MargincueRow) {
       if (!now || Number.isNaN(option) || (verb === 'add') === now.selected.includes(option)) return
       void act($, { type: 'cardSet', row: row.id, option })
     }
-    return <Select key={`card-${row.id}`} label={chipName(row)} value="set" options={items} onSelect={toggle} />
+    return (
+      <Box key={`row-${row.id}`} flexDirection="row" columnGap={1} alignItems="center">
+        <Select key={`card-${row.id}`} label={chipName(row)} value="set" options={items} onSelect={toggle} />
+        {yours}
+      </Box>
+    )
   }
   return (
-    <Select key={`card-${row.id}`} label={chipName(row)} value={String(row.selected[0] ?? options[0] ?? 0)}
-      options={options.map((i) => ({ key: `card-${row.id}-${i}`, value: String(i), label: row.options[i]! }))}
-      onSelect={(value) => act($, { type: 'cardSet', row: row.id, option: Number(value) })} />
+    <Box key={`row-${row.id}`} flexDirection="row" columnGap={1} alignItems="center">
+      <Select key={`card-${row.id}`} label={chipName(row)} value={String(row.selected[0] ?? 0)}
+        options={options.map((i) => ({ key: `card-${row.id}-${i}`, value: String(i), label: row.options[i]! }))}
+        onSelect={(value) => act($, { type: 'cardSet', row: row.id, option: Number(value) })} />
+      {yours}
+    </Box>
   )
 }
 
@@ -690,59 +707,48 @@ function sketchSvg(lines: readonly string[]): { source: string; height: number }
 }
 
 /**
- * MarginCue's card above Claude's dialog in an app: each choice Claude would make is one chip, its name and its
- * value, and a click opens the app's own menu right there. A pick-any chip's menu ticks what is set and a pick
- * toggles it. The app takes at most 48 rows there, counted at 40 columns, and draws nothing of a tree past that:
- * the card keeps under it, the preview only whole.
+ * MarginCue's card above Claude's dialog in an app: how the prompt reads, then each choice Claude would make on a
+ * line of its own (its name and the app's own dropdown, which opens where it is clicked), then the preview. The app
+ * takes at most 48 rows there, counted at 40 columns (a dropdown one row, each gap a row, a picture by its
+ * description), and draws nothing of a tree past that: the card keeps under it, the preview only whole.
  */
 function drawGateCard($: $, ui: Elements[RenderSurface], card: NonNullable<MargincueBand['card']>) {
   const { Box, Text } = ui
   // Drawn only in an app, whose table has a vector picture.
   const { Svg } = ui as Elements['desktop']
-  // Inside the frame: 40 columns less its padding; a Code block draws its own inset too.
-  const COLS = 34
-  const rowsOf = (text: string, cols = COLS) => text.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(line.length / cols)), 0)
-  const valueOf = (row: MargincueRow) => row.type === 'many' ? chipSummary(row) : row.options[row.selected[0] ?? 0] ?? ''
+  const rowsOf = (text: string, cols = 34) => text.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(line.length / cols)), 0)
   const count = card.rows.length
   const yours = card.rows.filter((row) => row.chosen).length
-  const head = `\u00b7 ${count} choice${count === 1 ? '' : 's'} Claude would make${yours ? `, ${yours} yours` : ''}`
-  const hint = 'Anything to add? Pick Other below.'
-  // 48 rows, less the frame (border and padding, 4), the gaps between its parts (3) and the dialog's (1), a margin (2).
-  let budget = 48 - 4 - 3 - 1 - 2 - rowsOf(`MarginCue ${head}`) - rowsOf(hint)
-  // Chips flow in a row: each takes its name, its value and a chevron, wrapping at the frame's width.
-  let used = COLS
+  const foot = `MarginCue \u00b7 ${count} choice${count === 1 ? '' : 's'} Claude would make${yours ? `, ${yours} yours` : ''} \u00b7 to add a note, choose Other below`
+  // 48 rows less the frame (border and padding: 4), the dialog's gap (1) and a margin (2); then the reading, the
+  // line under it, and a gap between each part.
+  let budget = 48 - 4 - 1 - 2 - (card.read ? rowsOf(card.read) + 1 : 0) - rowsOf(foot) - 1
   const shown: MargincueRow[] = []
   for (const row of card.rows) {
-    const width = chipName(row).length + valueOf(row).length + 6
-    const extra = used + 1 + width > COLS ? Math.max(1, Math.ceil(width / COLS)) + 1 : 0
-    if (extra > budget) break
-    budget -= extra
-    used = extra ? Math.min(width, COLS) : used + 1 + width
+    const need = row.origin === 'repo' && !row.chosen ? rowsOf(`No match for ${quotedName(row)} in your code`) + 1 : 1
+    if (need + 1 > budget) break
+    budget -= need + 1
     shown.push(row)
   }
   const left = card.rows.length - shown.length
-  if (left) budget -= 1
-  // The picture keeps its own measure: about one row a sketch line.
-  const sketch = card.sketch && card.sketch.lines.length && card.sketch.lines.length + 3 <= budget ? card.sketch : null
-  const chip = (row: MargincueRow) => choiceChip($, ui, row)
-
+  if (left) budget -= 2
+  const caption = card.sketch ? `Preview \u00b7 ${card.sketch.title}${card.sketch.drawing ? ' \u00b7 updating\u2026' : ''}` : ''
+  const alt = card.sketch ? `Preview of ${card.sketch.title}` : ''
+  const sketch = card.sketch && card.sketch.lines.length && rowsOf(caption) + rowsOf(alt, 40) + 1 <= budget ? card.sketch : null
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="promptBorder" paddingX={2} paddingY={1} rowGap={1}>
-      <Box flexDirection="row" columnGap={1} flexWrap="wrap">
-        <Text weight="semibold" color={host.palette.accent}>MarginCue</Text>
-        <Text dimColor>{head}</Text>
+      {card.read ? <Text weight="semibold">{card.read}</Text> : null}
+      <Box flexDirection="column" rowGap={1}>
+        {shown.map((row: MargincueRow) => choiceChip($, ui, row))}
+        {left ? <Text dimColor>{`${left} more choice${left === 1 ? '' : 's'} not shown, left to Claude`}</Text> : null}
       </Box>
-      <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
-        {shown.map(chip)}
-      </Box>
-      {left ? <Text dimColor>{`${left} more left to Claude`}</Text> : null}
       {sketch ? (
         <Box flexDirection="column" rowGap={0}>
-          <Text dimColor>{`Preview \u00b7 ${sketch.title}`}</Text>
-          <Svg source={sketchSvg(sketch.lines).source} alt={`A sketch of ${sketch.title}: ${sketch.lines.join(' ').replace(/\s+/g, ' ').slice(0, 300)}`} />
+          <Text dimColor>{caption}</Text>
+          <Svg source={sketchSvg(sketch.lines).source} alt={alt} />
         </Box>
       ) : null}
-      <Text dimColor>{hint}</Text>
+      <Text dimColor>{foot}</Text>
     </Box>
   )
 }
@@ -835,7 +841,7 @@ function answerRow($: $, question: PanelQuestion, answer: string): void {
  * What a prompt carries once the person sends it: the Decisions they set (and the sketch they attached), with the
  * turn noted for the switches and the follow-up.
  */
-async function submitted($: $, typed: string, turnId?: string, addition?: string): Promise<{ text: string; amendable: boolean }> {
+async function submitted($: $, typed: string, turnId?: string, addition?: string, raw = false): Promise<{ text: string; amendable: boolean }> {
   const core = ensure($)
   const values = core.storedDecisions()
   if (host.settings.mode !== 'off' && values.some((value) => value.scope === 'model')) {
@@ -849,7 +855,8 @@ async function submitted($: $, typed: string, turnId?: string, addition?: string
   const amendable = !turnId && !host.activeTurn && !host.turn
   const effects = run($, { type: 'submit', now: now(), text: typed, amendable }, false)
   const sent = effects.find((fx): fx is SubmitEffect => fx.type === 'submit')
-  const decided = sent?.text ?? typed
+  // As written means exactly as typed: no picks, no standing preference, no sketch.
+  const decided = raw ? typed : sent?.text ?? typed
   // What the person added under "Other" joins the prompt itself, ahead of its Decisions.
   const at = decided.lastIndexOf('\n\nDecisions:\n')
   const text = !addition ? decided : at < 0 ? `${decided.replace(/\s+$/, '')}\n\n${addition}` : `${decided.slice(0, at)}\n\n${addition}${decided.slice(at)}`
@@ -873,7 +880,7 @@ function drawChoicesApp($: $, ui: Elements[RenderSurface], card: NonNullable<Mar
         <Text weight="semibold" color={host.palette.accent}>MarginCue</Text>
         <Text dimColor>{`\u00b7 Claude made ${count} choice${count === 1 ? '' : 's'} for you \u00b7 ${turn ? 'switch one and it adapts at its next step' : 'switch one to write the follow-up'}`}</Text>
       </Box>
-      <Box flexDirection="row" flexWrap="wrap" columnGap={2} rowGap={0}>
+      <Box flexDirection="column" rowGap={0}>
         {shown.map((row: MargincueRow) => choiceChip($, ui, row))}
       </Box>
       {count > shown.length ? <Text dimColor>{`${count - shown.length} more in the terminal card`}</Text> : null}
@@ -1475,15 +1482,17 @@ export const register: Register = (on) => {
     }
     dropClear()
     let addition: string | undefined
+    let raw = false
     // An app (desktop, VS Code, phone) never shows MarginCue the draft while it is typed: the card comes at Enter,
     // before Claude starts, and the prompt goes when the person sends it (or as written).
     // The engine stamps the desktop app's typed prompts `composer` as well: the app, not the stamp, says the draft was unseen.
     if ((host.appHost || e.origin.kind !== 'composer') && !e.turnId && !host.activeTurn && host.view?.text !== e.text && host.settings.mode !== 'off') {
       const asked = await askAtEnter($, e.text)
       addition = asked.addition
-      if (asked.how === 'raw') run($, { type: 'draft', now: now(), text: '', origin: 'type', cursor: 0 }, false)
+      raw = asked.how === 'raw'
+      if (raw) run($, { type: 'draft', now: now(), text: '', origin: 'type', cursor: 0 }, false)
     }
-    const { text, amendable } = await submitted($, e.text, e.turnId, addition)
+    const { text, amendable } = await submitted($, e.text, e.turnId, addition, raw)
     // An app never clears its box through MarginCue: once the prompt goes, its card goes too.
     if (host.appHost || e.origin.kind !== 'composer') run($, { type: 'draft', now: now(), text: '', origin: 'type', cursor: 0 }, false)
     const result = await next(text === e.text ? e : { ...e, text })
@@ -1591,8 +1600,8 @@ export const register: Register = (on) => {
           <Text color={accent} bold>{'  ◆ '}</Text>
           <Text bold>{`${n} choice${n === 1 ? '' : 's'} made for you`}</Text>
           <Text dimColor>{' · '}</Text>
-          <Text color={accent}>{'alt↑ alt↓'}</Text>
-          <Text dimColor>{' to switch one'}</Text>
+          {e.surface === 'terminal' ? <Text color={accent}>{'alt\u2191 alt\u2193'}</Text> : null}
+          <Text dimColor>{e.surface === 'terminal' ? ' to switch one' : 'switch one in MarginCue\u2019s card above the box'}</Text>
         </Box>
       </Box>
     )

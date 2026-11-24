@@ -371,10 +371,12 @@ test('in the desktop app MarginCue draws its own card above Claude\'s dialog; Se
   const { gate, pending, ui } = await desktopAtEnter($, on)
   // Claude's dialog is one question under the card: send, or send as written.
   expect(gate.asked.map((question) => [question.question, question.options.map((option) => option.label)])).toEqual([
-    ['Send your prompt with these choices?', ['Send', 'Send as written']],
+    ['Which prompt should Claude use?', ['Use my picks', 'Use my prompt as written']],
   ])
-  // The card: one chip a choice, its name and what Claude would assume; a click opens the app's own menu there.
-  expect(await ui.find({ type: 'Text', text: /3 choices Claude would make$/ })).toBeDefined()
+  // The card: how the prompt reads, then one line a choice, its name and what Claude would assume; a click opens
+  // the app's own menu there.
+  expect(await ui.find({ type: 'Text', text: /^You want a CSV export/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /3 choices Claude would make · to add a note/ })).toBeDefined()
   const chip = async (row: string) => (await ui.find({ key: `card-${row}` }))?.props as ChipProps
   expect([(await chip('c1')).label, (await chip('c1')).value]).toEqual(['Rows', '0'])
   expect((await chip('c1')).options?.map((option) => option.label)).toEqual(['the filtered rows', 'all rows', 'the selected rows'])
@@ -382,7 +384,10 @@ test('in the desktop app MarginCue draws its own card above Claude\'s dialog; Se
   await pick(ui, 'c1', 1)
   expect((await chip('c1')).value).toBe('1')
   expect(await ui.find({ type: 'Text', text: /3 choices Claude would make, 1 yours/ })).toBeDefined()
-  gate.answer('Send')
+  expect(await ui.find({ type: 'Text', text: /^\u2713 yours$/ })).toBeDefined()
+  // A range offers every step in its menu.
+  expect((await chip('c3')).options?.length).toBe(10)
+  gate.answer('Use my picks')
   expect((await pending).text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.`)
   await ui.unmount()
 })
@@ -479,7 +484,7 @@ test('a pick-any choice is one chip too: its menu ticks what is set, and a pick 
   expect(await labels()).toEqual(['sign-ins +1', '\u2713 sign-ins', '\u2713 invitations', '\u25cb billing events'])
   // The first entry shows what is set and changes nothing.
   await pick(ui, 'c1', 'set')
-  gate.answer('Send')
+  gate.answer('Use my picks')
   expect((await pending).text).toBe('Build an export tool for the dashboard.\n\nDecisions:\n- Include sign-ins and invitations in the report.')
   await ui.unmount()
 })
@@ -495,16 +500,50 @@ test('what the person types under "Other" in Claude\'s dialog is added to the pr
 test('Send as written drops what was picked on the card; Skip or closing the dialog sends what is set', async ($, on) => {
   const raw = await desktopAtEnter($, on)
   await pick(raw.ui, 'c1', 1)
-  raw.gate.answer('Send as written')
+  raw.gate.answer('Use my prompt as written')
   expect((await raw.pending).text).toBe(`${DRAFT}.`)
   await raw.ui.unmount()
 })
 
-test('Skip in Claude\'s dialog sends the prompt with what was set on the card', async ($, on) => {
+test('Skip, like closing the dialog, sends the prompt as written: the picks go only on a yes', async ($, on) => {
   const { gate, pending, ui } = await desktopAtEnter($, on)
   await pick(ui, 'c1', 1)
   gate.answer('[No preference]')
-  expect((await pending).text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.`)
+  expect((await pending).text).toBe(`${DRAFT}.`)
+  await ui.unmount()
+})
+
+test('typed text in brackets under Other is the person\'s words, not a skip', async ($, on) => {
+  const { gate, pending, ui } = await desktopAtEnter($, on)
+  gate.answer('[include archived teams]')
+  expect((await pending).text).toBe(`${DRAFT}.\n\n[include archived teams]`)
+  await ui.unmount()
+})
+
+test('a name the code lacks reads unmatched on the card until the person picks its match', async ($, on) => {
+  const files = ['src/dashboard/index.ts', 'src/dashboard/export.ts', 'src/city/canvas.ts']
+  const { clock } = world(on, replies(), {
+    env: { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' },
+    git: (args) => args.includes('ls-files') ? files.join('\n')
+      : args.includes('(class|interface') ? 'src/dashboard/index.ts:1:export function Dashboard\nsrc/dashboard/export.ts:3:export class ExportTool'
+      : args.includes('grep') ? "src/city/canvas.ts:9:'South of Market'\nsrc/city/canvas.ts:12:'Maya'"
+      : '',
+  })
+  const gate = heldPanel(on)
+  await $.session.start({ cwd: '/project', surface: null, isInteractive: false })
+  await clock.settle()
+  const draft = 'Add a CSV button to the Dashboard so Maya can export the Old Market orders'
+  const pending = $.prompt.submit({ text: `${draft}.`, origin: { kind: 'composer' }, wait: false })
+  await clock.settle()
+  await clock.advance(1000)
+  const ui = await $.ui.mount({ ...DIALOG, props: { tool: 'AskUserQuestion', questions: gate.asked } })
+  expect(await ui.find({ type: 'Text', text: /^No match for \u201cOld Market\u201d in your code$/ })).toBeDefined()
+  const match = (await ui.find({ key: 'card-c1' }))?.props as ChipProps
+  expect(match.value).toBe('none')
+  expect(match.options?.[0]?.label).toBe('Choose a match\u2026')
+  // Picking nothing says nothing about it: the card never claims a match it was not given.
+  gate.answer('Use my picks')
+  expect((await pending).text).not.toContain('Old Market" is')
   await ui.unmount()
 })
 
@@ -582,7 +621,7 @@ test('the desktop app says so in the engine entrypoint: its prompts get the card
   const { gate, pending, ui } = await desktopAtEnter($, on)
   expect((await $.prompt.compose(COMPOSE)).sections.some((section) => section.id === 'margincue:blanks')).toBe(true)
   expect(gate.asked.length).toBe(1)
-  gate.answer('Send')
+  gate.answer('Use my picks')
   expect((await pending).text).toBe(`${DRAFT}.`)
   await ui.unmount()
 })
