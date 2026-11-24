@@ -10,7 +10,15 @@ Download [margincue-claude-code.zip](https://github.com/fus3r/margincue/releases
 claude --plugin-dir "$HOME/Downloads/margincue-claude-code.zip"
 ```
 
-Tested on macOS with Claude Code 2.1.330 and 2.1.331. From a source checkout, pass the path to `mods/claude-code` instead of the ZIP.
+Tested on macOS with Claude Code 2.1.330 and 2.1.331.
+
+If you cloned MarginCue, run Claude Code from the project you want to work in. Give `--plugin-dir` the full path to the plugin inside your checkout.
+
+```sh
+claude --plugin-dir "/path/to/MarginCue/mods/claude-code"
+```
+
+Run `/margincue status` in Claude Code to check that the mod loaded.
 
 Type `Build a site to share our club's photos.` and pause. Choose **Answer** when the questions appear. Pick a number, then press Esc to return to the draft. Enter attaches the confirmed answer. To leave MarginCue out of the next session, start Claude Code without `--plugin-dir`.
 
