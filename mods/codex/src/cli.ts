@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { describeUser, interview } from '../../claude-code/hooks/onboarding'
+import { runnable } from './command'
 import { compose } from './compose'
 import { promptHook, stopHook } from './hooks'
 import { serveMcp } from './mcp'
@@ -88,9 +89,8 @@ function launch(args: string[]): void {
   const visual = `${quote(process.execPath)} ${quote(existsSync(STABLE) ? STABLE : SELF)} compose`
   const env = { ...process.env, VISUAL: visual, ...(own && !own.includes('margincue') && { MARGINCUE_EDITOR: own }) }
   const bare = () => {
-    const child = spawn('codex', args, {
-      stdio: 'inherit', shell: process.platform === 'win32', env,
-    })
+    const codex = runnable('codex', args)
+    const child = spawn(codex.command, codex.args, { ...codex.options, stdio: 'inherit', env })
     child.on('exit', (code) => process.exit(code ?? 0))
     child.on('error', (error) => {
       process.stderr.write(`margincue: could not start codex (${error.message}). Is Codex CLI installed?\n`)
@@ -135,7 +135,7 @@ async function setup(): Promise<void> {
   const say = (line = '') => process.stdout.write(`${line}\n`)
   say('MarginCue for Codex')
   say()
-  const codex = spawnSync('codex', ['--version'], { encoding: 'utf8', shell: process.platform === 'win32' })
+  const codex = codexSync(['--version'])
   if (codex.status !== 0) {
     say('Codex CLI was not found. Install it first: npm install -g @openai/codex')
     rl.close()
@@ -148,8 +148,8 @@ async function setup(): Promise<void> {
     return
   }
   say(`1. The plugin (hooks that let you switch the agent's choices during a turn, and the receipt after it).`)
-  const added = spawnSync('codex', ['plugin', 'marketplace', 'add', 'fus3r/margincue'], { encoding: 'utf8', shell: process.platform === 'win32' })
-  const installed = spawnSync('codex', ['plugin', 'add', 'margincue@margincue'], { encoding: 'utf8', shell: process.platform === 'win32' })
+  const added = codexSync(['plugin', 'marketplace', 'add', 'fus3r/margincue'])
+  const installed = codexSync(['plugin', 'add', 'margincue@margincue'])
   say(installed.status === 0 || /already/i.test(`${installed.stdout}${installed.stderr}`)
     ? '   Installed. In your next Codex session, trust its hooks when Codex asks (press t), or review them with /hooks.'
     : `   Could not install it automatically (${(added.stderr || installed.stderr || '').trim().split('\n')[0] || 'unknown error'}).\n` +
@@ -181,45 +181,90 @@ async function setup(): Promise<void> {
   }
   say(`3. The card under Codex's prompt, as you type.`)
   await installRelay(say)
-  const line = aliasLine()
-  if (line && readText(line.file).includes(line.text)) {
-    say(`   The codex alias is already in ${line.file}.`)
-  } else if (line) {
-    const answer = ((await rl.question(`   Add this to ${line.file}?\n     ${line.text}\n   [Y/n] `)) ?? 'n').trim().toLowerCase()
+  const { files, text } = aliasLine()
+  const missing = files.filter((file) => !readText(file).includes(text))
+  if (!missing.length) {
+    say(`   The codex alias is already in ${files.join(' and ')}.`)
+  } else {
+    const answer = ((await rl.question(`   Add this to ${missing.join(' and ')}?\n     ${text}\n   [Y/n] `)) ?? 'n').trim().toLowerCase()
     if (answer === '' || answer === 'y' || answer === 'yes') {
-      try {
-        mkdirSync(dirname(line.file), { recursive: true })
-        appendFileSync(line.file, `\n# MarginCue: Codex with MarginCue's card under its prompt\n${line.text}\n`)
-        say('   Added. Open a new terminal and run codex: the card shows under the prompt as you type.')
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : 'error')
-        say(`   Could not write to ${line.file} (${code}). Add the line above to your shell profile yourself, or start Codex with: node ${quote(STABLE)} codex`)
+      let added = false
+      for (const file of missing) {
+        try {
+          mkdirSync(dirname(file), { recursive: true })
+          appendProfile(file, `\n# MarginCue: Codex with MarginCue's card under its prompt\n${text}\n`)
+          added = true
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : 'error')
+          say(`   Could not write to ${file} (${code}). Add the line above to your shell profile yourself, or start Codex with: node ${quote(STABLE)} codex`)
+        }
       }
+      if (added) say('   Added. Open a new terminal and run codex: the card shows under the prompt as you type.')
     } else say(`   Not added. Start Codex with: node ${quote(STABLE)} codex`)
   }
   rl.close()
 }
 
+function codexSync(args: string[]) {
+  const codex = runnable('codex', args)
+  return spawnSync(codex.command, codex.args, { ...codex.options, encoding: 'utf8' })
+}
+
+const hasUtf16LeBom = (bytes: Buffer) => bytes[0] === 0xff && bytes[1] === 0xfe
+
 function readText(file: string): string {
   try {
-    return readFileSync(file, 'utf8')
+    const bytes = readFileSync(file)
+    return bytes.toString(hasUtf16LeBom(bytes) ? 'utf16le' : 'utf8')
   } catch {
     return ''
   }
 }
 
-function aliasLine(): { file: string; text: string } | null {
+function appendProfile(file: string, text: string): void {
+  if (process.platform !== 'win32') {
+    appendFileSync(file, text)
+    return
+  }
+  // Windows PowerShell 5.1 can write UTF-16 LE and needs a BOM to read a new UTF-8 profile as UTF-8.
+  const before = existsSync(file) ? readFileSync(file) : Buffer.alloc(0)
+  appendFileSync(file, before.length ? text : `\ufeff${text}`, hasUtf16LeBom(before) ? 'utf16le' : 'utf8')
+}
+
+function powershellProfiles(): string[] {
+  const files = new Set<string>()
+  // When Documents is missing, older PowerShell versions can omit it from $PROFILE.
+  const query = [
+    '$file = [string]$PROFILE;',
+    String.raw`if ([IO.Path]::GetPathRoot($file) -in '', '\') {`,
+    "  $documents = [Environment]::GetFolderPath('MyDocuments', 'DoNotVerify');",
+    String.raw`  $file = [IO.Path]::Combine($documents, $file.TrimStart('\'))`,
+    '};',
+    // Keep redirected Documents paths intact across console code pages.
+    '[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($file))',
+  ].join(' ')
+  for (const shell of ['pwsh', 'powershell']) {
+    const command = runnable(shell, ['-NoProfile', '-Command', query])
+    const answer = spawnSync(command.command, command.args, { ...command.options, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000 })
+    if (answer.status !== 0) continue
+    let file = Buffer.from(answer.stdout.trim(), 'base64').toString('utf8')
+    // Still relative (no Documents folder Windows can name): the person's own Documents is where PowerShell looks.
+    if (/\.ps1$/i.test(file) && !/^(?:[a-z]:[\\/]|\\\\)/i.test(file)) {
+      file = join(process.env['USERPROFILE'] || homedir(), 'Documents', file.replace(/^[\\/]+/, ''))
+    }
+    if (/^(?:[a-z]:[\\/]|\\\\).+\.ps1$/i.test(file)) files.add(file)
+  }
+  return files.size ? [...files] : [join(homedir(), 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1')]
+}
+
+function aliasLine(): { files: string[]; text: string } {
   // `node` from PATH, not this process's path: a versioned install path breaks on the next Node upgrade.
   const run = `node ${quote(STABLE)}`
-  if (process.platform === 'win32') {
-    const profile = join(homedir(), 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1')
-    mkdirSync(join(homedir(), 'Documents', 'PowerShell'), { recursive: true })
-    return { file: profile, text: `function codex { & ${run} codex @args }` }
-  }
+  if (process.platform === 'win32') return { files: powershellProfiles(), text: `function codex { & ${run} codex @args }` }
   const shell = process.env['SHELL'] ?? ''
   if (shell.endsWith('fish')) {
     const config = process.env['XDG_CONFIG_HOME'] || join(homedir(), '.config')
-    return { file: join(config, 'fish', 'config.fish'), text: `function codex; ${run} codex $argv; end` }
+    return { files: [join(config, 'fish', 'config.fish')], text: `function codex; ${run} codex $argv; end` }
   }
   // zsh reads its profile from ZDOTDIR when set. A macOS terminal opens bash as a login shell, which reads the
   // first of these files that exists and never ~/.bashrc.
@@ -227,7 +272,7 @@ function aliasLine(): { file: string; text: string } | null {
   const file = shell.endsWith('zsh') ? join(process.env['ZDOTDIR'] || homedir(), '.zshrc')
     : process.platform === 'darwin' && shell.endsWith('bash') ? login.find((path) => existsSync(path)) ?? login[0]!
     : join(homedir(), '.bashrc')
-  return { file, text: `alias codex='${run} codex'` }
+  return { files: [file], text: `alias codex='${run} codex'` }
 }
 
 function status(): void {

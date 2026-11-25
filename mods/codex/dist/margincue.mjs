@@ -104,6 +104,57 @@ function describeUser(user) {
   return parts.filter(Boolean).join(" ");
 }
 
+// src/command.ts
+import { statSync } from "node:fs";
+import { win32 } from "node:path";
+function runnable(file, args, cwd) {
+  return process.platform === "win32" ? windowsCommand(file, args, process.env, fileExists, win32.resolve(cwd ?? ".")) : { command: file, args, options: {} };
+}
+function windowsCommand(file, args, env, isFile, cwd) {
+  const found = findProgram(file, env, isFile, cwd);
+  if (!found || !/\.(cmd|bat)$/i.test(found)) return { command: found ?? file, args, options: {} };
+  if (args.some((arg) => /[\r\n]/.test(arg))) throw new Error("Cannot pass line breaks through a Windows batch file");
+  const line = [caret(found), ...args.map((arg) => caret(caret(quoteArg(arg))))].join(" ");
+  return { command: variable(env, "COMSPEC") || "cmd.exe", args: ["/d", "/s", "/c", `"${line}"`], options: { windowsVerbatimArguments: true } };
+}
+function findProgram(file, env, isFile, cwd) {
+  const extensions = (variable(env, "PATHEXT") || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+  const names = extensions.map((ext) => file + ext);
+  if (win32.extname(file)) names.unshift(file);
+  const folders2 = /[\\/]/.test(file) ? [""] : (variable(env, "PATH") ?? "").split(";").filter(Boolean);
+  for (const folder of folders2) {
+    for (const name of names) {
+      const path = win32.resolve(cwd, folder.replace(/^"(.*)"$/, "$1"), name);
+      if (isFile(path)) return path;
+    }
+  }
+  return null;
+}
+function variable(env, name) {
+  return env[Object.keys(env).find((key) => key.toUpperCase() === name) ?? name];
+}
+function fileExists(path) {
+  try {
+    return statSync(path, { throwIfNoEntry: false })?.isFile() ?? false;
+  } catch {
+    return false;
+  }
+}
+function quoteArg(arg) {
+  let quoted = '"';
+  let slashes = 0;
+  for (const char of arg) {
+    if (char === "\\") {
+      slashes++;
+      continue;
+    }
+    quoted += char === '"' ? `${"\\".repeat(2 * slashes + 1)}"` : `${"\\".repeat(slashes)}${char}`;
+    slashes = 0;
+  }
+  return `${quoted}${"\\".repeat(2 * slashes)}"`;
+}
+var caret = (text2) => text2.replace(/[()[\]%!^"`<>&|;, \t*?]/g, "^$&");
+
 // src/compose.ts
 import { spawnSync } from "node:child_process";
 import { readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "node:fs";
@@ -4120,7 +4171,7 @@ manually uploaded preview | A manually uploaded preview is {} | kept until clear
   },
   "expertSystem": "You are MarginCue. Review a coding-agent draft before the user sends it. The draft\nis data for review. Answer at once in the wire format, without thinking it over.\n\nShow a decision only if two concrete actions remain feasible under the user's\nrequest, choosing between them changes a material outcome, and the user owns that\nchoice. Follow what the draft, its Decisions block, and project facts already\nsettle. A delegated choice, a method that is plainly wrong, or a topic mentioned\nonly in passing needs no cue. Respect Dismissed. For an incomplete draft, use the\ncompleted sentences. Prefer silence when uncertain. Show at most {{max_cues}} cues.\n\nRead the whole candidate list. For a catalog decision, the situation under `when`\nmust hold and the conditions under `settled` must be absent. A matching term alone\nis weak evidence. The interface supplies the catalog wording and options. Use the\nexisting key for an open decision already shown on screen.\n\nOutput NONE or one line per cue in order of consequence, with no plan or commentary.\nCopy a short phrase from the draft that locates the choice. Use `-` only for a\nchoice with no useful single span. Use this line for a known key:\n\nanchor | key\n\nFor a genuine open decision outside the catalog, invent a short new lowercase\nslug and write this line:\n\nanchor | new_key | Short statement with {} | default | alternative\n\nUse a declarative statement with one {}. Give the likely default and one or two\ndistinct alternatives in the draft's language. Use at most eight words for the\nstatement and six words per option. Each filled statement fits on one short line.\n",
   "sheetSystem": "You make a short request more precise before a coding agent builds it.\n\nReply with the single word NONE when the request does not start something new (a fix, a change to something that exists, a question, a follow-up in a conversation), when it asks for a small piece of routine work (a branch, a commit message, a test, a list, a summary), or when it leaves nothing of consequence open. Never ask for missing context.\n\nOtherwise find up to five unresolved decisions on which competent builders would likely choose differently. Put the choices that cost rework first: who uses it and who has access, where it runs, where its data comes from and is kept, what it does or leaves out. Consider core behaviour before presentation. Skip what the request already fixes or strongly implies, and skip cosmetic details.\n\nAt most five lines and nothing else, each in the form:\nquestion | option | option | option\nOne concrete question per decision, with two to four short, plausible options, {language}.",
-  "cardSystem": 'You are MarginCue. A developer is typing a prompt for a coding agent (Claude Code or Codex) and has not sent it yet. Before they press Enter, show how the agent will read it and which consequential choices the agent would otherwise make alone. Answer at once in the format below: no preamble, no reasoning.\n\nread | <one sentence of at most 25 words starting "You want": what the agent will deliver, and how it takes the request (its scope; whether listed cases are the whole job or examples). Speak of the agent in the third person ("the agent will\u2026"), never "I".>\nkind | <build | change | fix | explore | ask | other>\nrow | <key> | <label> | <type> | <statement with {}> | <option> | <option> ...\n\nRows (0 to 5, most consequential first) are choices the draft leaves open where:\n- two or more options are plausible for this request in this repository;\n- the choice changes what the developer gets or what counts as done: scope, behaviour, the output and where it goes, which existing code to build on, how far to go, what to leave alone, how the result is checked;\n- a developer could reasonably want something other than what the agent would do unasked.\nNever ask about something the draft states or clearly implies, about names listed as not found in the code, about implementation details the developer would not judge, or about trivia. Prefer fewer, sharper rows. Zero rows is right for a precise request, a question or a small fix.\n\nFields:\n- key: snake_case, at most 32 characters. Reuse the key of a row on screen when it is the same choice.\n- label: one or two lowercase words, at most 12 characters ("build on", "deliver", "capture", "scope").\n- type: `one` (pick one; the first option is the default), `many` (pick any; mark the defaults with *), `range` (ordered options from least to most; mark the default with *), or `num`, followed by default | min | max | unit instead of options.\n- statement: the decision as it will be attached to the prompt, with {} where the option goes ("Deliver {} after each run").\n- options: 2 to 5, concrete and short (at most 6 words each), in this repository\'s own terms. Write each option out in full: never abbreviate it or cut it short with "\u2026". The default is what a capable agent would most likely do unasked. A star marking a default goes right after its option.\n- A row may end with | @<a short phrase copied exactly from the draft> that the choice is about.\n\nUse the repository outline, the names found in the code and the folders that may already do part of the job: say "extend tools/runlog" rather than "reuse existing code". Name a file or folder in an option only when the draft, the names found in the code or the listed folders point to it; never infer one from a common word (a draft about how something "renders" is not about render.py). When the draft lists examples of what it wants, a `many` row can let the developer confirm which are in scope: mark the examples * and add one or two natural additions unmarked.\n\nWhen an "About the developer" line is given, fit the rows to that person: leave out basics an expert in that field settles alone; for a field they are learning, prefer the essential choices, in plain words; raise first the kinds of choices they make themselves, and leave the kinds they hand to the agent alone unless the draft asks about them.\n\nWrite the read line, labels, statements and options {language}.\n\nExample\nDraft: Add a CSV export to the orders page, big accounts have thousands of orders\nIn the code: orders page (src/pages/orders.tsx)\nread | You want a CSV download of orders from the orders page that copes with very large accounts.\nkind | change\nrow | export_rows | rows | one | Export {} | the filtered orders | all orders | the selected orders | @CSV export\nrow | export_where | built | one | Build the file {} | on the server, streamed | in the browser\nrow | export_limit | max rows | num | Cap one export at {} | 100000 | 1000 | 1000000 | rows',
+  "cardSystem": 'You are MarginCue. A developer is typing a prompt for a coding agent (Claude Code or Codex) and has not sent it yet. Before they press Enter, show how the agent will read it and which consequential choices the agent would otherwise make alone. Answer at once in the format below: no preamble, no reasoning.\n\nread | <one sentence of at most 25 words starting "You want": what the agent will deliver, and how it takes the request (its scope; whether listed cases are the whole job or examples; whether listed steps go in the order written). Speak of the agent in the third person ("the agent will\u2026"), never "I".>\nkind | <build | change | fix | explore | ask | other>\nrow | <key> | <label> | <type> | <statement with {}> | <option> | <option> ...\n\nRows (0 to 5, most consequential first) are choices the draft leaves open where:\n- two or more options are plausible for this request in this repository;\n- the choice changes what the developer gets or what counts as done: scope, behaviour, the output and where it goes, which existing code to build on, how far to go, what to leave alone, how the result is checked;\n- a developer could reasonably want something other than what the agent would do unasked.\nNever ask about something the draft states or clearly implies, about names listed as not found in the code, about implementation details the developer would not judge, or about trivia. Prefer fewer, sharper rows. Zero rows is right for a precise request, a question or a small fix.\nOne exception: when the draft lists steps (numbered, or first \u2026 then \u2026 finally), add the row `row | step_order | order | one | Do the steps {} | in written order, from step 1 | in whatever order works`, last, unless the draft already says the order doesn\'t matter. Agents often start at a later step; this row pins the order.\n\nFields:\n- key: snake_case, at most 32 characters. Reuse the key of a row on screen when it is the same choice.\n- label: one or two lowercase words, at most 12 characters ("build on", "deliver", "capture", "scope").\n- type: `one` (pick one; the first option is the default), `many` (pick any; mark the defaults with *), `range` (ordered options from least to most; mark the default with *), or `num`, followed by default | min | max | unit instead of options.\n- statement: the decision as it will be attached to the prompt, with {} where the option goes ("Deliver {} after each run").\n- options: 2 to 5, concrete and short (at most 6 words each), in this repository\'s own terms. Write each option out in full: never abbreviate it or cut it short with "\u2026". The default is what a capable agent would most likely do unasked. A star marking a default goes right after its option.\n- A row may end with | @<a short phrase copied exactly from the draft> that the choice is about.\n\nUse the repository outline, the names found in the code and the folders that may already do part of the job: say "extend tools/runlog" rather than "reuse existing code". Name a file or folder in an option only when the draft, the names found in the code or the listed folders point to it; never infer one from a common word (a draft about how something "renders" is not about render.py). When the draft lists examples of what it wants, a `many` row can let the developer confirm which are in scope: mark the examples * and add one or two natural additions unmarked.\n\nWhen an "About the developer" line is given, fit the rows to that person: leave out basics an expert in that field settles alone; for a field they are learning, prefer the essential choices, in plain words; raise first the kinds of choices they make themselves, and leave the kinds they hand to the agent alone unless the draft asks about them.\n\nWrite the read line, labels, statements and options {language}.\n\nExample\nDraft: Add a CSV export to the orders page, big accounts have thousands of orders\nIn the code: orders page (src/pages/orders.tsx)\nread | You want a CSV download of orders from the orders page that copes with very large accounts.\nkind | change\nrow | export_rows | rows | one | Export {} | the filtered orders | all orders | the selected orders | @CSV export\nrow | export_where | built | one | Build the file {} | on the server, streamed | in the browser\nrow | export_limit | max rows | num | Cap one export at {} | 100000 | 1000 | 1000000 | rows',
   "sketchSystem": `You are MarginCue. A developer is about to send a request to a coding agent. Draw what the finished result will look like to them, so they can see before sending whether it is what they want. Answer at once in this format and nothing else:
 
 title | <what the sketch shows, at most 6 words>
@@ -4143,6 +4194,7 @@ The user runs MarginCue, which lets them switch the choices you make for them wh
 
 - label: two to four words naming the choice. Your choice and each alternative: at most six words, concrete.
 - Give one to three alternatives a reasonable user might prefer.
+- Taking the user's listed steps in another order than written, or starting past their first step, is such a choice: mark it before you act on it ("I'll start with \u27E6order: step 3, the schema | step 1 first\u27E7").
 - At most four per reply, in prose only (never inside code, commands or file contents), and never for something the user already settled or for trivia.
 
 Example: Each run is saved as \u27E6run log format: one JSONL file per run | one SQLite database | one CSV per run\u27E7, and a zone stay counts as stuck after \u27E6stuck threshold: 45 s | 30 s | 60 s\u27E7.`,
@@ -10096,7 +10148,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.17";
+var VERSION = "0.4.18";
 var MIN_CODEX = "0.171";
 function tooOld(output2) {
   const match = /codex-cli (\d+)\.(\d+)\.(\d+)/.exec(output2);
@@ -10142,11 +10194,11 @@ var CodexModel = class {
     const args = ["app-server", "-c", "features.hooks=false", "-c", "features.memories=false", "-c", "project_doc_max_bytes=0"];
     if (this.disablePlugins) args.push("-c", "features.plugins=false");
     const [program, ...lead] = this.command;
-    const child = spawn(program, [...lead, ...args], {
+    const codex = runnable(program, [...lead, ...args], this.cwd);
+    const child = spawn(codex.command, codex.args, {
+      ...codex.options,
       cwd: this.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      // Codex is a .cmd shim on Windows when installed with npm.
-      shell: process.platform === "win32" && this.command.length === 1 && !/\.exe$/i.test(program),
       env: { ...process.env, MARGINCUE_READER: "1" },
       windowsHide: true
     });
@@ -10285,7 +10337,7 @@ var CodexModel = class {
 
 // src/store.ts
 import { spawn as spawn2 } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync as statSync2, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 var HOME = process.env["MARGINCUE_HOME"] ?? join(homedir(), ".margincue");
@@ -10395,7 +10447,7 @@ function readHead(file, bytes) {
 }
 function readTail(file, bytes) {
   try {
-    const size = statSync(file).size;
+    const size = statSync2(file).size;
     const fd = openSync(file, "r");
     try {
       const start = Math.max(0, size - bytes);
@@ -10940,8 +10992,9 @@ async function compose(file) {
     const temp = join2(tmpdir(), `margincue-${process.pid}.md`);
     writeFileSync2(temp, draft.text);
     restore();
-    const [cmd, ...args] = command.split(/\s+/).filter(Boolean);
-    spawnSync(cmd, [...args, temp], { stdio: "inherit", shell: process.platform === "win32" });
+    const [cmd, ...args] = process.platform === "win32" ? (command.match(/"[^"]*"|\S+/g) ?? []).map((word) => word.replace(/^"(.*)"$/, "$1")) : command.split(/\s+/).filter(Boolean);
+    const editor = runnable(cmd, [...args, temp]);
+    spawnSync(editor.command, editor.args, { ...editor.options, stdio: "inherit" });
     enter();
     try {
       replaceText(readFileSync2(temp, "utf8").replace(/\s+$/, ""));
@@ -11147,7 +11200,7 @@ function startsSomethingNew(draft, context) {
 // src/card-store.ts
 import { spawn as spawn3 } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync as mkdirSync2, readdirSync, readFileSync as readFileSync3, renameSync as renameSync2, statSync as statSync2, unlinkSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { mkdirSync as mkdirSync2, readdirSync, readFileSync as readFileSync3, renameSync as renameSync2, statSync as statSync3, unlinkSync, writeFileSync as writeFileSync3 } from "node:fs";
 import { join as join3 } from "node:path";
 import { fileURLToPath } from "node:url";
 var CARDS = join3(HOME, "codex", "cards");
@@ -11240,7 +11293,7 @@ function pruneCards(now3 = Date.now()) {
     for (const name of readdirSync(CARDS)) {
       const file = join3(CARDS, name);
       try {
-        if (now3 - statSync2(file).mtimeMs > KEEP_MS) unlinkSync(file);
+        if (now3 - statSync3(file).mtimeMs > KEEP_MS) unlinkSync(file);
       } catch {
       }
     }
@@ -11774,7 +11827,7 @@ import { dirname as dirname2, join as join4, resolve } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/band.ts
-import { statSync as statSync3 } from "node:fs";
+import { statSync as statSync4 } from "node:fs";
 import { performance as performance2 } from "node:perf_hooks";
 import { createInterface as createInterface3 } from "node:readline";
 var PROTOCOL = 1;
@@ -12141,7 +12194,7 @@ var Band = class {
 };
 function fileStamp(file) {
   try {
-    const stat = statSync3(file);
+    const stat = statSync4(file);
     return `${stat.mtimeMs}:${stat.size}`;
   } catch {
     return "";
@@ -12415,11 +12468,8 @@ function launch(args) {
   const visual = `${quote(process.execPath)} ${quote(existsSync2(STABLE) ? STABLE : SELF)} compose`;
   const env = { ...process.env, VISUAL: visual, ...own && !own.includes("margincue") && { MARGINCUE_EDITOR: own } };
   const bare = () => {
-    const child = spawn5("codex", args, {
-      stdio: "inherit",
-      shell: process.platform === "win32",
-      env
-    });
+    const codex = runnable("codex", args);
+    const child = spawn5(codex.command, codex.args, { ...codex.options, stdio: "inherit", env });
     child.on("exit", (code) => process.exit(code ?? 0));
     child.on("error", (error) => {
       process.stderr.write(`margincue: could not start codex (${error.message}). Is Codex CLI installed?
@@ -12457,11 +12507,11 @@ function lineReader() {
 }
 async function setup() {
   const rl = lineReader();
-  const say = (line2 = "") => process.stdout.write(`${line2}
+  const say = (line = "") => process.stdout.write(`${line}
 `);
   say("MarginCue for Codex");
   say();
-  const codex = spawnSync3("codex", ["--version"], { encoding: "utf8", shell: process.platform === "win32" });
+  const codex = codexSync(["--version"]);
   if (codex.status !== 0) {
     say("Codex CLI was not found. Install it first: npm install -g @openai/codex");
     rl.close();
@@ -12474,8 +12524,8 @@ async function setup() {
     return;
   }
   say(`1. The plugin (hooks that let you switch the agent's choices during a turn, and the receipt after it).`);
-  const added = spawnSync3("codex", ["plugin", "marketplace", "add", "fus3r/margincue"], { encoding: "utf8", shell: process.platform === "win32" });
-  const installed = spawnSync3("codex", ["plugin", "add", "margincue@margincue"], { encoding: "utf8", shell: process.platform === "win32" });
+  const added = codexSync(["plugin", "marketplace", "add", "fus3r/margincue"]);
+  const installed = codexSync(["plugin", "add", "margincue@margincue"]);
   say(installed.status === 0 || /already/i.test(`${installed.stdout}${installed.stderr}`) ? "   Installed. In your next Codex session, trust its hooks when Codex asks (press t), or review them with /hooks." : `   Could not install it automatically (${(added.stderr || installed.stderr || "").trim().split("\n")[0] || "unknown error"}).
    Run: codex plugin marketplace add fus3r/margincue && codex plugin add margincue@margincue`);
   keepCopy();
@@ -12505,51 +12555,89 @@ async function setup() {
   }
   say(`3. The card under Codex's prompt, as you type.`);
   await installRelay(say);
-  const line = aliasLine();
-  if (line && readText(line.file).includes(line.text)) {
-    say(`   The codex alias is already in ${line.file}.`);
-  } else if (line) {
-    const answer = (await rl.question(`   Add this to ${line.file}?
-     ${line.text}
+  const { files, text: text2 } = aliasLine();
+  const missing = files.filter((file) => !readText(file).includes(text2));
+  if (!missing.length) {
+    say(`   The codex alias is already in ${files.join(" and ")}.`);
+  } else {
+    const answer = (await rl.question(`   Add this to ${missing.join(" and ")}?
+     ${text2}
    [Y/n] `) ?? "n").trim().toLowerCase();
     if (answer === "" || answer === "y" || answer === "yes") {
-      try {
-        mkdirSync4(dirname3(line.file), { recursive: true });
-        appendFileSync(line.file, `
+      let added2 = false;
+      for (const file of missing) {
+        try {
+          mkdirSync4(dirname3(file), { recursive: true });
+          appendProfile(file, `
 # MarginCue: Codex with MarginCue's card under its prompt
-${line.text}
+${text2}
 `);
-        say("   Added. Open a new terminal and run codex: the card shows under the prompt as you type.");
-      } catch (error) {
-        const code = error.code ?? (error instanceof Error ? error.message : "error");
-        say(`   Could not write to ${line.file} (${code}). Add the line above to your shell profile yourself, or start Codex with: node ${quote(STABLE)} codex`);
+          added2 = true;
+        } catch (error) {
+          const code = error.code ?? (error instanceof Error ? error.message : "error");
+          say(`   Could not write to ${file} (${code}). Add the line above to your shell profile yourself, or start Codex with: node ${quote(STABLE)} codex`);
+        }
       }
+      if (added2) say("   Added. Open a new terminal and run codex: the card shows under the prompt as you type.");
     } else say(`   Not added. Start Codex with: node ${quote(STABLE)} codex`);
   }
   rl.close();
 }
+function codexSync(args) {
+  const codex = runnable("codex", args);
+  return spawnSync3(codex.command, codex.args, { ...codex.options, encoding: "utf8" });
+}
+var hasUtf16LeBom = (bytes) => bytes[0] === 255 && bytes[1] === 254;
 function readText(file) {
   try {
-    return readFileSync5(file, "utf8");
+    const bytes = readFileSync5(file);
+    return bytes.toString(hasUtf16LeBom(bytes) ? "utf16le" : "utf8");
   } catch {
     return "";
   }
 }
+function appendProfile(file, text2) {
+  if (process.platform !== "win32") {
+    appendFileSync(file, text2);
+    return;
+  }
+  const before2 = existsSync2(file) ? readFileSync5(file) : Buffer.alloc(0);
+  appendFileSync(file, before2.length ? text2 : `\uFEFF${text2}`, hasUtf16LeBom(before2) ? "utf16le" : "utf8");
+}
+function powershellProfiles() {
+  const files = /* @__PURE__ */ new Set();
+  const query = [
+    "$file = [string]$PROFILE;",
+    String.raw`if ([IO.Path]::GetPathRoot($file) -in '', '\') {`,
+    "  $documents = [Environment]::GetFolderPath('MyDocuments', 'DoNotVerify');",
+    String.raw`  $file = [IO.Path]::Combine($documents, $file.TrimStart('\'))`,
+    "};",
+    // Keep redirected Documents paths intact across console code pages.
+    "[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($file))"
+  ].join(" ");
+  for (const shell of ["pwsh", "powershell"]) {
+    const command = runnable(shell, ["-NoProfile", "-Command", query]);
+    const answer = spawnSync3(command.command, command.args, { ...command.options, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15e3 });
+    if (answer.status !== 0) continue;
+    let file = Buffer.from(answer.stdout.trim(), "base64").toString("utf8");
+    if (/\.ps1$/i.test(file) && !/^(?:[a-z]:[\\/]|\\\\)/i.test(file)) {
+      file = join5(process.env["USERPROFILE"] || homedir2(), "Documents", file.replace(/^[\\/]+/, ""));
+    }
+    if (/^(?:[a-z]:[\\/]|\\\\).+\.ps1$/i.test(file)) files.add(file);
+  }
+  return files.size ? [...files] : [join5(homedir2(), "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")];
+}
 function aliasLine() {
   const run = `node ${quote(STABLE)}`;
-  if (process.platform === "win32") {
-    const profile = join5(homedir2(), "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1");
-    mkdirSync4(join5(homedir2(), "Documents", "PowerShell"), { recursive: true });
-    return { file: profile, text: `function codex { & ${run} codex @args }` };
-  }
+  if (process.platform === "win32") return { files: powershellProfiles(), text: `function codex { & ${run} codex @args }` };
   const shell = process.env["SHELL"] ?? "";
   if (shell.endsWith("fish")) {
     const config = process.env["XDG_CONFIG_HOME"] || join5(homedir2(), ".config");
-    return { file: join5(config, "fish", "config.fish"), text: `function codex; ${run} codex $argv; end` };
+    return { files: [join5(config, "fish", "config.fish")], text: `function codex; ${run} codex $argv; end` };
   }
   const login = [".bash_profile", ".bash_login", ".profile"].map((name) => join5(homedir2(), name));
   const file = shell.endsWith("zsh") ? join5(process.env["ZDOTDIR"] || homedir2(), ".zshrc") : process.platform === "darwin" && shell.endsWith("bash") ? login.find((path) => existsSync2(path)) ?? login[0] : join5(homedir2(), ".bashrc");
-  return { file, text: `alias codex='${run} codex'` };
+  return { files: [file], text: `alias codex='${run} codex'` };
 }
 function status2() {
   const settings = readSettings();

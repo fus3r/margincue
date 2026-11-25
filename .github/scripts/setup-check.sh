@@ -6,6 +6,8 @@ pack=$(npm pack --silent | tail -1)
 home="$RUNNER_TEMP/home"
 mkdir -p "$home"
 export HOME="$home" USERPROFILE="$home" SHELL=/bin/bash
+# Windows reads its Documents folder from USERPROFILE: give it the Windows form of the path, as a real profile has.
+if [[ "$RUNNER_OS" == Windows ]]; then export USERPROFILE="$(cygpath -w "$home")"; fi
 touch "$home/.bashrc"
 # Setup downloads the relay this version's release carries. The relay workflow attaches it only once a
 # tag is pushed and its builds finish, so until then setup falls back to ctrl+g, as it would for a user.
@@ -25,7 +27,15 @@ fi
 printf '\ny\n' | npx -y --package="./$pack" margincue setup | tee "$RUNNER_TEMP/setup.log"
 node "$home/.margincue/bin/margincue.mjs" codex --version | grep codex-cli
 if [[ "$RUNNER_OS" == Windows ]]; then
-  grep "function codex" "$home/Documents/PowerShell/Microsoft.PowerShell_profile.ps1"
+  check='
+    if (-not (Select-String -LiteralPath $PROFILE -Pattern "^function codex .*margincue\.mjs" -Quiet)) {
+      throw "MarginCue function missing from $PROFILE"
+    }
+  '
+  pwsh -NoProfile -Command "$check"
+  # Windows PowerShell 5.1 is checked when setup says it wrote its profile: a CI home can leave it no Documents folder to name.
+  if grep -q 'WindowsPowerShell' "$RUNNER_TEMP/setup.log"; then powershell -NoProfile -Command "$check"; fi
+  [[ "$(grep -cF '[Y/n]' "$RUNNER_TEMP/setup.log")" == 1 ]]
   grep "Not on Windows yet" "$RUNNER_TEMP/setup.log"
 else
   # A macOS terminal opens bash as a login shell: the alias goes where that shell reads it.
