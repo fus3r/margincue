@@ -25,7 +25,14 @@ fi
 printf '\ny\n' | npx -y --package="./$pack" margincue setup | tee "$RUNNER_TEMP/setup.log"
 node "$home/.margincue/bin/margincue.mjs" codex --version | grep codex-cli
 if [[ "$RUNNER_OS" == Windows ]]; then
-  grep "function codex" "$home/Documents/PowerShell/Microsoft.PowerShell_profile.ps1"
+  for shell in pwsh powershell; do
+    "$shell" -NoProfile -Command '
+      if (-not (Select-String -LiteralPath $PROFILE -Pattern "^function codex .*margincue\.mjs" -Quiet)) {
+        throw "MarginCue function missing from $PROFILE"
+      }
+    '
+  done
+  [[ "$(grep -cF '[Y/n]' "$RUNNER_TEMP/setup.log")" == 1 ]]
   grep "Not on Windows yet" "$RUNNER_TEMP/setup.log"
 else
   # A macOS terminal opens bash as a login shell: the alias goes where that shell reads it.

@@ -8,6 +8,7 @@
 import { spawn } from 'node:child_process'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createInterface } from 'node:readline'
+import { runnable } from './command'
 import { VERSION } from './version'
 
 export type Completion = { ok: true; text: string; ms: number } | { ok: false; reason: string; ms: number }
@@ -57,11 +58,11 @@ export class CodexModel {
     // A widget reading must not start its own copy of the widget server.
     if (this.disablePlugins) args.push('-c', 'features.plugins=false')
     const [program, ...lead] = this.command
-    const child = spawn(program!, [...lead, ...args], {
+    const codex = runnable(program!, [...lead, ...args], this.cwd)
+    const child = spawn(codex.command, codex.args, {
+      ...codex.options,
       cwd: this.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
-      // Codex is a .cmd shim on Windows when installed with npm.
-      shell: process.platform === 'win32' && this.command.length === 1 && !/\.exe$/i.test(program!),
       env: { ...process.env, MARGINCUE_READER: '1' },
       windowsHide: true,
     })

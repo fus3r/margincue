@@ -18,6 +18,7 @@ import { collectVocabulary } from '../../claude-code/hooks/repo-index'
 import { DARK } from '../../claude-code/hooks/segments'
 import type { Action, Segment, Style } from '../../claude-code/hooks/segments'
 import { cardConfig } from './card-config'
+import { runnable } from './command'
 import { Draft } from './editor'
 import { CodexModel } from './model'
 import { PATHS, learn, processEngine, readLearned, readSettings, writeJson } from './store'
@@ -271,8 +272,12 @@ export async function compose(file: string): Promise<void> {
     const temp = join(tmpdir(), `margincue-${process.pid}.md`)
     writeFileSync(temp, draft.text)
     restore()
-    const [cmd, ...args] = command.split(/\s+/).filter(Boolean)
-    spawnSync(cmd!, [...args, temp], { stdio: 'inherit', shell: process.platform === 'win32' })
+    // A quoted program keeps its spaces: "C:\Program Files\Notepad++\notepad++.exe" -multiInst
+    const [cmd, ...args] = process.platform === 'win32'
+      ? (command.match(/"[^"]*"|\S+/g) ?? []).map((word) => word.replace(/^"(.*)"$/, '$1'))
+      : command.split(/\s+/).filter(Boolean)
+    const editor = runnable(cmd!, [...args, temp])
+    spawnSync(editor.command, editor.args, { ...editor.options, stdio: 'inherit' })
     enter()
     try {
       replaceText(readFileSync(temp, 'utf8').replace(/\s+$/, ''))

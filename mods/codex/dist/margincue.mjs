@@ -104,6 +104,57 @@ function describeUser(user) {
   return parts.filter(Boolean).join(" ");
 }
 
+// src/command.ts
+import { statSync } from "node:fs";
+import { win32 } from "node:path";
+function runnable(file, args, cwd) {
+  return process.platform === "win32" ? windowsCommand(file, args, process.env, fileExists, win32.resolve(cwd ?? ".")) : { command: file, args, options: {} };
+}
+function windowsCommand(file, args, env, isFile, cwd) {
+  const found = findProgram(file, env, isFile, cwd);
+  if (!found || !/\.(cmd|bat)$/i.test(found)) return { command: found ?? file, args, options: {} };
+  if (args.some((arg) => /[\r\n]/.test(arg))) throw new Error("Cannot pass line breaks through a Windows batch file");
+  const line = [caret(found), ...args.map((arg) => caret(caret(quoteArg(arg))))].join(" ");
+  return { command: variable(env, "COMSPEC") || "cmd.exe", args: ["/d", "/s", "/c", `"${line}"`], options: { windowsVerbatimArguments: true } };
+}
+function findProgram(file, env, isFile, cwd) {
+  const extensions = (variable(env, "PATHEXT") || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+  const names = extensions.map((ext) => file + ext);
+  if (win32.extname(file)) names.unshift(file);
+  const folders2 = /[\\/]/.test(file) ? [""] : (variable(env, "PATH") ?? "").split(";").filter(Boolean);
+  for (const folder of folders2) {
+    for (const name of names) {
+      const path = win32.resolve(cwd, folder.replace(/^"(.*)"$/, "$1"), name);
+      if (isFile(path)) return path;
+    }
+  }
+  return null;
+}
+function variable(env, name) {
+  return env[Object.keys(env).find((key) => key.toUpperCase() === name) ?? name];
+}
+function fileExists(path) {
+  try {
+    return statSync(path, { throwIfNoEntry: false })?.isFile() ?? false;
+  } catch {
+    return false;
+  }
+}
+function quoteArg(arg) {
+  let quoted = '"';
+  let slashes = 0;
+  for (const char of arg) {
+    if (char === "\\") {
+      slashes++;
+      continue;
+    }
+    quoted += char === '"' ? `${"\\".repeat(2 * slashes + 1)}"` : `${"\\".repeat(slashes)}${char}`;
+    slashes = 0;
+  }
+  return `${quoted}${"\\".repeat(2 * slashes)}"`;
+}
+var caret = (text2) => text2.replace(/[()[\]%!^"`<>&|;, \t*?]/g, "^$&");
+
 // src/compose.ts
 import { spawnSync } from "node:child_process";
 import { readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "node:fs";
@@ -10142,11 +10193,11 @@ var CodexModel = class {
     const args = ["app-server", "-c", "features.hooks=false", "-c", "features.memories=false", "-c", "project_doc_max_bytes=0"];
     if (this.disablePlugins) args.push("-c", "features.plugins=false");
     const [program, ...lead] = this.command;
-    const child = spawn(program, [...lead, ...args], {
+    const codex = runnable(program, [...lead, ...args], this.cwd);
+    const child = spawn(codex.command, codex.args, {
+      ...codex.options,
       cwd: this.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      // Codex is a .cmd shim on Windows when installed with npm.
-      shell: process.platform === "win32" && this.command.length === 1 && !/\.exe$/i.test(program),
       env: { ...process.env, MARGINCUE_READER: "1" },
       windowsHide: true
     });
@@ -10285,7 +10336,7 @@ var CodexModel = class {
 
 // src/store.ts
 import { spawn as spawn2 } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync as statSync2, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 var HOME = process.env["MARGINCUE_HOME"] ?? join(homedir(), ".margincue");
@@ -10395,7 +10446,7 @@ function readHead(file, bytes) {
 }
 function readTail(file, bytes) {
   try {
-    const size = statSync(file).size;
+    const size = statSync2(file).size;
     const fd = openSync(file, "r");
     try {
       const start = Math.max(0, size - bytes);
@@ -10940,8 +10991,9 @@ async function compose(file) {
     const temp = join2(tmpdir(), `margincue-${process.pid}.md`);
     writeFileSync2(temp, draft.text);
     restore();
-    const [cmd, ...args] = command.split(/\s+/).filter(Boolean);
-    spawnSync(cmd, [...args, temp], { stdio: "inherit", shell: process.platform === "win32" });
+    const [cmd, ...args] = process.platform === "win32" ? (command.match(/"[^"]*"|\S+/g) ?? []).map((word) => word.replace(/^"(.*)"$/, "$1")) : command.split(/\s+/).filter(Boolean);
+    const editor = runnable(cmd, [...args, temp]);
+    spawnSync(editor.command, editor.args, { ...editor.options, stdio: "inherit" });
     enter();
     try {
       replaceText(readFileSync2(temp, "utf8").replace(/\s+$/, ""));
@@ -11147,7 +11199,7 @@ function startsSomethingNew(draft, context) {
 // src/card-store.ts
 import { spawn as spawn3 } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync as mkdirSync2, readdirSync, readFileSync as readFileSync3, renameSync as renameSync2, statSync as statSync2, unlinkSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { mkdirSync as mkdirSync2, readdirSync, readFileSync as readFileSync3, renameSync as renameSync2, statSync as statSync3, unlinkSync, writeFileSync as writeFileSync3 } from "node:fs";
 import { join as join3 } from "node:path";
 import { fileURLToPath } from "node:url";
 var CARDS = join3(HOME, "codex", "cards");
@@ -11240,7 +11292,7 @@ function pruneCards(now3 = Date.now()) {
     for (const name of readdirSync(CARDS)) {
       const file = join3(CARDS, name);
       try {
-        if (now3 - statSync2(file).mtimeMs > KEEP_MS) unlinkSync(file);
+        if (now3 - statSync3(file).mtimeMs > KEEP_MS) unlinkSync(file);
       } catch {
       }
     }
@@ -11774,7 +11826,7 @@ import { dirname as dirname2, join as join4, resolve } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/band.ts
-import { statSync as statSync3 } from "node:fs";
+import { statSync as statSync4 } from "node:fs";
 import { performance as performance2 } from "node:perf_hooks";
 import { createInterface as createInterface3 } from "node:readline";
 var PROTOCOL = 1;
@@ -12141,7 +12193,7 @@ var Band = class {
 };
 function fileStamp(file) {
   try {
-    const stat = statSync3(file);
+    const stat = statSync4(file);
     return `${stat.mtimeMs}:${stat.size}`;
   } catch {
     return "";
@@ -12415,11 +12467,8 @@ function launch(args) {
   const visual = `${quote(process.execPath)} ${quote(existsSync2(STABLE) ? STABLE : SELF)} compose`;
   const env = { ...process.env, VISUAL: visual, ...own && !own.includes("margincue") && { MARGINCUE_EDITOR: own } };
   const bare = () => {
-    const child = spawn5("codex", args, {
-      stdio: "inherit",
-      shell: process.platform === "win32",
-      env
-    });
+    const codex = runnable("codex", args);
+    const child = spawn5(codex.command, codex.args, { ...codex.options, stdio: "inherit", env });
     child.on("exit", (code) => process.exit(code ?? 0));
     child.on("error", (error) => {
       process.stderr.write(`margincue: could not start codex (${error.message}). Is Codex CLI installed?
@@ -12457,11 +12506,11 @@ function lineReader() {
 }
 async function setup() {
   const rl = lineReader();
-  const say = (line2 = "") => process.stdout.write(`${line2}
+  const say = (line = "") => process.stdout.write(`${line}
 `);
   say("MarginCue for Codex");
   say();
-  const codex = spawnSync3("codex", ["--version"], { encoding: "utf8", shell: process.platform === "win32" });
+  const codex = codexSync(["--version"]);
   if (codex.status !== 0) {
     say("Codex CLI was not found. Install it first: npm install -g @openai/codex");
     rl.close();
@@ -12474,8 +12523,8 @@ async function setup() {
     return;
   }
   say(`1. The plugin (hooks that let you switch the agent's choices during a turn, and the receipt after it).`);
-  const added = spawnSync3("codex", ["plugin", "marketplace", "add", "fus3r/margincue"], { encoding: "utf8", shell: process.platform === "win32" });
-  const installed = spawnSync3("codex", ["plugin", "add", "margincue@margincue"], { encoding: "utf8", shell: process.platform === "win32" });
+  const added = codexSync(["plugin", "marketplace", "add", "fus3r/margincue"]);
+  const installed = codexSync(["plugin", "add", "margincue@margincue"]);
   say(installed.status === 0 || /already/i.test(`${installed.stdout}${installed.stderr}`) ? "   Installed. In your next Codex session, trust its hooks when Codex asks (press t), or review them with /hooks." : `   Could not install it automatically (${(added.stderr || installed.stderr || "").trim().split("\n")[0] || "unknown error"}).
    Run: codex plugin marketplace add fus3r/margincue && codex plugin add margincue@margincue`);
   keepCopy();
@@ -12505,51 +12554,78 @@ async function setup() {
   }
   say(`3. The card under Codex's prompt, as you type.`);
   await installRelay(say);
-  const line = aliasLine();
-  if (line && readText(line.file).includes(line.text)) {
-    say(`   The codex alias is already in ${line.file}.`);
-  } else if (line) {
-    const answer = (await rl.question(`   Add this to ${line.file}?
-     ${line.text}
+  const { files, text: text2 } = aliasLine();
+  const missing = files.filter((file) => !readText(file).includes(text2));
+  if (!missing.length) {
+    say(`   The codex alias is already in ${files.join(" and ")}.`);
+  } else {
+    const answer = (await rl.question(`   Add this to ${missing.join(" and ")}?
+     ${text2}
    [Y/n] `) ?? "n").trim().toLowerCase();
     if (answer === "" || answer === "y" || answer === "yes") {
-      try {
-        mkdirSync4(dirname3(line.file), { recursive: true });
-        appendFileSync(line.file, `
+      let added2 = false;
+      for (const file of missing) {
+        try {
+          mkdirSync4(dirname3(file), { recursive: true });
+          appendProfile(file, `
 # MarginCue: Codex with MarginCue's card under its prompt
-${line.text}
+${text2}
 `);
-        say("   Added. Open a new terminal and run codex: the card shows under the prompt as you type.");
-      } catch (error) {
-        const code = error.code ?? (error instanceof Error ? error.message : "error");
-        say(`   Could not write to ${line.file} (${code}). Add the line above to your shell profile yourself, or start Codex with: node ${quote(STABLE)} codex`);
+          added2 = true;
+        } catch (error) {
+          const code = error.code ?? (error instanceof Error ? error.message : "error");
+          say(`   Could not write to ${file} (${code}). Add the line above to your shell profile yourself, or start Codex with: node ${quote(STABLE)} codex`);
+        }
       }
+      if (added2) say("   Added. Open a new terminal and run codex: the card shows under the prompt as you type.");
     } else say(`   Not added. Start Codex with: node ${quote(STABLE)} codex`);
   }
   rl.close();
 }
+function codexSync(args) {
+  const codex = runnable("codex", args);
+  return spawnSync3(codex.command, codex.args, { ...codex.options, encoding: "utf8" });
+}
+var hasUtf16LeBom = (bytes) => bytes[0] === 255 && bytes[1] === 254;
 function readText(file) {
   try {
-    return readFileSync5(file, "utf8");
+    const bytes = readFileSync5(file);
+    return bytes.toString(hasUtf16LeBom(bytes) ? "utf16le" : "utf8");
   } catch {
     return "";
   }
 }
+function appendProfile(file, text2) {
+  if (process.platform !== "win32") {
+    appendFileSync(file, text2);
+    return;
+  }
+  const before2 = existsSync2(file) ? readFileSync5(file) : Buffer.alloc(0);
+  appendFileSync(file, before2.length ? text2 : `\uFEFF${text2}`, hasUtf16LeBom(before2) ? "utf16le" : "utf8");
+}
+function powershellProfiles() {
+  const files = /* @__PURE__ */ new Set();
+  const query = "[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($PROFILE))";
+  for (const shell of ["pwsh", "powershell"]) {
+    const command = runnable(shell, ["-NoProfile", "-Command", query]);
+    const answer = spawnSync3(command.command, command.args, { ...command.options, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15e3 });
+    if (answer.status !== 0) continue;
+    const file = Buffer.from(answer.stdout.trim(), "base64").toString("utf8");
+    if (/^(?:[a-z]:\\|\\\\).+\.ps1$/i.test(file)) files.add(file);
+  }
+  return files.size ? [...files] : [join5(homedir2(), "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")];
+}
 function aliasLine() {
   const run = `node ${quote(STABLE)}`;
-  if (process.platform === "win32") {
-    const profile = join5(homedir2(), "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1");
-    mkdirSync4(join5(homedir2(), "Documents", "PowerShell"), { recursive: true });
-    return { file: profile, text: `function codex { & ${run} codex @args }` };
-  }
+  if (process.platform === "win32") return { files: powershellProfiles(), text: `function codex { & ${run} codex @args }` };
   const shell = process.env["SHELL"] ?? "";
   if (shell.endsWith("fish")) {
     const config = process.env["XDG_CONFIG_HOME"] || join5(homedir2(), ".config");
-    return { file: join5(config, "fish", "config.fish"), text: `function codex; ${run} codex $argv; end` };
+    return { files: [join5(config, "fish", "config.fish")], text: `function codex; ${run} codex $argv; end` };
   }
   const login = [".bash_profile", ".bash_login", ".profile"].map((name) => join5(homedir2(), name));
   const file = shell.endsWith("zsh") ? join5(process.env["ZDOTDIR"] || homedir2(), ".zshrc") : process.platform === "darwin" && shell.endsWith("bash") ? login.find((path) => existsSync2(path)) ?? login[0] : join5(homedir2(), ".bashrc");
-  return { file, text: `alias codex='${run} codex'` };
+  return { files: [file], text: `alias codex='${run} codex'` };
 }
 function status2() {
   const settings = readSettings();

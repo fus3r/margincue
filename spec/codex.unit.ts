@@ -29,12 +29,70 @@ const { emptyCard, readRecord, writeRecord } = await import('../mods/codex/src/c
 const { CardReader } = await import('../mods/codex/src/card-reader')
 const { fillCard } = await import('../mods/codex/src/prefetch')
 const versionModule = await import('../mods/codex/src/version')
+const { windowsCommand } = await import('../mods/codex/src/command')
 import type { CardOutput } from '../mods/codex/src/widget-message'
 import type { WidgetCard, WidgetRow } from '../mods/codex/src/widget-message'
 
 const here = dirname(fileURLToPath(import.meta.url))
+const launcher = join(here, '..', 'mods', 'codex', 'src', 'cli.ts')
+const tsResolve = pathToFileURL(join(here, 'ts-resolve.ts')).href
 const OPEN = '⟦'
 const CLOSE = '⟧'
+
+const windowsArgCases = [
+  ['explain this repo', '^^^"explain^^^ this^^^ repo^^^"'],
+  ['say "hi"', String.raw`^^^"say^^^ \^^^"hi\^^^"^^^"`],
+  ['a\\"b', String.raw`^^^"a\\\^^^"b^^^"`],
+  ['C:\\dir with spaces\\', String.raw`^^^"C:\dir^^^ with^^^ spaces\\^^^"`],
+  ['a&b|c<d>e^f', '^^^"a^^^&b^^^|c^^^<d^^^>e^^^^f^^^"'],
+  ['%MARGINCUE_ARGV_TEST% !MARGINCUE_ARGV_TEST!', '^^^"^^^%MARGINCUE_ARGV_TEST^^^%^^^ ^^^!MARGINCUE_ARGV_TEST^^^!^^^"'],
+  ['', '^^^"^^^"'],
+  ['café 日本語', '^^^"café^^^ 日本語^^^"'],
+]
+const windowsArgs = windowsArgCases.map(([arg]) => arg)
+
+test('Windows resolves executables in PATH order and passes native argv directly', () => {
+  const exe = 'C:\\Codex\\codex.EXE'
+  const files = new Set([exe, 'D:\\npm\\codex.CMD'])
+  const env = { Path: 'C:\\Codex;D:\\npm', Pathext: '.CMD;.EXE' }
+  assert.deepEqual(windowsCommand('codex', windowsArgs, env, (path) => files.has(path), 'C:\\work'), {
+    command: exe, args: windowsArgs, options: {},
+  })
+})
+
+test('Windows uses PATHEXT order and escapes argv for both parses of an npm shim', () => {
+  const dir = 'C:\\Program Files (x86)\\npm'
+  const files = new Set([`${dir}\\codex.CMD`, `${dir}\\codex.EXE`])
+  const env = { Path: `"${dir}"`, Pathext: '.CMD;.EXE', ComSpec: 'C:\\Windows\\System32\\cmd.exe' }
+  const line = [String.raw`C:\Program^ Files^ ^(x86^)\npm\codex.CMD`, ...windowsArgCases.map(([, escaped]) => escaped)].join(' ')
+  assert.deepEqual(windowsCommand('codex', windowsArgs, env, (path) => files.has(path), 'C:\\work'), {
+    command: env.ComSpec, args: ['/d', '/s', '/c', `"${line}"`], options: { windowsVerbatimArguments: true },
+  })
+})
+
+test('Windows resolves explicit batch paths from the spawn directory and rejects line breaks', () => {
+  const cwd = 'C:\\work'
+  const isFile = (path: string) => path === 'C:\\work\\bin\\codex.bat'
+  const env = { PATHEXT: '.EXE' }
+  assert.deepEqual(windowsCommand('./bin/codex.bat', [], env, isFile, cwd), {
+    command: 'cmd.exe', args: ['/d', '/s', '/c', '"C:\\work\\bin\\codex.bat"'], options: { windowsVerbatimArguments: true },
+  })
+  assert.throws(() => windowsCommand('./bin/codex.bat', ['line one\nline two'], env, isFile, cwd), /line breaks/)
+})
+
+test('the Windows launcher passes argv unchanged through an npm-style shim', { skip: process.platform !== 'win32' }, () => {
+  const bin = join(home, 'npm bin')
+  mkdirSync(bin)
+  writeFileSync(join(bin, 'argv.mjs'), 'process.stdout.write(JSON.stringify(process.argv.slice(2)))\n')
+  writeFileSync(join(bin, 'codex.cmd'), '@node.exe "%~dp0argv.mjs" %*\r\n')
+  const run = spawnSync(process.execPath, ['--import', tsResolve, launcher, 'codex', ...windowsArgs], {
+    cwd: home, encoding: 'utf8', timeout: 10000,
+    env: { ...process.env, PATH: `${bin};${dirname(process.execPath)}`, MARGINCUE_ARGV_TEST: 'expanded' },
+  })
+  assert.ifError(run.error)
+  assert.equal(run.status, 0, run.stderr)
+  assert.deepEqual(JSON.parse(run.stdout), windowsArgs)
+})
 
 test('keys: text, Enter and its new-line forms, the card chords, paste across reads, clicks', () => {
   const state = { paste: null as string | null }
@@ -176,7 +234,8 @@ test('an app-server that stops reading fails the reading instead of crashing the
     await new Promise((r) => setTimeout(r, 200))
     const outcome = await model.complete('x', 'y')
     assert.equal(outcome.ok, false)
-    assert.match(!outcome.ok ? outcome.reason : '', /EPIPE/)
+    // POSIX reports the broken pipe itself; on Windows the closed pipe shows as the app-server exiting first.
+    assert.match(!outcome.ok ? outcome.reason : '', process.platform === 'win32' ? /EPIPE|EOF|exited/ : /EPIPE/)
     model.close()
   } finally {
     delete process.env['FAKE_CODEX_CLOSE']
@@ -473,12 +532,11 @@ test('setup stops on a Codex older than it needs, and a shell profile it cannot 
   mkdirSync(bin)
   // A fake Codex that only knows --version and plugin, and a relay that is already installed: no network.
   writeFileSync(join(bin, 'codex'), '#!/bin/sh\nif [ "$1" = --version ]; then echo "codex-cli ${FAKE_VERSION:-0.172.0}"; fi\nexit 0\n', { mode: 0o755 })
-  const bundle = join(here, '..', 'mods', 'codex', 'dist', 'margincue.mjs')
   const setup = (name: string, env: Record<string, string>) => {
     const home = join(sandbox, name)
     mkdirSync(join(home, '.margincue', 'bin'), { recursive: true })
     writeFileSync(join(home, '.margincue', 'bin', 'margincue-relay'), '#!/bin/sh\necho "margincue-relay 0.1.2 protocol 1"\n', { mode: 0o755 })
-    const run = spawnSync(process.execPath, [bundle, 'setup'], {
+    const run = spawnSync(process.execPath, ['--import', tsResolve, launcher, 'setup'], {
       input: '\ny\n', encoding: 'utf8',
       env: { PATH: `${bin}:${process.env['PATH']}`, HOME: home, USERPROFILE: home, MARGINCUE_HOME: join(home, '.margincue'), SHELL: '/bin/bash', ...env },
     })
