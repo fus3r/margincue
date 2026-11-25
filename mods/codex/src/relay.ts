@@ -67,7 +67,8 @@ export function startRelay(relay: string, args: string[], env: NodeJS.ProcessEnv
   if (!cwd) return false
   let child
   try {
-    child = spawn(relay, ['--fd', '3', '--', 'codex', ...args], { stdio: ['inherit', 'inherit', 'inherit', 'pipe'], env })
+    // MARGINCUE_CARD tells MarginCue's hooks inside Codex that the card sits under the prompt.
+    child = spawn(relay, ['--fd', '3', '--', 'codex', ...args], { stdio: ['inherit', 'inherit', 'inherit', 'pipe'], env: { ...env, MARGINCUE_CARD: 'prompt' } })
   } catch {
     return false
   }

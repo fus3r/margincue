@@ -1,0 +1,15 @@
+name: Idea
+description: Something MarginCue should do, or a choice it should (or should never) ask about.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+    validations:
+      required: true
+  - type: textarea
+    id: when
+    attributes:
+      label: When you missed it
+      description: The prompt or the situation where this would have helped.

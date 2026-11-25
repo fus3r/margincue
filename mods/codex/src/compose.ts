@@ -306,7 +306,7 @@ export async function compose(file: string): Promise<void> {
     const card = inAgent() ? agentCard(agent!) : view?.card ?? null
     const busy = Boolean(card?.reading || card?.sketch?.drawing)
     const body: Segment[][] = card
-      ? layoutCard(card, width, budget, { chords: true, extra: [], palette: P })
+      ? layoutCard(card, width, budget, { chords: true, extra: [], palette: P, sketchKey: 'tab, s' })
       : [[{ kind: 'text', text: ' MarginCue ', style: P.tag }, { kind: 'text', text: draft.text.trim()
         ? '  reads the prompt once you pause.' : '  Write the prompt; MarginCue reads it as you go.', style: { dim: true } }]]
     const lines = body.slice(0, budget)

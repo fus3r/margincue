@@ -154,6 +154,38 @@ test('the agent\'s marked choices become switches whose amendment goes in the bo
   h.band.close()
 })
 
+test('a switch sent into the turn stays the person\'s, and the next one amends from it', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'margincue-project-'))
+  const transcript = join(cwd, 'rollout.jsonl')
+  const item = (type: string, text: string) => `${JSON.stringify({ type: 'event_msg', payload: { type: 'item_completed', turn_id: 'T2',
+    item: { type, content: [{ text }] } } })}\n`
+  writeFileSync(transcript, item('AgentMessage', 'Runs go in ⟦run log: one JSONL file per run | one SQLite database | one CSV per run⟧.'))
+  mkdirSync(join(home, 'codex'), { recursive: true })
+  writeFileSync(PATHS.turn, JSON.stringify({ session: 'S', turn: 'T2', transcript, cwd, startedAt: Date.now(), endedAt: null, decisions: [], source: 'cli' }))
+  const h = harness(cwd)
+  h.draft('')
+  await until(() => h.lines().includes('run log'))
+  h.band.receive({ t: 'key', key: 'down' })
+  const first = h.last('write')!
+  assert.equal(first.text, 'Amendment to my last prompt: for run log, use one SQLite database instead of one JSONL file per run.')
+  // Enter sends it; Codex has not written it to the transcript yet.
+  h.draft(first.text)
+  h.draft('')
+  h.band.receive({ t: 'key', key: 'down' })
+  assert.equal(h.last('write')!.text, 'Amendment to my last prompt: for run log, use one CSV per run instead of one SQLite database.')
+  h.band.close()
+
+  // A card started later reads the same from the transcript alone.
+  writeFileSync(transcript, item('AgentMessage', 'Runs go in ⟦run log: one JSONL file per run | one SQLite database | one CSV per run⟧.') +
+    item('UserMessage', first.text))
+  const fresh = harness(cwd)
+  fresh.draft('')
+  await until(() => fresh.lines().includes('run log'))
+  fresh.band.receive({ t: 'key', key: 'down' })
+  assert.equal(fresh.last('write')!.text, 'Amendment to my last prompt: for run log, use one CSV per run instead of one SQLite database.')
+  fresh.band.close()
+})
+
 test('off, and hidden for one prompt', async () => {
   const h = harness()
   h.draft(PROMPT)

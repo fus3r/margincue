@@ -54,8 +54,8 @@ function picks(answer, choices) {
   }
   return { keys, other: other.join(", ") };
 }
-function levelOf(answer, options) {
-  const exact = options.find(([label]) => label.toLowerCase() === answer.trim().toLowerCase());
+function levelOf(answer, options2) {
+  const exact = options2.find(([label]) => label.toLowerCase() === answer.trim().toLowerCase());
   if (exact) return exact[1];
   if (/\b(phd|research|professor|publish|review|architect|staff|principal|lead)\b/i.test(answer)) return "expert";
   if (/\b(student|learning|beginner|course|new|first)\b/i.test(answer)) return "learning";
@@ -166,7 +166,7 @@ function parseCueLine(line) {
   let statement = statementField.trim();
   if (statement === "") return null;
   if (!statement.includes("{}")) statement = `${statement} {}`;
-  const options = [];
+  const options2 = [];
   const seen = /* @__PURE__ */ new Set();
   for (const option of rest) {
     const value = option.trim();
@@ -174,12 +174,12 @@ function parseCueLine(line) {
     const key = normalize(value);
     if (seen.has(key)) continue;
     seen.add(key);
-    options.push(value);
+    options2.push(value);
   }
-  if (options.length < 2) return null;
+  if (options2.length < 2) return null;
   const anchor = anchorField.trim();
   const isGlobal = anchor === "" || /^[-–—]$/.test(anchor);
-  return { anchor: isGlobal ? null : anchor, statement, options };
+  return { anchor: isGlobal ? null : anchor, statement, options: options2 };
 }
 function stripMarker(line) {
   return line.replace(/^(?:[-*•]\s+|\d{1,2}[.)]\s+)/, "");
@@ -675,13 +675,13 @@ function eligibleSlot(slot, depth, rigor) {
 }
 var preference = (depth) => depth === "essentials" ? "plain" : "expert";
 function stateCue(result, lang, depth) {
-  const { slot, options, span } = result;
+  const { slot, options: options2, span } = result;
   const style = preference(depth);
   return {
     slot: slot.id,
     label: slot.label[lang],
     statement: slot.statement[lang][style],
-    options: options.map((o) => ({ id: o.id, label: o.wording[lang][style] })),
+    options: options2.map((o) => ({ id: o.id, label: o.wording[lang][style] })),
     scope: slot.scope,
     guard: slot.guard,
     why: slot.why,
@@ -719,7 +719,7 @@ function parseExpert(reply, draft, catalog, reserved) {
   const out = [];
   for (const line of reply.split(/\r?\n/)) {
     if (out.length >= MAX_EXPERT_CUES || line.trim() === "NONE") break;
-    const [anchor, key, statement, ...options] = line.split("|").map((s) => s.trim());
+    const [anchor, key, statement, ...options2] = line.split("|").map((s) => s.trim());
     if (!anchor || !isId(key) || seen.has(key)) continue;
     const span = anchor === "-" ? void 0 : resolveAnchor(draft, anchor) ?? void 0;
     if (!span && anchor !== "-") continue;
@@ -728,14 +728,14 @@ function parseExpert(reply, draft, catalog, reserved) {
       if (statement !== void 0) continue;
       out.push({ ...item, ...span && { span } });
     } else {
-      if (reserved(key) || !statement || statement.split("{}").length !== 2 || options.length < 2 || options.length > 3 || options.some((o) => !o) || new Set(options.map((o) => o.toLowerCase())).size !== options.length) continue;
+      if (reserved(key) || !statement || statement.split("{}").length !== 2 || options2.length < 2 || options2.length > 3 || options2.some((o) => !o) || new Set(options2.map((o) => o.toLowerCase())).size !== options2.length) continue;
       out.push({
         key,
         slot: key,
         persistent: false,
         label: key.replace(/[_-]/g, " "),
         statement,
-        options: options.map((label, i) => ({ id: String(i), label })),
+        options: options2.map((label, i) => ({ id: String(i), label })),
         scope: "session",
         guard: false,
         why: "",
@@ -998,19 +998,19 @@ function parseRow(fields) {
     };
   }
   const starred = [];
-  const options = [];
+  const options2 = [];
   for (const value of values) {
     const star = /(?:^|[\s,;(])\*|\*(?:$|[\s,;)])/.test(value);
     const option = clean(value.replace(/\s*\*(?=$|[\s,;)])/g, "").replace(/(^|[\s,;(])\*\s*/g, "$1"));
     if (!option || option.length > MAX_OPTION || /(?:…|\.\.\.)$/.test(option)) continue;
-    if (options.some((other) => normalize(other) === normalize(option))) continue;
-    if (star) starred.push(options.length);
-    options.push(option);
+    if (options2.some((other) => normalize(other) === normalize(option))) continue;
+    if (star) starred.push(options2.length);
+    options2.push(option);
   }
   const most = type === "one" ? 5 : 7;
-  if (options.length < 2 || options.length > most) return null;
-  const defaults = type === "many" ? starred.length ? starred : options.map((_, i) => i) : [starred[0] ?? 0];
-  return { ...base, type, options, defaults };
+  if (options2.length < 2 || options2.length > most) return null;
+  const defaults = type === "many" ? starred.length ? starred : options2.map((_, i) => i) : [starred[0] ?? 0];
+  return { ...base, type, options: options2, defaults };
 }
 function numberSteps(value, min, max) {
   if (!(min < max)) return [];
@@ -2028,8 +2028,8 @@ var LENS_WORDS = [
   ["system-design", /\b(?:services?|queues?|cach\w+|databases?|scal(?:e|ing|ability)|latency|throughput|replica\w*|shard\w*|load balanc\w*|microservices?|kafka|redis|postgres\w*|consistency|availability|rate limit\w*|backpressure|idempoten\w*|retries|webhooks?)\b/gi]
 ];
 var EMPTY_PROFILE = { name: "general", description: "", maxCues: 3, rubric: "", examples: [] };
-function createCore(assets, options) {
-  return new Core(assets, options);
+function createCore(assets, options2) {
+  return new Core(assets, options2);
 }
 function sameCue(a, b) {
   return normalize(a.anchor ?? "") === normalize(b.anchor ?? "") && sameOptions(a.options, b.options);
@@ -2113,9 +2113,9 @@ var Core = class {
   sentTimerAt = null;
   sentView = "";
   out = [];
-  constructor(assets, options = {}) {
+  constructor(assets, options2 = {}) {
     this.assets = assets;
-    this.readSubmittedPrompt = options.readSubmittedPrompt === true;
+    this.readSubmittedPrompt = options2.readSubmittedPrompt === true;
     this.state = new DecisionState(assets.bundles ?? [], assets.personalProfiles ?? []);
     this.cache = new Lru(DEFAULT_TIMING.cacheSize);
   }
@@ -2763,21 +2763,21 @@ ${target}` : attached.text;
     this.expertReq = id;
     this.expertStarted = this.now;
     this.expertCatalog = slots.flatMap((slot) => {
-      const options = draft.available(slot);
+      const options2 = draft.available(slot);
       const value = this.state.resolve(slot.id);
-      const reason = this.state.instructionSlots.has(slot.id) ? "project-instruction" : value ? "standing-value" : draft.suppresses(slot) ? "settled-or-inapplicable" : slot.requires?.some((key) => draft.facts.get(key) !== true) || options.length < 2 ? "prerequisite" : null;
+      const reason = this.state.instructionSlots.has(slot.id) ? "project-instruction" : value ? "standing-value" : draft.suppresses(slot) ? "settled-or-inapplicable" : slot.requires?.some((key) => draft.facts.get(key) !== true) || options2.length < 2 ? "prerequisite" : null;
       if (reason) {
         if (this.audit) this.metric("candidate", {
           tier: "expert",
           slot: slot.id,
           shown: false,
           reason,
-          optionOrder: options.map((o) => o.id),
-          default: options[0]?.id ?? null
+          optionOrder: options2.map((o) => o.id),
+          default: options2[0]?.id ?? null
         });
         return [];
       }
-      return [{ ...stateCue({ slot, options }, language, this.depth), key: slot.id, persistent: true }];
+      return [{ ...stateCue({ slot, options: options2 }, language, this.depth), key: slot.id, persistent: true }];
     });
     const prompt = buildPrompt({
       draft: applyDecisions(this.text, this.decisions()),
@@ -2939,16 +2939,16 @@ ${expertPrompt(this.expertCatalog, slots)}`,
       if (mention.status !== "missing" || !mention.near.length || rows.length >= 2) continue;
       const key = `name_${nameKey(mention.phrase)}`.slice(0, 40);
       if (card.dismissed.has(key)) continue;
-      const options = [...mention.near.map((near) => near.name), "new, to be added"];
+      const options2 = [...mention.near.map((near) => near.name), "new, to be added"];
       const hints = [...mention.near.map((near) => near.file), ""];
       const old = card.rows.find((row) => row.origin === "repo" && row.key === key);
-      rows.push(old && sameOptions(old.options, options) ? old : {
+      rows.push(old && sameOptions(old.options, options2) ? old : {
         id: old?.id ?? this.newId(),
         key,
         label: cutLabel(mention.phrase),
         type: "one",
         statement: `"${mention.phrase}" is {}`,
-        options,
+        options: options2,
         hints,
         defaults: [],
         origin: "repo",
@@ -3404,11 +3404,11 @@ ${sketch.lines.join("\n")}
     }
     const card = this.turnCard;
     const key = `blank_${nameKey(label)}`.slice(0, 40);
-    const options = [choice, ...alternatives.filter((alt) => normalize(alt) !== normalize(choice))].slice(0, 5);
+    const options2 = [choice, ...alternatives.filter((alt) => normalize(alt) !== normalize(choice))].slice(0, 5);
     const row = card.rows.find((entry) => entry.key === key);
     if (row) {
       if (normalize(row.options[0] ?? "") === normalize(choice)) return;
-      Object.assign(row, { options, defaults: [0], picked: null, sent: void 0 });
+      Object.assign(row, { options: options2, defaults: [0], picked: null, sent: void 0 });
     } else {
       if (card.rows.length >= 8 || card.dismissed.has(key)) return;
       card.rows.push({
@@ -3417,14 +3417,14 @@ ${sketch.lines.join("\n")}
         label: cutLabel(label),
         type: "one",
         statement: `${label}: {}`,
-        options,
+        options: options2,
         defaults: [0],
         origin: "agent",
         picked: null
       });
     }
     if (card.focus === null || !card.rows.some((row2) => row2.id === card.focus)) card.focus = card.rows[0]?.id ?? null;
-    this.metric("blank", { card: card.id, row: key, options: options.length });
+    this.metric("blank", { card: card.id, row: key, options: options2.length });
   }
   sendAgentChanges() {
     const card = this.turnCard;
@@ -9395,14 +9395,14 @@ var FR2 = {
   lines: (n) => `${n} ligne${n === 1 ? "" : "s"} de plus`,
   folded: (n) => `${n} ligne${n === 1 ? "" : "s"}, repli\xE9es`
 };
-function layoutCard(card, columns, budget, options) {
-  const P3 = options.palette ?? DARK;
+function layoutCard(card, columns, budget, options2) {
+  const P3 = options2.palette ?? DARK;
   const words = card.language === "fr" ? FR2 : EN2;
-  const hidden = hiddenButtons(card, options.chords);
+  const hidden = hiddenButtons(card, options2.chords);
   const open = card.rows.filter((row) => !row.chosen).length;
   if (card.collapsed) return [collapsed(card, columns, P3, words, open, hidden)];
   const g = grid(card, columns, words);
-  const right = status(card, words, open, columns >= 110 && card.stage === "draft" ? options.extra : [], P3);
+  const right = status(card, words, open, columns >= 110 && card.stage === "draft" ? options2.extra : [], P3);
   const head = header(card, g, right, P3, words, budget >= 10 ? 4 : budget >= 6 ? 2 : 1);
   head[0].push(...hidden);
   const room = budget - head.length;
@@ -9414,7 +9414,7 @@ function layoutCard(card, columns, budget, options) {
     const left2 = columns - pictureWidth - 3;
     const body2 = bodyLines(card, g, left2, P3, words, room);
     if (!body2.some((line) => line.some((s) => s.kind === "button" && s.key.startsWith("card-more-")))) {
-      const picture = [captionLine(sketch, P3, words, pictureWidth, "", true), ...pictureLines(drawing, P3, words, Math.max(1, room - 1))];
+      const picture = [captionLine(sketch, P3, words, pictureWidth, "", true), ...pictureLines(drawing, P3, words, Math.max(1, room - 1), options2.sketchKey)];
       const out2 = [...head];
       for (let i = 0; i < Math.min(room, Math.max(body2.length, picture.length)); i++) {
         const line = body2[i] ?? [];
@@ -9430,7 +9430,7 @@ function layoutCard(card, columns, budget, options) {
   if (sketch && left >= 0) {
     const wide = Math.max(0, ...drawing.map(cells));
     const indent = g.content + wide <= columns ? g.content : wide + 2 <= columns ? columns - wide : -1;
-    const shown = drawing.length && indent >= 0 && left >= Math.min(3, drawing.length) ? pictureLines(drawing, P3, words, left) : [];
+    const shown = drawing.length && indent >= 0 && left >= Math.min(3, drawing.length) ? pictureLines(drawing, P3, words, left, options2.sketchKey) : [];
     const note = drawing.length && !shown.length ? words.folded(drawing.length) : "";
     out.push([...labelLead(words.preview, g, { dim: true }), ...captionLine(sketch, P3, words, columns - g.content, note)]);
     for (const line of shown) out.push([text(" ".repeat(indent)), ...line]);
@@ -9745,7 +9745,7 @@ function tidySketch(lines) {
     return `${" ".repeat(indent)}${part.left}${part.body}${fill.repeat(Math.max(0, inner - cells(part.body)))}${part.right}`;
   });
 }
-function pictureLines(drawing, P3, words, most) {
+function pictureLines(drawing, P3, words, most, key = "ctrl+x tab, s") {
   const draw = (line) => {
     const out = [];
     let at = 0;
@@ -9764,7 +9764,7 @@ function pictureLines(drawing, P3, words, most) {
   const gone = drawing.length - head.length - 1;
   const t = [...last.trim()];
   const boxed = t.length >= 2 && LEFT.includes(t[0]) && RIGHT.includes(t.at(-1));
-  const note = `\u22EF ${words.lines(gone)} \xB7 ctrl+x tab, s`;
+  const note = `\u22EF ${words.lines(gone)} \xB7 ${key}`;
   if (!boxed) return [...head.map(draw), [text(note, { dim: true, italic: true })], draw(last)];
   const indent = last.length - last.trimStart().length;
   const inner = cells(last.trim()) - 2;
@@ -10077,7 +10077,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.14";
+var VERSION = "0.4.15";
 
 // src/model.ts
 var LIGHT = [/luna/i, /mini/i, /nano/i, /lite/i, /small/i, /flash/i, /terra/i];
@@ -10150,11 +10150,11 @@ var CodexModel = class {
    * One reading: `system` replaces Codex's own instructions, `prompt` is the only input; `onDelta` hears the text as it
    * streams. `strong` reads on the account's default model instead of its lightest.
    */
-  async complete(system, prompt, options = {}) {
-    const { signal, onDelta } = options;
+  async complete(system, prompt, options2 = {}) {
+    const { signal, onDelta } = options2;
     const started = Date.now();
     const light = await this.start();
-    const model = options.strong ? this.strongModel ?? light : light;
+    const model = options2.strong ? this.strongModel ?? light : light;
     if (!model) return { ok: false, reason: this.failure ?? "no Codex model", ms: Date.now() - started };
     const thread = await this.call("thread/start", {
       model,
@@ -10310,15 +10310,15 @@ function sessionSource(transcript) {
   }
   return "unknown";
 }
-function turnMessages(transcript, turn) {
+function turnMessages(transcript, turn, kind = "AgentMessage") {
   const out = [];
   for (const line of readTail(transcript, 4 * 1024 * 1024).split("\n")) {
-    if (!line.includes("AgentMessage") || !line.includes(turn)) continue;
+    if (!line.includes(kind) || !line.includes(turn)) continue;
     try {
       const entry = JSON.parse(line);
       const payload = entry.payload;
       if (entry.type !== "event_msg" || payload?.type !== "item_completed" || payload.turn_id !== turn) continue;
-      if (payload.item?.type !== "AgentMessage") continue;
+      if (payload.item?.type !== kind) continue;
       const text2 = (payload.item.content ?? []).map((part) => part.text ?? "").join("");
       if (text2) out.push(text2);
     } catch {
@@ -10384,8 +10384,8 @@ function readTail(file, bytes) {
 }
 var processEngine = {
   process: {
-    run: (argv, options) => new Promise((resolve2, reject) => {
-      const child = spawn2(argv[0], argv.slice(1), { cwd: options.cwd, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    run: (argv, options2) => new Promise((resolve2, reject) => {
+      const child = spawn2(argv[0], argv.slice(1), { cwd: options2.cwd, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
       const out = [];
       const err = [];
       let size = 0;
@@ -10394,7 +10394,7 @@ var processEngine = {
         if (size <= 32 * 1024 * 1024) out.push(chunk);
       });
       child.stderr.on("data", (chunk) => err.push(chunk));
-      const timer = setTimeout(() => child.kill(), options.timeoutMs ?? 2e4);
+      const timer = setTimeout(() => child.kill(), options2.timeoutMs ?? 2e4);
       child.on("error", (error) => {
         clearTimeout(timer);
         reject(error);
@@ -10600,6 +10600,19 @@ function fit(text2, room) {
 
 // src/turn-card.ts
 var RECENT_MS = 30 * 60 * 1e3;
+var AMENDMENT = /^Amendment to my last prompt: for (.+?), use (.+?) instead of (.+?)\.$/;
+function turnAmendments(messages) {
+  const out = /* @__PURE__ */ new Map();
+  for (const message of messages) {
+    for (const line of message.split("\n")) {
+      const match = AMENDMENT.exec(line.trim());
+      if (match) out.set(match[1].trim().toLowerCase(), match[2].trim());
+    }
+  }
+  return out;
+}
+var options = (blank) => [blank.choice, ...blank.alternatives];
+var indexOf = (blank, value) => value === void 0 ? -1 : options(blank).findIndex((option) => option.toLowerCase() === value.toLowerCase());
 function readTurn(cwd, now3 = Date.now()) {
   const turn = readJson(PATHS.turn, null);
   if (!turn || turn.cwd !== cwd) return null;
@@ -10609,15 +10622,34 @@ function readTurn(cwd, now3 = Date.now()) {
   for (const message of turnMessages(turn.transcript, turn.turn)) for (const blank of parseBlanks(message)) seen.set(blank.label, blank);
   const blanks = [...seen.values()];
   if (!blanks.length) return null;
-  return { running, blanks, picked: blanks.map(() => 0), focus: 0, text: "", turn: turn.turn };
+  const amended = turnAmendments(turnMessages(turn.transcript, turn.turn, "UserMessage"));
+  const sent = blanks.map((blank) => Math.max(0, indexOf(blank, amended.get(blank.label.toLowerCase()))));
+  const mine = blanks.map((blank) => indexOf(blank, amended.get(blank.label.toLowerCase())) >= 0);
+  return { running, blanks, picked: [...sent], sent, mine, focus: 0, text: "", turn: turn.turn };
 }
 function mergeTurn(before2, after) {
   if (!before2 || !after || before2.turn !== after.turn) return after;
-  const picks2 = new Map(before2.blanks.map((blank, i) => [blank.label, before2.picked[i] ?? 0]));
-  const picked = after.blanks.map((blank) => Math.min(picks2.get(blank.label) ?? 0, blank.alternatives.length));
+  const value = (agent, i, at) => options(agent.blanks[i])[at[i] ?? 0];
+  const unsent = /* @__PURE__ */ new Map();
+  const sentBefore = /* @__PURE__ */ new Map();
+  before2.blanks.forEach((blank, i) => {
+    if ((before2.picked[i] ?? 0) !== (before2.sent[i] ?? 0)) unsent.set(blank.label, value(before2, i, before2.picked));
+    if (before2.mine[i]) sentBefore.set(blank.label, value(before2, i, before2.sent));
+  });
+  const sent = after.blanks.map((blank, i) => after.mine[i] ? after.sent[i] : Math.max(0, indexOf(blank, sentBefore.get(blank.label))));
+  const mine = after.blanks.map((blank, i) => Boolean(after.mine[i]) || indexOf(blank, sentBefore.get(blank.label)) >= 0);
+  const picked = after.blanks.map((blank, i) => {
+    const at = indexOf(blank, unsent.get(blank.label));
+    return at >= 0 ? at : sent[i];
+  });
   const focused = before2.blanks[before2.focus]?.label;
   const focus = Math.max(0, after.blanks.findIndex((blank) => blank.label === focused));
-  return { ...after, picked, focus, text: before2.text };
+  return { ...after, picked, sent, mine, focus, text: before2.text };
+}
+function markSent(state) {
+  state.mine = state.picked.map((picked, i) => picked !== (state.sent[i] ?? 0) || Boolean(state.mine[i]));
+  state.sent = [...state.picked];
+  state.text = "";
 }
 function agentCard(state) {
   const rows = state.blanks.map((blank, i) => ({
@@ -10626,10 +10658,10 @@ function agentCard(state) {
     label: blank.label,
     type: "one",
     statement: `${blank.label}: {}`,
-    options: [blank.choice, ...blank.alternatives],
+    options: options(blank),
     defaults: [0],
     selected: [state.picked[i] ?? 0],
-    chosen: (state.picked[i] ?? 0) !== 0,
+    chosen: (state.picked[i] ?? 0) !== 0 || Boolean(state.mine[i]),
     origin: "agent"
   }));
   return {
@@ -10654,9 +10686,11 @@ function pick2(state, row, option) {
   state.focus = row;
   const lines = state.blanks.flatMap((b, i) => {
     const picked = state.picked[i] ?? 0;
-    if (picked === 0) return [];
-    const value = b.alternatives[picked - 1];
-    return state.running ? [`Amendment to my last prompt: for ${b.label}, use ${value} instead of ${b.choice}.`] : [`Change ${b.label}: ${value} instead of ${b.choice}.`];
+    const sent = state.sent[i] ?? 0;
+    if (picked === sent) return [];
+    const value = options(b)[picked];
+    const was = options(b)[sent];
+    return state.running ? [`Amendment to my last prompt: for ${b.label}, use ${value} instead of ${was}.`] : [`Change ${b.label}: ${value} instead of ${was}.`];
   });
   state.text = lines.length ? state.running ? lines.join("\n") : `${lines.join(" ")} Keep everything else as it is.` : "";
   return state.text;
@@ -10906,7 +10940,7 @@ async function compose(file) {
     const budget = Math.max(3, height - 1 - editorRows - footer - 1);
     const card = inAgent() ? agentCard(agent) : view?.card ?? null;
     const busy = Boolean(card?.reading || card?.sketch?.drawing);
-    const body = card ? layoutCard(card, width, budget, { chords: true, extra: [], palette: P }) : [[{ kind: "text", text: " MarginCue ", style: P.tag }, { kind: "text", text: draft.text.trim() ? "  reads the prompt once you pause." : "  Write the prompt; MarginCue reads it as you go.", style: { dim: true } }]];
+    const body = card ? layoutCard(card, width, budget, { chords: true, extra: [], palette: P, sketchKey: "tab, s" }) : [[{ kind: "text", text: " MarginCue ", style: P.tag }, { kind: "text", text: draft.text.trim() ? "  reads the prompt once you pause." : "  Write the prompt; MarginCue reads it as you go.", style: { dim: true } }]];
     const lines = body.slice(0, budget);
     const top = height - footer - editorRows - 1 - lines.length - 1;
     const out = [];
@@ -11246,7 +11280,7 @@ function promptHook(input) {
   if (source === "exec") return null;
   const previous = readJson(PATHS.turn, null);
   if (input.turn_id && input.transcript_path && input.cwd) {
-    const record = {
+    const record = previous && previous.turn === input.turn_id && previous.session === (input.session_id ?? "") ? { ...previous, endedAt: null, decisions: [.../* @__PURE__ */ new Set([...previous.decisions, ...decisionsOf(prompt)])] } : {
       session: input.session_id ?? "",
       turn: input.turn_id,
       transcript: input.transcript_path,
@@ -11299,15 +11333,23 @@ function stopHook(input) {
   if (input.last_assistant_message) messages.push(input.last_assistant_message);
   const chosen = /* @__PURE__ */ new Map();
   for (const message of messages) for (const blank of parseBlanks(message)) chosen.set(blank.label, blank.choice);
+  const amended = input.transcript_path ? turnAmendments(turnMessages(input.transcript_path, input.turn_id, "UserMessage")) : /* @__PURE__ */ new Map();
+  let switched = 0;
+  for (const label of chosen.keys()) {
+    const value = amended.get(label.toLowerCase());
+    if (value === void 0) continue;
+    chosen.set(label, `${value} (switched)`);
+    switched++;
+  }
   const yours = mine?.decisions.length ?? 0;
   if (!chosen.size && !yours) return null;
-  return { systemMessage: receiptLine(yours, [...chosen].map(([label, choice]) => `${label}: ${choice}`), source) };
+  return { systemMessage: receiptLine(yours, [...chosen].map(([label, choice]) => `${label}: ${choice}`), source, switched) };
 }
-function receiptLine(yours, agent, source = "cli") {
-  const parts = [`MarginCue \xB7 you set ${yours} \xB7 the agent chose ${agent.length}`];
+function receiptLine(yours, agent, source = "cli", switched = 0) {
+  const parts = [`MarginCue \xB7 you set ${yours} \xB7 the agent chose ${agent.length}${switched ? ` \xB7 you switched ${switched}` : ""}`];
   if (agent.length) {
     parts.push(agent.join(" \xB7 "));
-    if (source !== "app") parts.push("ctrl+g to switch one");
+    if (source !== "app") parts.push(process.env["MARGINCUE_CARD"] === "prompt" ? "alt+\u2193 under the prompt to switch one" : "ctrl+g to switch one");
   }
   return parts.join(" \u2014 ");
 }
@@ -11420,9 +11462,9 @@ function cardOf(core, id, prompt, sketchOn) {
     const row = view?.rows.find((row2) => row2.origin === "repo" && row2.statement === `"${mention.phrase}" is {}`);
     return { phrase: mention.phrase, candidates: mention.near, ...row && { rowId: row.id } };
   });
-  const rows = (view?.rows ?? []).map(({ id: id2, label, type, statement, options, selected }) => {
+  const rows = (view?.rows ?? []).map(({ id: id2, label, type, statement, options: options2, selected }) => {
     const mention = missing.find((name) => name.rowId === id2);
-    return { id: id2, label, type, statement, options, assumed: selected, ...mention && { files: mention.candidates.map((candidate) => candidate.file) } };
+    return { id: id2, label, type, statement, options: options2, assumed: selected, ...mention && { files: mention.candidates.map((candidate) => candidate.file) } };
   });
   const preview = sketchOn && Boolean(ASSETS.sketchSystem) && canSketch(view?.kind ?? null);
   return { id, prompt, reading: view?.read ?? null, rows, missing, preview, sketch: null };
@@ -11438,10 +11480,10 @@ function validPicks(rows, value) {
   return picks2;
 }
 async function vocabulary(cwd, deadline) {
-  const run = (argv, options) => {
+  const run = (argv, options2) => {
     const left = deadline - Date.now();
     if (left <= 0) return Promise.resolve({ exitCode: 1, stdout: "", stderr: "" });
-    return processEngine.process.run(argv, { ...options, timeoutMs: left });
+    return processEngine.process.run(argv, { ...options2, timeoutMs: left });
   };
   return collectVocabulary({ process: { run } }, cwd).catch(() => null);
 }
@@ -11745,10 +11787,10 @@ var Band = class {
   marked = "";
   writes = 0;
   closed = false;
-  constructor(options) {
-    this.cwd = options.cwd;
-    this.send = options.send;
-    this.model = options.model ?? new CodexModel(options.cwd);
+  constructor(options2) {
+    this.cwd = options2.cwd;
+    this.send = options2.send;
+    this.model = options2.model ?? new CodexModel(options2.cwd);
     const settings = readSettings();
     this.run(cardConfig(settings));
     this.run({ type: "learned", picks: readLearned(this.cwd) });
@@ -11757,12 +11799,12 @@ var Band = class {
       this.modelName = name;
       this.render();
     });
-    if (options.vocabulary !== false) {
+    if (options2.vocabulary !== false) {
       void collectVocabulary(processEngine, this.cwd).then((vocab) => this.run({ type: "vocabulary", vocab })).catch(() => {
       });
     }
     this.readTurn();
-    this.turnTimer = setInterval(() => this.readTurn(), options.turnEveryMs ?? 1e3);
+    this.turnTimer = setInterval(() => this.readTurn(), options2.turnEveryMs ?? 1e3);
     this.turnTimer.unref?.();
   }
   close() {
@@ -11861,7 +11903,7 @@ var Band = class {
       this.sendingUntil = 0;
     }
     if (this.agent && this.agent.text && before2 === this.agent.text && !text2.trim()) {
-      this.agent = null;
+      markSent(this.agent);
       this.turnStamp = "";
       this.readTurn();
     }
@@ -12008,7 +12050,7 @@ var Band = class {
     if (max > 0) {
       if (card) {
         const budget = full && (card.rows.length || card.read && !card.reading) ? max : 1;
-        lines = layoutCard(card, cols, budget, { chords: true, extra: [], palette: P2 }).slice(0, budget).map((line, y) => drawLine(line, cols, y, this.hits, this.frame));
+        lines = layoutCard(card, cols, budget, { chords: true, extra: [], palette: P2, sketchKey: "ctrl+g" }).slice(0, budget).map((line, y) => drawLine(line, cols, y, this.hits, this.frame));
         if (!this.shownAgent()) this.mark(this.coreText);
       } else lines = [drawLine(this.status(), cols, 0, this.hits, this.frame)];
     }
@@ -12188,7 +12230,7 @@ function startRelay(relay, args, env) {
   if (!cwd) return false;
   let child;
   try {
-    child = spawn4(relay, ["--fd", "3", "--", "codex", ...args], { stdio: ["inherit", "inherit", "inherit", "pipe"], env });
+    child = spawn4(relay, ["--fd", "3", "--", "codex", ...args], { stdio: ["inherit", "inherit", "inherit", "pipe"], env: { ...env, MARGINCUE_CARD: "prompt" } });
   } catch {
     return false;
   }
@@ -12390,14 +12432,14 @@ async function setup() {
   if (settings.onboarded !== "done") {
     say("2. A few questions, so the card fits your work (Enter skips).");
     try {
-      const user = await interview(async (question, options) => {
+      const user = await interview(async (question, options2) => {
         say();
         say(`   ${question}`);
-        options.options.forEach((label, i) => say(`     ${i + 1}. ${label}`));
-        const answer = (await rl.question(options.multiSelect ? "   Numbers, comma-separated: " : "   Number: ") ?? "").trim();
+        options2.options.forEach((label, i) => say(`     ${i + 1}. ${label}`));
+        const answer = (await rl.question(options2.multiSelect ? "   Numbers, comma-separated: " : "   Number: ") ?? "").trim();
         say();
         if (!answer) throw new Error("skipped");
-        const picked = answer.split(/[,\s]+/).map((n) => options.options[Number(n) - 1]).filter((label) => Boolean(label));
+        const picked = answer.split(/[,\s]+/).map((n) => options2.options[Number(n) - 1]).filter((label) => Boolean(label));
         return picked.join(", ") || answer;
       });
       saveSettings({ ...settings, user, onboarded: "done" });

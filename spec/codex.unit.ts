@@ -105,6 +105,33 @@ test('the prompt hook notes the turn and asks the agent to mark its choices; the
   assert.notEqual(JSON.parse(readFileSync(PATHS.turn, 'utf8')).endedAt, null)
 })
 
+test('a message sent into the running turn keeps its decisions, and the receipt shows a choice switched there', () => {
+  const prompt = 'Build the report.\n\nDecisions:\n- Export all rows.\n- Write 710 rows per batch.'
+  const transcript = rollout('t-20', [`Older entries show ${OPEN}older invitations: recipient unavailable | event label only${CLOSE}; weeks start ${OPEN}week starts: Monday | Sunday${CLOSE}.`])
+  promptHook({ session_id: 's', turn_id: 't-20', transcript_path: transcript, cwd: '/project', prompt })
+  const started = JSON.parse(readFileSync(PATHS.turn, 'utf8')).startedAt
+  const amendment = 'Amendment to my last prompt: for older invitations, use event label only instead of recipient unavailable.'
+  appendFileSync(transcript, `${JSON.stringify({ type: 'event_msg', payload: { type: 'item_completed', turn_id: 't-20',
+    item: { type: 'UserMessage', content: [{ type: 'text', text: amendment }] } } })}\n`)
+  promptHook({ session_id: 's', turn_id: 't-20', transcript_path: transcript, cwd: '/project', prompt: amendment })
+  const record = JSON.parse(readFileSync(PATHS.turn, 'utf8'))
+  assert.deepEqual([record.decisions.length, record.startedAt, record.endedAt], [2, started, null])
+  const stopped = stopHook({ session_id: 's', turn_id: 't-20', transcript_path: transcript }) as { systemMessage: string }
+  assert.equal(stopped.systemMessage, receiptLine(2, ['older invitations: event label only (switched)', 'week starts: Monday'], 'cli', 1))
+  assert.match(stopped.systemMessage, /^MarginCue · you set 2 · the agent chose 2 · you switched 1 — older invitations: event label only \(switched\) · /)
+  // A new turn starts afresh.
+  promptHook({ session_id: 's', turn_id: 't-21', transcript_path: transcript, cwd: '/project', prompt: 'Now add a chart.' })
+  assert.equal(JSON.parse(readFileSync(PATHS.turn, 'utf8')).decisions.length, 0)
+  // Under margincue-relay the receipt points to the card under the prompt.
+  process.env['MARGINCUE_CARD'] = 'prompt'
+  try {
+    assert.match(receiptLine(1, ['week starts: Monday']), /— alt\+↓ under the prompt to switch one$/)
+  } finally {
+    delete process.env['MARGINCUE_CARD']
+  }
+  assert.match(receiptLine(1, ['week starts: Monday']), /— ctrl\+g to switch one$/)
+})
+
 test('MarginCue\'s own readings run through Codex too, and its hooks leave them alone', () => {
   process.env['MARGINCUE_READER'] = '1'
   try {

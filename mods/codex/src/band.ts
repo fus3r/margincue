@@ -27,7 +27,7 @@ import { PATHS, learn, processEngine, readJson, readLearned, readSettings, write
 import type { TurnRecord } from './store'
 import { drawLine } from './terminal'
 import type { Hit } from './terminal'
-import { agentCard, mergeTurn, pick, readTurn } from './turn-card'
+import { agentCard, markSent, mergeTurn, pick, readTurn } from './turn-card'
 import type { Agent } from './turn-card'
 
 export const PROTOCOL = 1
@@ -236,8 +236,8 @@ export class Band {
       this.sendingUntil = 0
     }
     if (this.agent && this.agent.text && before === this.agent.text && !text.trim()) {
-      // The amendment went into the turn: read the agent's choices afresh.
-      this.agent = null
+      // The amendment went into the turn: what it asked for is now what the turn has.
+      markSent(this.agent)
       this.turnStamp = ''
       this.readTurn()
     }
@@ -394,7 +394,7 @@ export class Band {
       if (card) {
         // Until its first rows arrive the card is one line; then it takes its room in one step.
         const budget = full && (card.rows.length || (card.read && !card.reading)) ? max : 1
-        lines = layoutCard(card, cols, budget, { chords: true, extra: [], palette: P })
+        lines = layoutCard(card, cols, budget, { chords: true, extra: [], palette: P, sketchKey: 'ctrl+g' })
           .slice(0, budget)
           .map((line, y) => drawLine(line, cols, y, this.hits, this.frame))
         if (!this.shownAgent()) this.mark(this.coreText)

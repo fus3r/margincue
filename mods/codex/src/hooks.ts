@@ -6,6 +6,7 @@ import { startsSomethingNew } from '../../claude-code/core/kickoff'
 import { ASSETS } from '../../claude-code/hooks/assets'
 import { startCard } from './card-store'
 import { APP_MESSAGE, PATHS, appMessage, readJson, readSettings, sessionSource, turnMessages, writeJson } from './store'
+import { turnAmendments } from './turn-card'
 import type { Source, TurnRecord } from './store'
 import { isCardFollowUp } from './widget-message'
 
@@ -80,10 +81,14 @@ export function promptHook(input: PromptInput): object | null {
   if (source === 'exec') return null
   const previous = readJson<TurnRecord | null>(PATHS.turn, null)
   if (input.turn_id && input.transcript_path && input.cwd) {
-    const record: TurnRecord = {
-      session: input.session_id ?? '', turn: input.turn_id, transcript: input.transcript_path, cwd: input.cwd,
-      startedAt: Date.now(), endedAt: null, decisions: decisionsOf(prompt), source,
-    }
+    // A message sent into the running turn (an amendment) is part of that turn: the turn keeps
+    // the decisions its prompt went with, and adds any this message carries.
+    const record: TurnRecord = previous && previous.turn === input.turn_id && previous.session === (input.session_id ?? '')
+      ? { ...previous, endedAt: null, decisions: [...new Set([...previous.decisions, ...decisionsOf(prompt)])] }
+      : {
+        session: input.session_id ?? '', turn: input.turn_id, transcript: input.transcript_path, cwd: input.cwd,
+        startedAt: Date.now(), endedAt: null, decisions: decisionsOf(prompt), source,
+      }
     try {
       writeJson(PATHS.turn, record)
     } catch {}
@@ -128,16 +133,26 @@ export function stopHook(input: StopInput): object | null {
   if (input.last_assistant_message) messages.push(input.last_assistant_message)
   const chosen = new Map<string, string>()
   for (const message of messages) for (const blank of parseBlanks(message)) chosen.set(blank.label, blank.choice)
+  // A choice the person switched while the agent worked shows the value they asked for.
+  const amended = input.transcript_path ? turnAmendments(turnMessages(input.transcript_path, input.turn_id, 'UserMessage')) : new Map<string, string>()
+  let switched = 0
+  for (const label of chosen.keys()) {
+    const value = amended.get(label.toLowerCase())
+    if (value === undefined) continue
+    chosen.set(label, `${value} (switched)`)
+    switched++
+  }
   const yours = mine?.decisions.length ?? 0
   if (!chosen.size && !yours) return null
-  return { systemMessage: receiptLine(yours, [...chosen].map(([label, choice]) => `${label}: ${choice}`), source) }
+  return { systemMessage: receiptLine(yours, [...chosen].map(([label, choice]) => `${label}: ${choice}`), source, switched) }
 }
 
-export function receiptLine(yours: number, agent: string[], source: Source = 'cli'): string {
-  const parts = [`MarginCue · you set ${yours} · the agent chose ${agent.length}`]
+export function receiptLine(yours: number, agent: string[], source: Source = 'cli', switched = 0): string {
+  const parts = [`MarginCue · you set ${yours} · the agent chose ${agent.length}${switched ? ` · you switched ${switched}` : ''}`]
   if (agent.length) {
     parts.push(agent.join(' · '))
-    if (source !== 'app') parts.push('ctrl+g to switch one')
+    // Under margincue-relay the agent's choices are already listed under Codex's prompt.
+    if (source !== 'app') parts.push(process.env['MARGINCUE_CARD'] === 'prompt' ? 'alt+↓ under the prompt to switch one' : 'ctrl+g to switch one')
   }
   return parts.join(' — ')
 }

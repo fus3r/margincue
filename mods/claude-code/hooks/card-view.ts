@@ -25,7 +25,8 @@ import type { MargincueCard, MargincueReceipt, MargincueRow } from '../types'
 import { CHORD_NEXT, CHORD_SWAP, DARK, cells, segmentsWidth, text, truncate, wrapLines } from './segments'
 import type { Color, Palette, Segment, Style } from './segments'
 
-export type CardOptions = { chords: boolean; extra: Segment[]; palette?: Palette }
+/** `sketchKey`: the keys that open the whole sketch on this host (Claude Code's chord by default). */
+export type CardOptions = { chords: boolean; extra: Segment[]; palette?: Palette; sketchKey?: string }
 
 type Line = Segment[]
 
@@ -101,7 +102,7 @@ export function layoutCard(card: MargincueCard, columns: number, budget: number,
     const body = bodyLines(card, g, left, P, words, room)
     // Beside the drawing only while no row has to fold an option away for it.
     if (!body.some((line) => line.some((s) => s.kind === 'button' && s.key.startsWith('card-more-')))) {
-      const picture = [captionLine(sketch!, P, words, pictureWidth, '', true), ...pictureLines(drawing, P, words, Math.max(1, room - 1))]
+      const picture = [captionLine(sketch!, P, words, pictureWidth, '', true), ...pictureLines(drawing, P, words, Math.max(1, room - 1), options.sketchKey)]
       const out: Line[] = [...head]
       for (let i = 0; i < Math.min(room, Math.max(body.length, picture.length)); i++) {
         const line = body[i] ?? []
@@ -119,7 +120,7 @@ export function layoutCard(card: MargincueCard, columns: number, budget: number,
     // Under the rows, in the content column; on a terminal too narrow for that, further left; narrower still, folded.
     const wide = Math.max(0, ...drawing.map(cells))
     const indent = g.content + wide <= columns ? g.content : wide + 2 <= columns ? columns - wide : -1
-    const shown = drawing.length && indent >= 0 && left >= Math.min(3, drawing.length) ? pictureLines(drawing, P, words, left) : []
+    const shown = drawing.length && indent >= 0 && left >= Math.min(3, drawing.length) ? pictureLines(drawing, P, words, left, options.sketchKey) : []
     const note = drawing.length && !shown.length ? words.folded(drawing.length) : ''
     out.push([...labelLead(words.preview, g, { dim: true }), ...captionLine(sketch, P, words, columns - g.content, note)])
     for (const line of shown) out.push([text(' '.repeat(indent)), ...line])
@@ -480,7 +481,7 @@ export function tidySketch(lines: string[]): string[] {
 }
 
 /** Up to `most` lines of a sketch; one that does not fit keeps its first lines and its last (often a frame's bottom). */
-function pictureLines(drawing: string[], P: Palette, words: Words, most: number): Line[] {
+function pictureLines(drawing: string[], P: Palette, words: Words, most: number, key = 'ctrl+x tab, s'): Line[] {
   const draw = (line: string): Line => {
     const out: Line = []
     let at = 0
@@ -499,7 +500,7 @@ function pictureLines(drawing: string[], P: Palette, words: Words, most: number)
   const gone = drawing.length - head.length - 1
   const t = [...last.trim()]
   const boxed = t.length >= 2 && LEFT.includes(t[0]!) && RIGHT.includes(t.at(-1)!)
-  const note = `⋯ ${words.lines(gone)} · ctrl+x tab, s`
+  const note = `⋯ ${words.lines(gone)} · ${key}`
   if (!boxed) return [...head.map(draw), [text(note, { dim: true, italic: true })], draw(last)]
   const indent = last.length - last.trimStart().length
   const inner = cells(last.trim()) - 2

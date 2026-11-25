@@ -1,0 +1,34 @@
+name: Bug report
+description: Something MarginCue did wrong, or didn't do.
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where it ran
+      options:
+        - Claude Code in a terminal
+        - Claude Code in the desktop app
+        - Codex CLI
+        - Codex in the ChatGPT desktop app
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: MarginCue, and Claude Code or Codex.
+      placeholder: "MarginCue 0.4.15, Codex CLI 0.172"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+      description: A screenshot of the card helps. Leave out anything private from your prompt or your code.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen again

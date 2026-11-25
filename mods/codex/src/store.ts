@@ -93,16 +93,19 @@ export function sessionSource(transcript: string): Source {
   return 'unknown'
 }
 
-/** The agent's messages in one turn of a Codex session file (its last 4 MiB is enough for a turn). */
-export function turnMessages(transcript: string, turn: string): string[] {
+/**
+ * The agent's messages in one turn of a Codex session file (its last 4 MiB is enough for a turn), or
+ * with `kind` 'UserMessage' what the person sent into it (the first prompt and any amendments).
+ */
+export function turnMessages(transcript: string, turn: string, kind: 'AgentMessage' | 'UserMessage' = 'AgentMessage'): string[] {
   const out: string[] = []
   for (const line of readTail(transcript, 4 * 1024 * 1024).split('\n')) {
-    if (!line.includes('AgentMessage') || !line.includes(turn)) continue
+    if (!line.includes(kind) || !line.includes(turn)) continue
     try {
       const entry = JSON.parse(line) as { type?: string; payload?: { type?: string; turn_id?: string; item?: { type?: string; content?: { text?: string }[] } } }
       const payload = entry.payload
       if (entry.type !== 'event_msg' || payload?.type !== 'item_completed' || payload.turn_id !== turn) continue
-      if (payload.item?.type !== 'AgentMessage') continue
+      if (payload.item?.type !== kind) continue
       const text = (payload.item.content ?? []).map((part) => part.text ?? '').join('')
       if (text) out.push(text)
     } catch {}
