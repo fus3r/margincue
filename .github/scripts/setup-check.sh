@@ -6,6 +6,8 @@ pack=$(npm pack --silent | tail -1)
 home="$RUNNER_TEMP/home"
 mkdir -p "$home"
 export HOME="$home" USERPROFILE="$home" SHELL=/bin/bash
+# Windows reads its Documents folder from USERPROFILE: give it the Windows form of the path, as a real profile has.
+if [[ "$RUNNER_OS" == Windows ]]; then export USERPROFILE="$(cygpath -w "$home")"; fi
 touch "$home/.bashrc"
 # Setup downloads the relay this version's release carries. The relay workflow attaches it only once a
 # tag is pushed and its builds finish, so until then setup falls back to ctrl+g, as it would for a user.

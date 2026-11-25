@@ -247,8 +247,12 @@ function powershellProfiles(): string[] {
     const command = runnable(shell, ['-NoProfile', '-Command', query])
     const answer = spawnSync(command.command, command.args, { ...command.options, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000 })
     if (answer.status !== 0) continue
-    const file = Buffer.from(answer.stdout.trim(), 'base64').toString('utf8')
-    if (/^(?:[a-z]:\\|\\\\).+\.ps1$/i.test(file)) files.add(file)
+    let file = Buffer.from(answer.stdout.trim(), 'base64').toString('utf8')
+    // Still relative (no Documents folder Windows can name): the person's own Documents is where PowerShell looks.
+    if (/\.ps1$/i.test(file) && !/^(?:[a-z]:[\\/]|\\\\)/i.test(file)) {
+      file = join(process.env['USERPROFILE'] || homedir(), 'Documents', file.replace(/^[\\/]+/, ''))
+    }
+    if (/^(?:[a-z]:[\\/]|\\\\).+\.ps1$/i.test(file)) files.add(file)
   }
   return files.size ? [...files] : [join(homedir(), 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1')]
 }

@@ -12618,8 +12618,11 @@ function powershellProfiles() {
     const command = runnable(shell, ["-NoProfile", "-Command", query]);
     const answer = spawnSync3(command.command, command.args, { ...command.options, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15e3 });
     if (answer.status !== 0) continue;
-    const file = Buffer.from(answer.stdout.trim(), "base64").toString("utf8");
-    if (/^(?:[a-z]:\\|\\\\).+\.ps1$/i.test(file)) files.add(file);
+    let file = Buffer.from(answer.stdout.trim(), "base64").toString("utf8");
+    if (/\.ps1$/i.test(file) && !/^(?:[a-z]:[\\/]|\\\\)/i.test(file)) {
+      file = join5(process.env["USERPROFILE"] || homedir2(), "Documents", file.replace(/^[\\/]+/, ""));
+    }
+    if (/^(?:[a-z]:[\\/]|\\\\).+\.ps1$/i.test(file)) files.add(file);
   }
   return files.size ? [...files] : [join5(homedir2(), "Documents", "PowerShell", "Microsoft.PowerShell_profile.ps1")];
 }
