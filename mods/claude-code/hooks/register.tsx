@@ -103,6 +103,7 @@ const host = {
   blankSeen: new Set<string>(),
   /** Choices marked in replies from before the running turn: drawn again later, they are not this turn's. */
   blankOld: new Set<string>(),
+  displayReply: null as { id: string; choices: number; fence?: string } | null,
   indexedAt: -Infinity,
   /** The last index run found a project to index (not the home folder, an empty folder, or one git and ripgrep can't read). */
   indexed: false,
@@ -116,6 +117,7 @@ const host = {
   turn: null as { text: string; id: string | null } | null,
   activeTurn: null as string | null,
   interactive: false,
+  terminal: false,
   /** MarginCue's card is up in an app, above Claude's own dialog, waiting for the person to send. */
   gate: false,
   /** When the core next wants its timer, recorded so the dialog's own watcher can fire it while the card is up. */
@@ -1028,6 +1030,13 @@ function blankValue(blank: ParsedBlank): string | undefined {
   return row.options[(card.stage === 'turn' ? row.selected : row.defaults)[0] ?? 0]
 }
 
+function hideOpenBlank(text: string): string {
+  const open = text.lastIndexOf(BLANK_OPEN)
+  return open > text.lastIndexOf(BLANK_CLOSE) ? text.slice(0, open) : text
+}
+
+const choicesMade = (n: number) => `${n} choice${n === 1 ? '' : 's'} made for you`
+
 async function placeReceipt($: $): Promise<void> {
   const receipt = host.view?.receipt
   if (!receipt || host.placed.has(receipt.id)) return
@@ -1156,6 +1165,7 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
   host.indexed = false
   host.blankSeen.clear()
   host.blankOld.clear()
+  host.displayReply = null
   host.onboardPending = false
   if (host.settings.mode !== 'off') void readLearned($, host.root).then((picks) => run($, { type: 'learned', picks })).catch(() => {})
   // The desktop app and VS Code drive the engine through its SDK and say so in its entrypoint: a person is there.
@@ -1449,6 +1459,7 @@ function median(list: number[]): number {
 
 export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
+    host.terminal = e.isInteractive && e.surface === 'terminal'
     await start($, e.cwd, e.isInteractive)
     return next(e)
   })
@@ -1624,16 +1635,44 @@ export const register: Register = (on) => {
     return drawRows($, $.ui.resolve(e), rows)
   })
 
-  // The agent's marked choices: drawn as their value in bold, registered as levers while the turn runs.
+  // The terminal preview bypasses AssistantMessage. MessageDisplay holds each batch of complete lines
+  // until the display rewrite is ready and leaves the original marks in the transcript.
+  on('classic.MessageDisplay', ($, e, next) => {
+    if (!host.terminal || host.settings.mode === 'off') return next(e)
+    if (host.displayReply?.id !== e.message_id) host.displayReply = { id: e.message_id, choices: 0 }
+    const reply = host.displayReply
+    // A fenced code block can span several batches. Leave literal marks in code alone.
+    const text = e.delta.split('\n').map((line) => {
+      const fence = /^(?:```|~~~)/.exec(line)?.[0]
+      if (reply.fence) {
+        if (reply.fence === fence) reply.fence = undefined
+        return line
+      }
+      if (fence) {
+        reply.fence = fence
+        return line
+      }
+      const prose = hideOpenBlank(line)
+      const blanks = parseBlanks(prose)
+      reply.choices += blanks.length
+      if (host.activeTurn !== null) for (const blank of blanks) noteBlank($, blank)
+      return blanks.length ? renderBlanks(prose, blankValue) : prose
+    }).join('\n')
+    const footer = e.final && reply.choices && !reply.fence
+      ? `\n\n**◆ ${choicesMade(reply.choices)}** · alt↑ alt↓ to switch one` : ''
+    if (e.final) host.displayReply = null
+    const delta = text + footer
+    if (delta === e.delta) return next(e)
+    return next({ ...e, delta }).then((result) => ({ ...result, displayContent: result.displayContent ?? delta }))
+  })
+
+  // Draw marks on attached surfaces and in terminal rows loaded from the transcript.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    // A mark still streaming in ("⟦week starts: Mon") is held back until it closes: the reader never sees the markup.
     const full = e.props.text
-    const open = full.lastIndexOf(BLANK_OPEN)
-    const text = open > full.lastIndexOf(BLANK_CLOSE) ? full.slice(0, open) : full
     if (!full.includes(BLANK_OPEN) || host.settings.mode === 'off') return next(e)
-    if (text !== full && !text.includes(BLANK_OPEN)) return next({ ...e, props: { ...e.props, text } })
+    const text = hideOpenBlank(full)
     const blanks = parseBlanks(text)
-    if (!blanks.length) return next(e)
+    if (!blanks.length) return text === full ? next(e) : next({ ...e, props: { ...e.props, text } })
     const live = host.activeTurn !== null
     if (live) $.clock.after(0, () => { if (host.activeTurn !== null) for (const blank of blanks) noteBlank($, blank) })
     const drawn = await next({ ...e, props: { ...e.props, text: renderBlanks(text, blankValue) } })
@@ -1646,7 +1685,7 @@ export const register: Register = (on) => {
         {drawn}
         <Box flexDirection="row" flexWrap="wrap">
           <Text color={accent} bold>{'  ◆ '}</Text>
-          <Text bold>{`${n} choice${n === 1 ? '' : 's'} made for you`}</Text>
+          <Text bold>{choicesMade(n)}</Text>
           <Text dimColor>{' · '}</Text>
           {e.surface === 'terminal' ? <Text color={accent}>{'alt\u2191 alt\u2193'}</Text> : null}
           <Text dimColor>{e.surface === 'terminal' ? ' to switch one' : 'switch one in MarginCue\u2019s card above the box'}</Text>

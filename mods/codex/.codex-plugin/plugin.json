@@ -1,6 +1,6 @@
 {
   "name": "margincue",
-  "version": "0.4.19",
+  "version": "0.4.20",
   "description": "Shows how Codex will read your prompt as you type it, checks your names against the code, gives each open choice a control, sketches the result, and turns the agent's own choices into switches.",
   "hooks": "./hooks/hooks.json",
   "mcpServers": "./.mcp.json",

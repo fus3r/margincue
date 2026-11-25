@@ -897,6 +897,81 @@ test('choices the agent marks become switches during the turn, then a receipt an
   await message.unmount()
 })
 
+const MARKED_EXPORT = [
+  '- Export delivery: ⟦delivery: streamed server download endpoint | background job with emailed file | client-side from loaded rows⟧',
+  '- Format: ⟦format: CSV | JSON⟧',
+  '- Rows: ⟦rows: filtered rows | all rows⟧',
+  '- Encoding: ⟦encoding: UTF-8 | UTF-16⟧',
+  '- Filename: ⟦filename: report.csv |',
+]
+const DISPLAYED_EXPORT = '- Export delivery: **streamed server download endpoint**\n- Format: **CSV**\n' +
+  '- Rows: **filtered rows**\n- Encoding: **UTF-8**\n- Filename: '
+
+test('growing AssistantMessage props hide partial marks and render four live choices', async ($, on) => {
+  const { clock } = world(on)
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('ui.render', { component: 'AssistantMessage', surface: 'terminal' }, ($, e) => {
+    const { Markdown } = $.ui.resolve(e)
+    return <Markdown text={e.props.text} />
+  })
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: DRAFT, turnId: 'export' })
+  const message = await $.ui.mount({
+    plugin: 'margincue', component: 'AssistantMessage', requestId: 'export-reply', surface: 'terminal',
+    props: { text: '', isFirstOfReply: true },
+  })
+  const answer = MARKED_EXPORT.join('\n')
+  let text = ''
+  for (const token of answer.match(/⟦|⟧|\s+|[^⟦⟧\s]+/gu)!) {
+    text += token
+    await message.redraw({ text, isFirstOfReply: true })
+    const drawn = (await message.find({ type: 'Markdown' }))?.props.text
+    expect(drawn).toBeDefined()
+    expect(drawn).not.toMatch(/[⟦⟧]/u)
+    expect(drawn).not.toContain('background job with emailed file')
+  }
+  expect((await message.find({ type: 'Markdown' }))?.props.text).toBe(DISPLAYED_EXPORT)
+  expect(await message.find({ type: 'Text', text: /4 choices made for you/ })).toBeDefined()
+  await clock.settle()
+  const band = await $.ui.mount({ ...WIDE, props: { ...WIDE.props, isWorking: true } })
+  expect(await band.find({ type: 'Text', text: /The agent made 4 choices for you/ })).toBeDefined()
+  await $.turn.complete({ turnId: 'export', reason: 'answer', answer, durationMs: 1000, isAborted: false })
+  await message.redraw({ text: answer, isFirstOfReply: true })
+  expect((await message.find({ type: 'Markdown' }))?.props.text).toBe(DISPLAYED_EXPORT)
+  await band.unmount()
+  await message.unmount()
+})
+
+test('MessageDisplay formats terminal batches and registers choices before the transcript row', async ($, on) => {
+  const { clock } = world(on)
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('classic.MessageDisplay', (_, e) => ({ displayContent: e.delta }))
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: DRAFT, turnId: 'export' })
+
+  let index = 0
+  const show = async (delta: string, final = false) => (await $.classic.MessageDisplay({
+    turn_id: 'export', message_id: 'export-reply', index: index++, delta, final,
+  })).displayContent ?? delta
+  const code = '⟦literal: example | alternative⟧\n'
+  expect(await show('```text\n')).toBe('```text\n')
+  expect(await show(code)).toBe(code)
+  expect(await show('```\n')).toBe('```\n')
+
+  let visible = ''
+  for (const line of MARKED_EXPORT.slice(0, 4)) {
+    visible += await show(`${line}\n`)
+    expect(visible).not.toMatch(/[⟦⟧]/u)
+  }
+  await clock.settle()
+  const band = await $.ui.mount({ ...WIDE, props: { ...WIDE.props, isWorking: true } })
+  expect(await band.find({ type: 'Text', text: /The agent made 4 choices for you/ })).toBeDefined()
+  visible += await show(MARKED_EXPORT[4]!, true)
+  expect(visible).toBe(`${DISPLAYED_EXPORT}\n\n**◆ 4 choices made for you** · alt↑ alt↓ to switch one`)
+  await band.unmount()
+})
+
 test('A/B logs a sticky session assignment and reads totals for each arm', async ($, on) => {
   const { clock, calls, files, store, home, identity } = world(on, replies())
   const start = () => $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })

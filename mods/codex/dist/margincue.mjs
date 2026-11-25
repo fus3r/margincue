@@ -10180,7 +10180,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.19";
+var VERSION = "0.4.20";
 var MIN_CODEX = "0.171";
 function tooOld(output2) {
   const match = /codex-cli (\d+)\.(\d+)\.(\d+)/.exec(output2);

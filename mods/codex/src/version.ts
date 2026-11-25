@@ -1,5 +1,5 @@
 /** MarginCue's version, as it introduces itself to Codex, to the desktop app and to its card. */
-export const VERSION = '0.4.19'
+export const VERSION = '0.4.20'
 
 /** The oldest Codex CLI MarginCue supports (the README's minimum). */
 export const MIN_CODEX = '0.171'
