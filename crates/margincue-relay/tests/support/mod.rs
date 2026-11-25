@@ -122,7 +122,8 @@ impl Terminal {
     }
 
     pub fn wait_text(&mut self, text: &str) -> Duration {
-        self.until(Duration::from_secs(6), |term| term.contains(text))
+        // A shared CI runner can take seconds to start the fake Codex: wait long, since a ready screen returns at once.
+        self.until(Duration::from_secs(20), |term| term.contains(text))
     }
 
     pub fn settle(&mut self, duration: Duration) {
