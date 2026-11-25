@@ -233,8 +233,16 @@ function appendProfile(file: string, text: string): void {
 
 function powershellProfiles(): string[] {
   const files = new Set<string>()
-  // Encode $PROFILE so a redirected Documents path survives Windows PowerShell's console code page.
-  const query = '[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($PROFILE))'
+  // When Documents is missing, older PowerShell versions can omit it from $PROFILE.
+  const query = [
+    '$file = [string]$PROFILE;',
+    String.raw`if ([IO.Path]::GetPathRoot($file) -in '', '\') {`,
+    "  $documents = [Environment]::GetFolderPath('MyDocuments', 'DoNotVerify');",
+    String.raw`  $file = [IO.Path]::Combine($documents, $file.TrimStart('\'))`,
+    '};',
+    // Keep redirected Documents paths intact across console code pages.
+    '[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($file))',
+  ].join(' ')
   for (const shell of ['pwsh', 'powershell']) {
     const command = runnable(shell, ['-NoProfile', '-Command', query])
     const answer = spawnSync(command.command, command.args, { ...command.options, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000 })

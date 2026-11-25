@@ -12605,7 +12605,15 @@ function appendProfile(file, text2) {
 }
 function powershellProfiles() {
   const files = /* @__PURE__ */ new Set();
-  const query = "[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($PROFILE))";
+  const query = [
+    "$file = [string]$PROFILE;",
+    String.raw`if ([IO.Path]::GetPathRoot($file) -in '', '\') {`,
+    "  $documents = [Environment]::GetFolderPath('MyDocuments', 'DoNotVerify');",
+    String.raw`  $file = [IO.Path]::Combine($documents, $file.TrimStart('\'))`,
+    "};",
+    // Keep redirected Documents paths intact across console code pages.
+    "[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($file))"
+  ].join(" ");
   for (const shell of ["pwsh", "powershell"]) {
     const command = runnable(shell, ["-NoProfile", "-Command", query]);
     const answer = spawnSync3(command.command, command.args, { ...command.options, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15e3 });
