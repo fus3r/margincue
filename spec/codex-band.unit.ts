@@ -14,7 +14,7 @@ delete process.env['MARGINCUE_READER']
 
 const { Band } = await import('../mods/codex/src/band')
 const { interactive } = await import('../mods/codex/src/relay')
-const { PATHS } = await import('../mods/codex/src/store')
+const { PATHS, saveSettings, writeJson } = await import('../mods/codex/src/store')
 import type { Down, Reader } from '../mods/codex/src/band'
 
 const PROMPT = 'Add a CSV export to the weekly activity report'
@@ -25,12 +25,12 @@ const CARD = [
   '',
 ].join('\n')
 
-function reader(): Reader {
+function reader(card = CARD): Reader {
   return {
     problem: null,
     start: async () => 'gpt-6-luna',
     async complete(system, _prompt, options) {
-      const reply = system.includes('Draw what the finished result will look like') ? 'title | Report\n┌ Report ────────┐\n│ [Export CSV] │\n│ 12 rows      │\n└───────────────┘\n' : CARD
+      const reply = system.includes('Draw what the finished result will look like') ? 'title | Report\n┌ Report ────────┐\n│ [Export CSV] │\n│ 12 rows      │\n└───────────────┘\n' : card
       options?.onDelta?.(reply)
       return { ok: true, text: reply, ms: 1 }
     },
@@ -38,10 +38,10 @@ function reader(): Reader {
   }
 }
 
-function harness(cwd = mkdtempSync(join(tmpdir(), 'margincue-project-'))) {
+function harness(cwd = mkdtempSync(join(tmpdir(), 'margincue-project-')), model = reader(), readKey = true, vocabulary = false) {
   const out: Down[] = []
-  const band = new Band({ cwd, send: (message) => out.push(message), model: reader(), vocabulary: false, turnEveryMs: 20 })
-  band.receive({ t: 'hello', protocol: 1, cols: 110, rows: 40, max: 9, full: true })
+  const band = new Band({ cwd, send: (message) => out.push(message), model, vocabulary, turnEveryMs: 20 })
+  band.receive({ t: 'hello', protocol: 1, cols: 110, rows: 40, max: 9, full: true, ...(readKey && { readKey }) })
   const last = <T extends Down['t']>(kind: T) => out.filter((m): m is Extract<Down, { t: T }> => m.t === kind).at(-1)
   const lines = () => (last('band')?.lines ?? []).join('\n').replace(/\x1b\[[0-9;:]*m/g, '')
   const draft = (text: string | null, plain = true) => band.receive({ t: 'draft', text, approx: false, end: true, plain })
@@ -100,6 +100,32 @@ test('Enter before the card has read the prompt lets it go as written', () => {
   h.band.close()
 })
 
+test('reading on demand marks a hard-to-undo default and sends it open in all mode even with zero decisions', async () => {
+  const prompt = 'Add retention settings for inactive teams.'
+  saveSettings({ send: 'all', read: 'key', sketch: false })
+  const h = harness(undefined, reader([
+    'read | You want retention settings for inactive teams.', 'kind | change',
+    'row | purge | retention | one | After {}, the agent will permanently delete the team in a scheduled job | 30 days | 7 days', '',
+  ].join('\n')))
+  try {
+    h.draft(prompt)
+    assert.equal(h.last('claims')?.read, true)
+    h.band.receive({ t: 'key', key: 'read' })
+    await until(() => h.last('claims')?.enter === true && h.lines().includes('left to agent'))
+    assert.match(h.lines(), /\? retention/)
+    h.band.receive({ t: 'enter', text: prompt, approx: false })
+    const answer = h.last('enter')!
+    assert.equal(answer.do, 'append')
+    assert.match(answer.text ?? '', /^\n\nOpen choices \(/)
+    assert.match(answer.text ?? '', /scheduled job \(7 days \/ 30 days\)\?$/)
+    assert.doesNotMatch(answer.text!, /Decisions:/)
+    assert.equal(JSON.parse(readFileSync(PATHS.composed, 'utf8')).text, `${prompt}${answer.text}`)
+  } finally {
+    h.band.close()
+    saveSettings({})
+  }
+})
+
 test('a card left as it was goes with the prompt as the plan, with the sketch it drew', async () => {
   const h = harness()
   h.draft(PROMPT)
@@ -115,6 +141,136 @@ test('a card left as it was goes with the prompt as the plan, with the sketch it
   assert.equal(box.length, 4)
   assert.equal(new Set(box.map((line) => [...line].length)).size, 1, box.join('\n'))
   h.band.close()
+})
+
+test('open mode sends an untouched card as questions even with no Decisions', async () => {
+  saveSettings({ send: 'open', sketch: false })
+  const h = harness()
+  try {
+    h.draft(PROMPT)
+    await until(() => h.lines().includes('rows exported') && h.last('claims')?.enter === true)
+    h.band.receive({ t: 'enter', text: PROMPT, approx: false })
+    const answer = h.last('enter')!
+    assert.equal(answer.do, 'append')
+    assert.match(answer.text!, /^\n\nOpen choices \(/)
+    assert.match(answer.text!, /Settle each one yourself.*say what you chose/)
+    assert.match(answer.text!, /\n- Export covers … \(all rows \/ the filtered rows\)\?$/)
+    assert.doesNotMatch(answer.text!, /Decisions:|\*/)
+    assert.equal(JSON.parse(readFileSync(PATHS.composed, 'utf8')).text, `${PROMPT}${answer.text}`)
+  } finally {
+    h.band.close()
+    saveSettings({})
+  }
+})
+
+test('the relay card carries file candidates, a file pick, or a file question according to the send mode', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'margincue-project-'))
+  mkdirSync(join(cwd, 'app', 'dashboard'), { recursive: true })
+  writeFileSync(join(cwd, 'app', 'layout.tsx'), 'export default function Layout() {}\n')
+  writeFileSync(join(cwd, 'app', 'dashboard', 'layout.tsx'), 'export default function Layout() {}\n')
+  const text = 'Build a footer with a copyright year in `layout.tsx`.'
+  for (const send of ['all', 'picked', 'open'] as const) {
+    saveSettings({ send, read: 'key', sketch: false, refs: send !== 'open' })
+    const h = harness(cwd, reader(), true, true)
+    try {
+      h.draft(text)
+      await until(() => h.lines().includes('dashboard/layout.tsx'))
+      if (send === 'picked') {
+        h.band.receive({ t: 'key', key: 'read' })
+        await until(() => h.lines().includes('rows exported'))
+        h.band.receive({ t: 'key', key: 'down' })
+        h.band.receive({ t: 'key', key: 'down' })
+      }
+      assert.equal(h.last('claims')?.enter, true)
+      h.band.receive({ t: 'enter', text, approx: false })
+      const answer = h.last('enter')!
+      assert.equal(answer.do, 'append')
+      if (send === 'all') assert.equal(answer.text, '\n\nDecisions:\n- Where things are: layout.tsx (app/layout.tsx or app/dashboard/layout.tsx).')
+      else if (send === 'picked') assert.equal(answer.text, '\n\nDecisions:\n- "layout.tsx" is the one in app/dashboard/layout.tsx.')
+      else {
+        assert.match(answer.text!, /Open choices[^\n]+\n- "layout\.tsx" is the one in … \(app\/dashboard\/layout\.tsx \/ app\/layout\.tsx\)\?/)
+        assert.doesNotMatch(answer.text!, /Decisions:|Export covers|is the one in app\//)
+      }
+    } finally {
+      h.band.close()
+      saveSettings({})
+    }
+  }
+})
+
+test('picked mode sends a saved choice and the written step order without the untouched guess', async () => {
+  const text = 'First add a CSV export to the activity report, then add a link to it.'
+  const model = reader()
+  model.complete = async (_system, _prompt, options) => {
+    const reply = CARD + [
+      'row | format | number format | one | Use {} numbers | rounded* | exact',
+      'row | step_order | step order | one | Do the steps {} | in written order, from step 1* | in whatever order works',
+      '',
+    ].join('\n')
+    options?.onDelta?.(reply)
+    return { ok: true, text: reply, ms: 1 }
+  }
+  saveSettings({ send: 'picked', sketch: false })
+  const cwd = mkdtempSync(join(tmpdir(), 'margincue-project-'))
+  writeJson(PATHS.learned, { [cwd]: { scope: { label: 'the filtered rows', count: 2 } } })
+  const h = harness(cwd, model)
+  try {
+    h.draft(text)
+    await until(() => h.lines().includes('number format') && h.last('claims')?.enter === true)
+    h.band.receive({ t: 'enter', text, approx: false })
+    assert.deepEqual(h.last('enter'), { t: 'enter', do: 'append', text: '\n\nDecisions:\n- Export covers the filtered rows.\n- Do the steps in written order, from step 1.' })
+  } finally {
+    h.band.close()
+    saveSettings({})
+  }
+})
+
+test('key mode waits through an idle draft and only claims the read chord on a plain draft', async () => {
+  const model = reader()
+  const complete = model.complete
+  let requests = 0
+  model.complete = (...args) => { requests++; return complete(...args) }
+  saveSettings({ read: 'key', sketch: false })
+  const h = harness(undefined, model)
+  try {
+    h.draft(PROMPT)
+    assert.match(h.lines(), /ctrl\+\] c to read/)
+    assert.deepEqual(h.last('claims'), { t: 'claims', enter: false, arrows: false, read: true })
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    assert.equal(requests, 0)
+
+    h.draft(null)
+    assert.deepEqual(h.last('claims'), { t: 'claims', enter: false, arrows: false })
+    h.band.receive({ t: 'key', key: 'read' })
+    assert.equal(requests, 0)
+
+    h.draft(PROMPT)
+    h.band.receive({ t: 'key', key: 'read' })
+    await until(() => h.lines().includes('rows exported') && h.last('claims')?.enter === true)
+    assert.equal(requests, 1)
+    assert.equal(h.last('claims')?.read, true)
+    h.band.receive({ t: 'key', key: 'read' })
+    assert.equal(requests, 1)
+    h.draft(`${PROMPT} and add a timestamp.`)
+    assert.equal(h.last('claims')?.read, true)
+    assert.equal(requests, 1)
+  } finally {
+    h.band.close()
+    saveSettings({})
+  }
+})
+
+test('an older relay shows the full-screen read shortcut', () => {
+  saveSettings({ read: 'key' })
+  const h = harness(undefined, reader(), false)
+  try {
+    h.draft(PROMPT)
+    assert.match(h.lines(), /ctrl\+g, then tab, c to read/)
+    assert.equal(h.last('claims')?.read, undefined)
+  } finally {
+    h.band.close()
+    saveSettings({})
+  }
 })
 
 test('a popup hides the box for a moment: the card stays as drawn and claims nothing', async () => {

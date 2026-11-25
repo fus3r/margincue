@@ -60,6 +60,7 @@ export type MargincueRow = {
   unit?: string
   lens?: string
   learned?: true
+  openOnSend?: true
   start?: number
   end?: number
 }

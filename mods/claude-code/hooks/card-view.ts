@@ -26,8 +26,7 @@ import type { MargincueCard, MargincueReceipt, MargincueRow } from '../types'
 import { CARD_READ_KEY, CHORD_NEXT, CHORD_SWAP, DARK, cells, segmentsWidth, text, truncate, wrapLines } from './segments'
 import type { Color, Palette, Segment, Style } from './segments'
 
-/** `sketchKey`: the keys that open the whole sketch on this host (Claude Code's chord by default). */
-export type CardOptions = { chords: boolean; extra: Segment[]; palette?: Palette; sketchKey?: string }
+export type CardOptions = { chords: boolean; extra: Segment[]; palette?: Palette; sketchKey?: string; readHint?: string }
 
 type Line = Segment[]
 
@@ -84,7 +83,7 @@ const FR: Words = {
 export function layoutCard(card: MargincueCard, columns: number, budget: number, options: CardOptions): Line[] {
   const P = options.palette ?? DARK
   const labels = card.language === 'fr' ? FR : EN
-  const words = card.pickedOnly ? { ...labels, open: labels.toAgent } : labels
+  const words = { ...labels, ...(card.pickedOnly && { open: labels.toAgent }), readHint: options.readHint ?? labels.readHint }
   const hidden = hiddenButtons(card, options.chords)
   const open = card.rows.filter((row) => !row.chosen && !(card.pickedOnly && row.learned)).length
   if (card.collapsed) return [collapsed(card, columns, P, words, open, hidden)]
@@ -255,6 +254,7 @@ function mentionLines(card: MargincueCard, g: Grid, width: number, P: Palette, w
 type Badge = { glyph: string; color: Color }
 
 function badge(row: MargincueRow): Badge | null {
+  if (row.openOnSend) return { glyph: '?', color: 'subtle' }
   if (row.origin === 'lens') return { glyph: '◆', color: 'claude' }
   // A name the code lacks asks until the person says which one it is.
   if (row.origin === 'repo') return row.chosen ? { glyph: '✓', color: 'success' } : { glyph: '?', color: 'warning' }
@@ -340,8 +340,12 @@ function focusHint(P: Palette, words: Words): Line {
 function rowLines(row: MargincueRow, focus: boolean, g: Grid, width: number, P: Palette, words: Words, most: number): Line[] {
   const room = Math.max(8, width - g.content + 1)
   const hint = focus ? focusHint(P, words) : []
-  const withHint = (line: Line): Line =>
-    hint.length && segmentsWidth(line) + 4 + segmentsWidth(hint) <= width ? [...line, text('    '), ...hint] : line
+  const withHint = (line: Line): Line => {
+    if (row.openOnSend && segmentsWidth(line) + 2 + cells(words.toAgent) <= width) {
+      line = [...line, text(`  ${words.toAgent}`, { dim: true })]
+    }
+    return hint.length && segmentsWidth(line) + 4 + segmentsWidth(hint) <= width ? [...line, text('    '), ...hint] : line
+  }
   // A label longer than its column takes the row's next lines; the row grows rather than the label being cut.
   const parts = labelParts(row.label, g.label - (badge(row) ? 2 : 0))
   const tail = (k: number, gap: string): Line => rowLead(row, focus, g, P, gap, parts[k]!, false)

@@ -1205,6 +1205,11 @@ function openChoiceLine(row) {
   const sorted = [...options2].sort((a, b) => a.localeCompare(b, "en", { numeric: true, sensitivity: "base" }));
   return `${head} (${row.type === "many" ? "any of: " : ""}${sorted.join(" / ")})?`;
 }
+function openChoicesBlock(choices) {
+  if (!choices.length) return "";
+  const heading = "Open choices (a quick read flagged these; they are not decisions, and its options may not fit the code. Settle each one yourself, without stopping to ask, and say what you chose where you first act on it):";
+  return [heading, ...choices.map((line) => `- ${line}`)].join("\n");
+}
 function sameSelection(a, b) {
   if (a.length !== b.length) return false;
   const x = [...a].sort((p, q) => p - q);
@@ -1301,6 +1306,49 @@ function parseBlanks(text2) {
     out.push({ label: label.toLowerCase(), choice, alternatives: alts, start, end: start + m[0].length });
   }
   return out;
+}
+
+// ../claude-code/core/hard-to-undo.ts
+var EFFECTS = [
+  // Data loss and history rewrites.
+  /\b(?:hard[- ]delet(?:e|es|ed|ing|ion)|permanent(?:ly)? (?:delet(?:e|es|ed|ing|ion)|remov(?:e|es|ed|ing|al)))\b/,
+  /(?:^|: |\b(?:add|create|enable|run|schedule|with|using) )(?:(?:a|the|new|scheduled|automatic|nightly|daily|background) )*(?:purge|clean[- ]?up) (?:job|task|cron)\b(?! (?:will|should|runs?|is|are) )/,
+  /\b(?:delet(?:e|es|ed|ing)|purg(?:e|es|ed|ing))(?! (?:jobs?|tasks?|cron|buttons?)\b)(?: [\w-]+){0,4} (?:data|records?|rows?|accounts?|teams?|users?|logs?|files?|backups?|databases?)\b/,
+  /\b(?:drop|truncate)(?: [\w-]+){0,4} (?:tables?|columns?|databases?)\b/,
+  /\boverwrit(?:e|es|ing|ten)(?: [\w-]+){0,4} (?:files?|backups?|[\w./-]+\.[a-z0-9]+)\b/,
+  /\b(?:force[- ]push(?:es|ed|ing)?|rewrit(?:e|es|ing)(?: [\w-]+){0,3} (?:git|commit|branch) history)\b/,
+  // Database migrations and dependency changes.
+  /(?:^|: |\b(?:with|using|via) )(?:(?:a|the|new|background|one-time) )*(?:schema|data|database) migrations?\b(?! (?:will|should|is|are) )/,
+  /\b(?:add|apply|create|run|perform|ship)(?: [\w-]+){0,4} migrations?\b/,
+  /\b(?:migrate|backfill)(?: [\w-]+){0,4} (?:data|records?|rows?|tables?|columns?|schema|databases?)\b/,
+  /\b(?:add|install|upgrade|bump|update|introduce|replace)(?: (?:a|the|new|existing|pinned|direct|runtime|dev|npm|python|cargo)){0,4} (?:dependenc(?:y|ies)|packages?)\b/,
+  /\b(?:add|install|introduce|use) [@\w][\w@./-]* as (?:a |a new )?dependenc(?:y|ies)\b/,
+  /\b(?:add|install|upgrade|bump) @[\w.-]+\/[\w.-]+\b/,
+  /\b(?:upgrade|bump) [\w.-]+ to v?\d+\.\d+(?:\.\d+)?\b/,
+  /\b(?:npm (?:install|add|update)|(?:pnpm|yarn) (?:add|up(?:grade)?)|(?:pip|uv pip) install|cargo add|go get) [@\w][\w@./-]*/,
+  // Changes to an existing interface or a security policy.
+  /\b(?:chang(?:e|es|ing)|renam(?:e|es|ing)|remov(?:e|es|ing)|replac(?:e|es|ing)|break|move|redirect)(?: (?:the|our|its))? (?:public|existing|stable|documented|legacy) (?:apis?|endpoints?|routes?|urls?|cli(?: commands?| flags?)?|file formats?|(?:csv|json) (?:format|schema|headers))\b/,
+  /\b(?:rename|remove|replace|move|redirect) (?:the )?\/api\/[\w/-]+/,
+  /\b(?:change|replace|remove|disable|relax|tighten|require|enforce|rotate|enable|switch to)(?: (?:the|default|existing|current|team|tenant|admin)){0,3} (?:auth(?:entication|ori[sz]ation)?|permissions?|access (?:controls?|polic(?:y|ies))|security polic(?:y|ies)|api keys?|sso|mfa|2fa|oauth|rbac|cors)\b/,
+  /\b(?:grant|revoke|allow|restrict)(?: [\w-]+){0,4} (?:(?:unauthenticated|anonymous) (?:access|requests|reads|writes)|(?:write|read|admin) access|permissions?|admin roles?)\b/,
+  // Delivery, money, and releases outside the repo.
+  /\b(?:send|schedule)(?: [\w-]+){0,4} (?:emails?|notifications?|digests?|invitations?) (?:to|for)(?: [\w-]+){0,4} (?:customers?|users?|members?|owners?|subscribers?|channels?|everyone)\b/,
+  /\b(?:email|notify)(?: [\w-]+){0,4} (?:customers?|users?|members?|owners?|subscribers?|teams?|everyone)\b/,
+  /\b(?:charge|bill|refund|debit)(?: [\w$.-]+){0,4} (?:cards?|customers?|payments?|invoices?)\b/,
+  /\b(?:capture|issue|make|process)(?: [\w$.-]+){0,4} (?:payments?|refunds?)\b/,
+  /\b(?:deploy|publish|release)(?: [\w./@-]+){0,5} (?:to|on) (?:the )?(?:prod(?:uction)?|staging|npm|pypi|crates\.io|github|(?:app|play) store)\b/,
+  /\b(?:publish|release)(?: [\w-]+){0,3} (?:packages?|(?:new|public) versions?|public (?:site|docs)|repository)\b/
+];
+var NOT_DOING = /\b(?:soft-|(?:soft|no|not|never|don't|avoid|skip|prevent|without|instead of|rather than|dry[- ]run|mock|simulate|document(?:ing)?|describe|explain|plan|preview|review|check|show(?:ing)?)(?: [\w-]+){0,4} )$/;
+var NON_EFFECT = /^ (?:buttons?|icons?|labels?|screens?|tabs?|dialogs?|headings?|tooltips?|badges?|templates?|graphs?|reports?|status|docs|documentation|(?:in|from|on) (?:the )?(?:(?:table |chart |in-app )?preview|mock|sandbox|test inbox|(?:dry[- ]run|(?:stripe )?test) mode))\b/;
+var NO_ACTION = /^(?:off|disabled|never|skip|none(?: of these)?|nothing|log only|report only|preview only|dry[- ]run)$/i;
+function isHardToUndo(statement, option) {
+  if (NO_ACTION.test(option.trim())) return false;
+  const decision = fillStatement(statement, option).toLowerCase().replace(/’/g, "'").replace(/`/g, "").replace(/\s+/g, " ");
+  return decision.split(/[,;]|[.!?] |\b(?:and|but|then)\b/).map((clause) => clause.trim()).some((clause) => EFFECTS.some((rule) => {
+    const match = rule.exec(clause);
+    return match !== null && !NOT_DOING.test(clause.slice(0, match.index)) && !NON_EFFECT.test(clause.slice(match.index + match[0].length));
+  }));
 }
 
 // ../claude-code/core/grounding.ts
@@ -2210,7 +2258,6 @@ var AMEND_MS = 3500;
 var CARD_GAP_MS = 3e3;
 var CARD_IDLE_MS = 900;
 var CARD_MIN_WORDS = 6;
-var OPEN_CHOICES = "Open choices (a quick read flagged these; they are not decisions, and its options may not fit the code. Settle each one yourself, without stopping to ask, and say what you chose where you first act on it):";
 var SKETCH_DELAY_MS = 700;
 var AMEND_DELAY_MS = 1500;
 var LEARNED_AFTER = 2;
@@ -2776,15 +2823,15 @@ var Core = class {
     const isPrompt = this.enabled && prompt;
     if (this.mode !== void 0 && text2 !== this.text) this.refreshState(text2);
     const exact = text2 === this.text;
-    const whole = plan && exact && this.hasReadingFor(text2);
+    const read = exact && this.hasReadingFor(text2);
+    const whole = plan && read;
     const decisions = isPrompt ? this.decisions(exact, whole) : [];
     const attached = attachDecisions(text2, decisions);
     const added = attached.added;
-    const open = isPrompt && whole ? this.openChoices() : [];
-    const asked = open.length ? `${attached.text.replace(/\s+$/, "")}
+    const open = isPrompt && exact ? openChoicesBlock(this.openChoices(plan, read)) : "";
+    const asked = open ? `${attached.text.replace(/\s+$/, "")}
 
-${OPEN_CHOICES}
-${open.map((line) => `- ${line}`).join("\n")}` : attached.text;
+${open}` : attached.text;
     const target = isPrompt && exact ? this.targetSketch(plan, added) : null;
     const sent = target ? `${asked.replace(/\s+$/, "")}
 
@@ -3353,7 +3400,11 @@ ${lines.join("\n")}` : "";
       const match = old.find((entry) => !used.has(entry.id) && (entry.key === row.key || normalize(entry.statement) === normalize(row.statement)));
       if (match) used.add(match.id);
       if (match && match.picked !== null) next.push(row.anchor ? { ...match, anchor: row.anchor } : match);
-      else next.push(this.withLearned({ ...row, id: match?.id ?? this.newId(), picked: null }));
+      else {
+        const entry = this.withLearned({ ...row, id: match?.id ?? this.newId(), picked: null });
+        if (entry.key !== STEP_ORDER_KEY && entry.learned === void 0 && entry.defaults.length && isHardToUndo(entry.statement, rowValue(entry, entry.defaults))) entry.hardToUndo = true;
+        next.push(entry);
+      }
     }
     for (const row of old) if (!used.has(row.id) && (partial || row.picked !== null)) next.push(row);
     card.rows = [...card.rows.filter((row) => row.origin === "repo"), ...next];
@@ -3468,10 +3519,13 @@ ${lines.join("\n")}` : "";
     const card = this.card;
     return card?.stage === "draft" && card.req === null && card.readFor === text2;
   }
-  /** A finished reading adds learned picks, and adds suggested defaults in `all` mode. */
+  defaultIsOpen(row) {
+    return !this.pickedOnly && row.picked === null && row.hardToUndo === true;
+  }
+  /** A finished reading adds learned picks, and adds binding defaults in `all` mode. */
   cardDecisions(whole = false) {
     const card = this.card;
-    const out = card.rows.filter((row) => row.picked !== null || whole && row.origin !== "repo" && (row.learned !== void 0 || !this.pickedOnly && row.defaults.length > 0 || row.key === STEP_ORDER_KEY && row.defaults.length > 0)).map((row) => ({ statement: row.statement, option: row.said ?? this.rowText(row, row.picked ?? row.learned ?? row.defaults) }));
+    const out = card.rows.filter((row) => row.picked !== null || whole && row.origin !== "repo" && (row.learned !== void 0 || !this.pickedOnly && row.defaults.length > 0 && !row.hardToUndo || row.key === STEP_ORDER_KEY && row.defaults.length > 0)).map((row) => ({ statement: row.statement, option: row.said ?? this.rowText(row, row.picked ?? row.learned ?? row.defaults) }));
     if (this.refsEnabled) {
       const picked = new Set(card.rows.filter((row) => row.origin === "repo" && row.picked !== null).map((row) => row.anchor));
       const refs = this.mentions.filter((m) => m.status === "found" && m.files.length > 0 && m.as === "code" && !(m.places && (m.places.length < 2 || picked.has(m.phrase)))).slice(0, REFS_MAX);
@@ -3479,11 +3533,11 @@ ${lines.join("\n")}` : "";
     }
     return out;
   }
-  /** `send open`: the rows the person left alone, as questions for the agent (the step order travels as a decision). */
-  openChoices() {
+  openChoices(plan, read) {
     const card = this.card;
-    if (!this.openRows || card?.stage !== "draft") return [];
-    return card.rows.filter((row) => (row.origin === "model" || row.origin === "lens") && row.picked === null && row.learned === void 0 && row.key !== STEP_ORDER_KEY).map((row) => openChoiceLine(row));
+    if (card?.stage !== "draft") return [];
+    const leaveOpen = plan && this.openRows;
+    return card.rows.filter((row) => row.picked === null && row.learned === void 0 && row.key !== STEP_ORDER_KEY).filter((row) => row.origin === "repo" ? leaveOpen && row.key.startsWith("file_") : read && (row.origin === "model" || row.origin === "lens") && (leaveOpen || this.defaultIsOpen(row))).map((row) => openChoiceLine(row));
   }
   cardView(canReadCard) {
     const card = this.card;
@@ -3529,6 +3583,7 @@ ${lines.join("\n")}` : "";
       ...row.unit && { unit: row.unit },
       ...row.lens && { lens: row.lens },
       ...learned && row.picked === null && { learned: true },
+      ...draft && this.defaultIsOpen(row) && { openOnSend: true },
       ...span && { start: span.start, end: span.end }
     };
   }
@@ -3579,7 +3634,7 @@ ${prompt}`;
     this.metric("sketch-requested", { req, card: card.id });
   }
   sketchPrompt(card, added) {
-    const choices = this.pickedOnly ? added ?? attachDecisions(this.text, this.decisions(true, this.hasReadingFor(this.text))).added : card.rows.filter((row) => row.origin !== "repo" || row.picked !== null).map((row) => decisionLine({ statement: row.statement, option: this.rowText(row, row.picked ?? row.learned ?? row.defaults) }));
+    const choices = this.pickedOnly ? added ?? attachDecisions(this.text, this.decisions(true, this.hasReadingFor(this.text))).added : card.rows.filter((row) => (row.origin !== "repo" || row.picked !== null) && !this.defaultIsOpen(row)).map((row) => decisionLine({ statement: row.statement, option: this.rowText(row, row.picked ?? row.learned ?? row.defaults) }));
     const found = this.mentions.filter((m) => m.status === "found").slice(0, 8);
     return buildSketchPrompt({ draft: this.text, read: card.read, choices, names: found.map((m) => m.match ?? m.phrase), today: this.today });
   }
@@ -9650,7 +9705,7 @@ var FR2 = {
 function layoutCard(card, columns, budget, options2) {
   const P3 = options2.palette ?? DARK;
   const labels = card.language === "fr" ? FR2 : EN2;
-  const words = card.pickedOnly ? { ...labels, open: labels.toAgent } : labels;
+  const words = { ...labels, ...card.pickedOnly && { open: labels.toAgent }, readHint: options2.readHint ?? labels.readHint };
   const hidden = hiddenButtons(card, options2.chords);
   const open = card.rows.filter((row) => !row.chosen && !(card.pickedOnly && row.learned)).length;
   if (card.collapsed) return [collapsed(card, columns, P3, words, open, hidden)];
@@ -9794,6 +9849,7 @@ function mentionLines(card, g, width, P3, words) {
   return lines.map((line, i) => i ? [text(" ".repeat(g.content)), ...line] : [...labelLead(words.inCode, g, { dim: true }), ...line]);
 }
 function badge(row) {
+  if (row.openOnSend) return { glyph: "?", color: "subtle" };
   if (row.origin === "lens") return { glyph: "\u25C6", color: "claude" };
   if (row.origin === "repo") return row.chosen ? { glyph: "\u2713", color: "success" } : { glyph: "?", color: "warning" };
   if (row.learned) return { glyph: "\u21BA", color: "subtle" };
@@ -9871,7 +9927,12 @@ function focusHint(P3, words) {
 function rowLines(row, focus, g, width, P3, words, most) {
   const room = Math.max(8, width - g.content + 1);
   const hint = focus ? focusHint(P3, words) : [];
-  const withHint = (line) => hint.length && segmentsWidth(line) + 4 + segmentsWidth(hint) <= width ? [...line, text("    "), ...hint] : line;
+  const withHint = (line) => {
+    if (row.openOnSend && segmentsWidth(line) + 2 + cells(words.toAgent) <= width) {
+      line = [...line, text(`  ${words.toAgent}`, { dim: true })];
+    }
+    return hint.length && segmentsWidth(line) + 4 + segmentsWidth(hint) <= width ? [...line, text("    "), ...hint] : line;
+  };
   const parts = labelParts(row.label, g.label - (badge(row) ? 2 : 0));
   const tail = (k, gap) => rowLead(row, focus, g, P3, gap, parts[k], false);
   if (row.type === "range") {
@@ -10157,6 +10218,162 @@ async function fromRipgrep($, root) {
 ${declared}`) };
 }
 
+// src/store.ts
+import { spawn } from "node:child_process";
+import { closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync as statSync2, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+var HOME = process.env["MARGINCUE_HOME"] ?? join(homedir(), ".margincue");
+var PATHS = {
+  settings: join(HOME, "settings.json"),
+  learned: join(HOME, "learned.json"),
+  turn: join(HOME, "codex", "turn.json"),
+  /** The last prompt the composer handed back: its card was seen before sending. */
+  composed: join(HOME, "codex", "composed.json"),
+  bin: join(HOME, "bin")
+};
+function readJson(file, fallback) {
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+function writeJson(file, value) {
+  mkdirSync(dirname(file), { recursive: true });
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(value, null, 2)}
+`);
+  renameSync(temp, file);
+}
+var readSettings = () => readJson(PATHS.settings, {});
+var saveSettings = (settings) => writeJson(PATHS.settings, settings);
+function sendSetting(settings) {
+  return settings.send === "picked" || settings.send === "open" ? settings.send : "all";
+}
+function readLearned(root) {
+  return readJson(PATHS.learned, {})[root] ?? {};
+}
+function learn(root, key, label) {
+  const all = readJson(PATHS.learned, {});
+  const mine = all[root] ?? {};
+  const prior = mine[key];
+  mine[key] = { label, count: prior?.label === label ? prior.count + 1 : 1 };
+  all[root] = mine;
+  writeJson(PATHS.learned, all);
+}
+function sessionSource(transcript) {
+  const head = readHead(transcript, 64 * 1024);
+  const first = head.split("\n", 1)[0] ?? "";
+  try {
+    const meta = JSON.parse(first).payload ?? {};
+    const originator = meta.originator ?? "";
+    if (/desktop/i.test(originator)) return "app";
+    if (meta.source === "exec" || /exec/i.test(originator)) return "exec";
+    if (/tui|cli/i.test(originator) || meta.source === "cli") return "cli";
+    if (meta.source === "vscode") return "ide";
+  } catch {
+  }
+  return "unknown";
+}
+function turnMessages(transcript, turn, kind = "AgentMessage") {
+  const out = [];
+  for (const line of readTail(transcript, 4 * 1024 * 1024).split("\n")) {
+    if (!line.includes(kind) || !line.includes(turn)) continue;
+    try {
+      const entry = JSON.parse(line);
+      const payload = entry.payload;
+      if (entry.type !== "event_msg" || payload?.type !== "item_completed" || payload.turn_id !== turn) continue;
+      if (payload.item?.type !== kind) continue;
+      const text2 = (payload.item.content ?? []).map((part) => part.text ?? "").join("");
+      if (text2) out.push(text2);
+    } catch {
+    }
+  }
+  return out;
+}
+var APP_MESSAGE = /^An MCP app initiated this message\b/;
+function appMessage(transcript) {
+  const lines = readTail(transcript, 512 * 1024).split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line.includes('"response_item"')) continue;
+    try {
+      const entry = JSON.parse(line);
+      const payload = entry.payload;
+      if (entry.type !== "response_item" || !payload) continue;
+      if (payload.type === "message" && payload.role === "user") {
+        const text2 = (payload.content ?? []).map((part) => part.text ?? "").join("");
+        if (APP_MESSAGE.test(text2)) continue;
+        return null;
+      }
+      if (payload.type !== "function_call_output" || !String(payload.call_id ?? "").startsWith("untrusted_input")) continue;
+      const raw = Array.isArray(payload.output) ? payload.output.map((part) => part.text ?? "").join("") : String(payload.output ?? "");
+      const message = JSON.parse(raw);
+      return message.kind === "message" && message.source === "mcp_app" && typeof message.text === "string" ? message.text : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+function readHead(file, bytes) {
+  try {
+    const fd = openSync(file, "r");
+    try {
+      const buffer = Buffer.alloc(bytes);
+      const n = readSync(fd, buffer, 0, bytes, 0);
+      return buffer.subarray(0, n).toString("utf8");
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return "";
+  }
+}
+function readTail(file, bytes) {
+  try {
+    const size = statSync2(file).size;
+    const fd = openSync(file, "r");
+    try {
+      const start = Math.max(0, size - bytes);
+      const buffer = Buffer.alloc(size - start);
+      const n = readSync(fd, buffer, 0, buffer.length, start);
+      const text2 = buffer.subarray(0, n).toString("utf8");
+      return start > 0 ? text2.slice(text2.indexOf("\n") + 1) : text2;
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return "";
+  }
+}
+var processEngine = {
+  env: { get: async (name) => process.env[name] },
+  process: {
+    run: (argv, options2) => new Promise((resolve2, reject) => {
+      const child = spawn(argv[0], argv.slice(1), { cwd: options2.cwd, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+      const out = [];
+      const err = [];
+      let size = 0;
+      child.stdout.on("data", (chunk) => {
+        size += chunk.length;
+        if (size <= 32 * 1024 * 1024) out.push(chunk);
+      });
+      child.stderr.on("data", (chunk) => err.push(chunk));
+      const timer = setTimeout(() => child.kill(), options2.timeoutMs ?? 2e4);
+      child.on("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        resolve2({ exitCode: code ?? 1, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
+      });
+    })
+  }
+};
+
 // src/card-config.ts
 function cardConfig(settings) {
   const user = settings.user;
@@ -10169,6 +10386,8 @@ function cardConfig(settings) {
     mode: settings.mode ?? "auto",
     language: "en",
     sheet: true,
+    read: settings.read === "key" ? "key" : "auto",
+    send: sendSetting(settings),
     sketch: settings.sketch !== false,
     refs: settings.refs !== false,
     today,
@@ -10316,11 +10535,11 @@ var Draft = class {
 };
 
 // src/model.ts
-import { spawn } from "node:child_process";
+import { spawn as spawn2 } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.22";
+var VERSION = "0.4.23";
 var MIN_CODEX = "0.171";
 function tooOld(output2) {
   const match = /codex-cli (\d+)\.(\d+)\.(\d+)/.exec(output2);
@@ -10367,7 +10586,7 @@ var CodexModel = class {
     if (this.disablePlugins) args.push("-c", "features.plugins=false");
     const [program, ...lead] = this.command;
     const codex = runnable(program, [...lead, ...args], this.cwd);
-    const child = spawn(codex.command, codex.args, {
+    const child = spawn2(codex.command, codex.args, {
       ...codex.options,
       cwd: this.cwd,
       stdio: ["pipe", "pipe", "pipe"],
@@ -10504,158 +10723,6 @@ var CodexModel = class {
     for (const resolve2 of this.pending.values()) resolve2({ error: { message: reason } });
     this.pending.clear();
     for (const turn of this.turns.values()) turn.done({ ok: false, reason, ms: Date.now() - turn.started });
-  }
-};
-
-// src/store.ts
-import { spawn as spawn2 } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync as statSync2, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-var HOME = process.env["MARGINCUE_HOME"] ?? join(homedir(), ".margincue");
-var PATHS = {
-  settings: join(HOME, "settings.json"),
-  learned: join(HOME, "learned.json"),
-  turn: join(HOME, "codex", "turn.json"),
-  /** The last prompt the composer handed back: its card was seen before sending. */
-  composed: join(HOME, "codex", "composed.json"),
-  bin: join(HOME, "bin")
-};
-function readJson(file, fallback) {
-  try {
-    return JSON.parse(readFileSync(file, "utf8"));
-  } catch {
-    return fallback;
-  }
-}
-function writeJson(file, value) {
-  mkdirSync(dirname(file), { recursive: true });
-  const temp = `${file}.${process.pid}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(value, null, 2)}
-`);
-  renameSync(temp, file);
-}
-var readSettings = () => readJson(PATHS.settings, {});
-var saveSettings = (settings) => writeJson(PATHS.settings, settings);
-function readLearned(root) {
-  return readJson(PATHS.learned, {})[root] ?? {};
-}
-function learn(root, key, label) {
-  const all = readJson(PATHS.learned, {});
-  const mine = all[root] ?? {};
-  const prior = mine[key];
-  mine[key] = { label, count: prior?.label === label ? prior.count + 1 : 1 };
-  all[root] = mine;
-  writeJson(PATHS.learned, all);
-}
-function sessionSource(transcript) {
-  const head = readHead(transcript, 64 * 1024);
-  const first = head.split("\n", 1)[0] ?? "";
-  try {
-    const meta = JSON.parse(first).payload ?? {};
-    const originator = meta.originator ?? "";
-    if (/desktop/i.test(originator)) return "app";
-    if (meta.source === "exec" || /exec/i.test(originator)) return "exec";
-    if (/tui|cli/i.test(originator) || meta.source === "cli") return "cli";
-    if (meta.source === "vscode") return "ide";
-  } catch {
-  }
-  return "unknown";
-}
-function turnMessages(transcript, turn, kind = "AgentMessage") {
-  const out = [];
-  for (const line of readTail(transcript, 4 * 1024 * 1024).split("\n")) {
-    if (!line.includes(kind) || !line.includes(turn)) continue;
-    try {
-      const entry = JSON.parse(line);
-      const payload = entry.payload;
-      if (entry.type !== "event_msg" || payload?.type !== "item_completed" || payload.turn_id !== turn) continue;
-      if (payload.item?.type !== kind) continue;
-      const text2 = (payload.item.content ?? []).map((part) => part.text ?? "").join("");
-      if (text2) out.push(text2);
-    } catch {
-    }
-  }
-  return out;
-}
-var APP_MESSAGE = /^An MCP app initiated this message\b/;
-function appMessage(transcript) {
-  const lines = readTail(transcript, 512 * 1024).split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i];
-    if (!line.includes('"response_item"')) continue;
-    try {
-      const entry = JSON.parse(line);
-      const payload = entry.payload;
-      if (entry.type !== "response_item" || !payload) continue;
-      if (payload.type === "message" && payload.role === "user") {
-        const text2 = (payload.content ?? []).map((part) => part.text ?? "").join("");
-        if (APP_MESSAGE.test(text2)) continue;
-        return null;
-      }
-      if (payload.type !== "function_call_output" || !String(payload.call_id ?? "").startsWith("untrusted_input")) continue;
-      const raw = Array.isArray(payload.output) ? payload.output.map((part) => part.text ?? "").join("") : String(payload.output ?? "");
-      const message = JSON.parse(raw);
-      return message.kind === "message" && message.source === "mcp_app" && typeof message.text === "string" ? message.text : null;
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-function readHead(file, bytes) {
-  try {
-    const fd = openSync(file, "r");
-    try {
-      const buffer = Buffer.alloc(bytes);
-      const n = readSync(fd, buffer, 0, bytes, 0);
-      return buffer.subarray(0, n).toString("utf8");
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    return "";
-  }
-}
-function readTail(file, bytes) {
-  try {
-    const size = statSync2(file).size;
-    const fd = openSync(file, "r");
-    try {
-      const start = Math.max(0, size - bytes);
-      const buffer = Buffer.alloc(size - start);
-      const n = readSync(fd, buffer, 0, buffer.length, start);
-      const text2 = buffer.subarray(0, n).toString("utf8");
-      return start > 0 ? text2.slice(text2.indexOf("\n") + 1) : text2;
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    return "";
-  }
-}
-var processEngine = {
-  process: {
-    run: (argv, options2) => new Promise((resolve2, reject) => {
-      const child = spawn2(argv[0], argv.slice(1), { cwd: options2.cwd, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-      const out = [];
-      const err = [];
-      let size = 0;
-      child.stdout.on("data", (chunk) => {
-        size += chunk.length;
-        if (size <= 32 * 1024 * 1024) out.push(chunk);
-      });
-      child.stderr.on("data", (chunk) => err.push(chunk));
-      const timer = setTimeout(() => child.kill(), options2.timeoutMs ?? 2e4);
-      child.on("error", (error) => {
-        clearTimeout(timer);
-        reject(error);
-      });
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        resolve2({ exitCode: code ?? 1, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
-      });
-    })
   }
 };
 
@@ -11106,6 +11173,7 @@ async function compose(file) {
     if (key.kind === "text") {
       const ch = key.text.toLowerCase();
       if (/^[1-9]$/.test(ch) && focus) run({ type: "cardSet", now: now(), row: focus, option: Number(ch) - 1 });
+      else if (ch === "c") run({ type: "cardRead", now: now() });
       else if (ch === "x" && focus) run({ type: "cardDismiss", now: now(), row: focus });
       else if (ch === "s") run({ type: "sketch", now: now(), action: "toggle" });
       else if (ch === "p") run({ type: "sketch", now: now(), action: "pin" });
@@ -11193,7 +11261,7 @@ async function compose(file) {
     const budget = Math.max(3, height - 1 - editorRows - footer - 1);
     const card = inAgent() ? agentCard(agent) : view?.card ?? null;
     const busy = Boolean(card?.reading || card?.sketch?.drawing);
-    const body = card ? layoutCard(card, width, budget, { chords: true, extra: [], palette: P, sketchKey: "tab, s" }) : [[{ kind: "text", text: " MarginCue ", style: P.tag }, { kind: "text", text: draft.text.trim() ? "  reads the prompt once you pause." : "  Write the prompt; MarginCue reads it as you go.", style: { dim: true } }]];
+    const body = card ? layoutCard(card, width, budget, { chords: true, extra: [], palette: P, sketchKey: "tab, s", readHint: "tab, c to read" }) : [[{ kind: "text", text: " MarginCue ", style: P.tag }, { kind: "text", text: settings.read === "key" ? "  tab, c to read the draft." : draft.text.trim() ? "  reads the prompt once you pause." : "  Write the prompt; MarginCue reads it as you go.", style: { dim: true } }]];
     const lines = body.slice(0, budget);
     const top = height - footer - editorRows - 1 - lines.length - 1;
     const out = [];
@@ -11383,6 +11451,21 @@ var fileOf = (id) => join3(CARDS, `${id}.json`);
 function emptyCard(id, prompt) {
   return { id, prompt, reading: null, rows: [], missing: [], preview: false, sketch: null };
 }
+function newCardRecord(prompt, cwd, settings) {
+  const id = randomBytes(6).toString("base64url");
+  return {
+    id,
+    prompt,
+    cwd,
+    at: Date.now(),
+    version: 1,
+    state: settings.read === "key" ? "waiting" : "reading",
+    card: { ...emptyCard(id, prompt), send: sendSetting(settings) },
+    sketchState: "none",
+    sketch: null,
+    names: []
+  };
+}
 function readRecord(id) {
   if (!isCardId(id)) return null;
   try {
@@ -11428,23 +11511,13 @@ function alive(pid) {
     return error.code === "EPERM";
   }
 }
-function startCard(prompt, cwd, extra = {}) {
-  const id = randomBytes(6).toString("base64url");
-  const record = {
-    id,
-    prompt,
-    cwd,
-    at: Date.now(),
-    version: 1,
-    state: "reading",
-    card: emptyCard(id, prompt),
-    sketchState: "none",
-    sketch: null,
-    names: [],
-    ...extra
-  };
+function startCard(prompt, cwd, settings) {
+  const record = newCardRecord(prompt, cwd, settings);
+  const { id } = record;
   try {
     writeRecord(record);
+    pruneCards();
+    if (record.state === "waiting") return id;
     const entry = process.env["MARGINCUE_ENTRY"] ?? fileURLToPath(import.meta.url);
     const child = spawn3(process.execPath, [entry, "prefetch", id], { detached: true, stdio: "ignore", windowsHide: true });
     child.on("error", () => updateRecord(id, (card) => {
@@ -11454,7 +11527,6 @@ function startCard(prompt, cwd, extra = {}) {
     if (child.pid !== void 0) updateRecord(id, (card) => {
       card.pid ??= child.pid;
     });
-    pruneCards();
     return id;
   } catch {
     return null;
@@ -11485,6 +11557,20 @@ function choiceLine(row, selected) {
   const value = rowValue(row, selected);
   return decisionLine({ statement: row.statement, option: file ? `${value} (${file})` : value });
 }
+function cardPlan(rows, picks2, send) {
+  const decisions = [];
+  const openChoices = [];
+  for (const row of rows) {
+    const repo = row.origin === "repo" || row.files !== void 0;
+    const order = row.key === STEP_ORDER_KEY;
+    const defaultIsOpen = send === "all" && row.openOnSend;
+    const assumed = !repo && row.assumed.length && (row.learned || order || send === "all" && !defaultIsOpen) ? row.assumed : void 0;
+    const selected = picks2[row.id] ?? assumed;
+    if (selected !== void 0) decisions.push(choiceLine(row, selected));
+    else if (defaultIsOpen || send === "open" && !order && (!repo || row.key?.startsWith("file_"))) openChoices.push(openChoiceLine(row));
+  }
+  return { decisions, openChoices };
+}
 
 // src/hooks.ts
 function decisionsOf(prompt) {
@@ -11500,11 +11586,12 @@ var READING_FIRST = [
   "Open your reply with MarginCue's card, in at most four short lines, then carry on with the work without waiting for an answer:",
   '- "Reading:" what you will deliver and how you take the request (its scope; whether the cases it lists are the whole job or examples).',
   '- "Not in the code:" only when the prompt names something the repository does not have: that name, and the closest names that exist.',
+  '- "Which file:" when a name written as code still matches two to four files after checking the draft and repository. List the candidate paths, and mark the file choice as described in "Choices you make for the user" if you can settle it.',
   '- The choices the prompt leaves open that you settle now, each marked as described in "Choices you make for the user".'
 ].join("\n");
 var CARD_TOOL = "mcp__margincue__margincue_card";
-function desktopCardFirst(prompt, cwd) {
-  const id = cwd ? startCard(prompt, cwd) : null;
+function desktopCardFirst(prompt, settings, cwd) {
+  const id = cwd ? startCard(prompt, cwd, settings) : null;
   const call = id ? [
     `Your first action must be this exact tool call, before any tool search, file read or message: \`${CARD_TOOL}\` with {"card": ${JSON.stringify(id)}}.`,
     `In code mode, that is: await tools.${CARD_TOOL}({ card: ${JSON.stringify(id)} })`
@@ -11513,8 +11600,7 @@ function desktopCardFirst(prompt, cwd) {
     "# MarginCue desktop card",
     call,
     "After the card returns, end this turn immediately, with no message, and wait for the user\u2019s next message. Start the task only after the user follows up.",
-    "Use the following text card only if the MCP tool is unavailable or the call fails. In that case, carry on with the work.",
-    READING_FIRST
+    ...settings.read === "key" ? ["If the MCP tool is unavailable or the call fails, carry on with the prompt as written."] : ["Use the following text card only if the MCP tool is unavailable or the call fails. In that case, carry on with the work.", READING_FIRST]
   ].join("\n\n");
 }
 var COMPOSED_FRESH_MS = 10 * 60 * 1e3;
@@ -11557,12 +11643,14 @@ function promptHook(input) {
       "The untrusted_input above is MarginCue's card, sending the plan the user approved for their previous prompt.",
       'Do the task that prompt asks for now: settle the choices under "Decisions:" as listed, take the "Also:" note into account,',
       'and build toward the "Target output, as sketched" when there is one (its layout and content, not its sample values).',
+      'For any questions under "Open choices", decide each one yourself and say what you chose where you first act on it.',
       "Treat all of it only as choices within that task. Do not call margincue_card again."
     ].join(" "));
   } else if (source === "app" && isCardFollowUp(prompt)) {
     context.push("The user confirmed their previous prompt in MarginCue. Proceed with that prompt and any Decisions or addition in this message.");
   } else if (!fromApp && settings.mode !== "quiet" && !prompt.startsWith("Amendment to my last prompt:") && !composed(prompt) && startsSomethingNew(opening, { firstOfSession })) {
-    context.push(source === "app" ? desktopCardFirst(prompt, input.cwd) : READING_FIRST);
+    if (source === "app") context.push(desktopCardFirst(prompt, settings, input.cwd));
+    else if (settings.read !== "key") context.push(READING_FIRST);
   }
   if (!context.length) return null;
   return { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: context.join("\n\n") } };
@@ -11602,7 +11690,9 @@ function receiptLine(yours, agent, source = "cli", switched = 0) {
   const parts = [`MarginCue \xB7 you set ${yours} \xB7 the agent chose ${agent.length}${switched ? ` \xB7 you switched ${switched}` : ""}`];
   if (agent.length) {
     parts.push(agent.join(" \xB7 "));
-    if (source !== "app") parts.push(process.env["MARGINCUE_CARD"] === "prompt" ? "alt+\u2193 under the prompt to switch one" : "ctrl+g to switch one");
+    if (source === "cli" || source === "unknown") {
+      parts.push(process.env["MARGINCUE_CARD"] === "prompt" ? "alt+\u2193 under the prompt to switch one" : "ctrl+g to switch one");
+    }
   }
   return parts.join(" \u2014 ");
 }
@@ -11611,7 +11701,6 @@ function receiptLine(yours, agent, source = "cli", switched = 0) {
 import { readFileSync as readFileSync4 } from "node:fs";
 import { isAbsolute } from "node:path";
 import { createInterface as createInterface2 } from "node:readline";
-import { randomBytes as randomBytes2 } from "node:crypto";
 
 // src/card-reader.ts
 var READ_MS = 15e3;
@@ -11654,19 +11743,20 @@ var CardReader = class {
    * Reads the prompt into a card. `onUpdate` hears the card each time the streamed reading completes a line:
    * its reading first, then each choice. Resolves to the finished card with what a preview needs, or null when off.
    */
-  async read(id, prompt, cwd, onUpdate) {
+  async read(seed, cwd, onUpdate) {
     const settings = readSettings();
     if (settings.mode === "off") return null;
     const started = Date.now();
     const config = cardConfig(settings);
     const model = this.warm(cwd);
     const core = createCore(ASSETS, { readSubmittedPrompt: true });
-    const currentCard = () => cardOf(core, id, prompt, config.sketch !== false, config.refs !== false);
-    core.handle({ ...config, sketch: false });
+    const currentCard = () => cardOf(core, seed, config.sketch !== false, config.refs !== false);
+    core.handle({ ...config, read: "key", send: seed.send ?? "all", sketch: false });
     core.handle({ type: "learned", picks: readLearned(cwd) });
     const indexBy = started + INDEX_MS;
     core.handle({ type: "vocabulary", vocab: await before(vocabulary(cwd, indexBy), indexBy) });
-    const request = core.handle({ type: "draft", text: prompt, now: Date.now(), origin: "open" }).find((effect) => effect.type === "request" && effect.kind === "card");
+    core.handle({ type: "draft", text: seed.prompt, now: Date.now(), origin: "open" });
+    const request = core.handle({ type: "cardRead", now: Date.now() }).find((effect) => effect.type === "request" && effect.kind === "card");
     if (request?.type === "request") {
       const reply = (text2, done, ok = true) => core.handle({ type: "reply", now: Date.now(), req: request.req, text: text2, done, ok });
       let rest = "";
@@ -11701,7 +11791,7 @@ var CardReader = class {
   /** Draws the preview for the card with these choices (none: as Codex would decide them). */
   async sketch(source, picks2) {
     const { card, cwd, names, today } = source;
-    const choices = card.rows.filter((row) => row.assumed.length > 0 || picks2[row.id] !== void 0).map((row) => choiceLine(row, picks2[row.id] ?? row.assumed));
+    const { decisions: choices } = cardPlan(card.rows, picks2, card.send ?? "all");
     const prompt = buildSketchPrompt({ draft: card.prompt, read: card.reading, choices, names, today });
     const system = ASSETS.sketchSystem.replace("{language}", "in English");
     const reply = await before(this.warm(cwd).complete(system, prompt, { strong: true }), Date.now() + SKETCH_MS);
@@ -11710,15 +11800,27 @@ var CardReader = class {
     return sketch && { title: sketch.title, lines: tidySketch(sketch.lines) };
   }
 };
-function cardOf(core, id, prompt, sketchOn, refsOn) {
+function cardOf(core, seed, sketchOn, refsOn) {
   const view = core.currentView().card;
   const missing = (view?.mentions ?? []).filter((mention) => mention.status === "missing").map((mention) => {
     const row = view?.rows.find((row2) => row2.origin === "repo" && row2.statement === `"${mention.phrase}" is {}`);
     return { phrase: mention.phrase, candidates: mention.near, ...row && { rowId: row.id } };
   });
-  const rows = (view?.rows ?? []).map(({ id: id2, label, type, statement, options: options2, selected }) => {
+  const rows = (view?.rows ?? []).map(({ id: id2, key, origin, learned, label, type, statement, options: options2, selected, openOnSend }) => {
     const mention = missing.find((name) => name.rowId === id2);
-    return { id: id2, label, type, statement, options: options2, assumed: selected, ...mention && { files: mention.candidates.map((candidate) => candidate.file) } };
+    return {
+      id: id2,
+      key,
+      origin,
+      ...learned && { learned },
+      label,
+      type,
+      statement,
+      options: options2,
+      assumed: selected,
+      ...openOnSend && { openOnSend },
+      ...mention && { files: mention.candidates.map((candidate) => candidate.file) }
+    };
   });
   const fileReferences = refsOn ? (view?.mentions ?? []).flatMap((mention) => {
     if (!mention.places?.length) return [];
@@ -11726,7 +11828,18 @@ function cardOf(core, id, prompt, sketchOn, refsOn) {
     return [{ phrase: mention.phrase, files: mention.places, ...row && { rowId: row.id } }];
   }) : [];
   const preview = sketchOn && Boolean(ASSETS.sketchSystem) && canSketch(view?.kind ?? null);
-  return { id, prompt, reading: view?.read ?? null, rows, missing, preview, sketch: null, ...fileReferences.length && { fileReferences } };
+  const { id, prompt, send } = seed;
+  return {
+    id,
+    prompt,
+    send,
+    reading: view?.read ?? null,
+    rows,
+    missing,
+    preview,
+    sketch: null,
+    ...fileReferences.length && { fileReferences }
+  };
 }
 function validPicks(rows, value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -11744,7 +11857,7 @@ async function vocabulary(cwd, deadline) {
     if (left <= 0) return Promise.resolve({ exitCode: 1, stdout: "", stderr: "" });
     return processEngine.process.run(argv, { ...options2, timeoutMs: left });
   };
-  return collectVocabulary({ process: { run } }, cwd).catch(() => null);
+  return collectVocabulary({ ...processEngine, process: { run } }, cwd).catch(() => null);
 }
 async function before(work, deadline) {
   let timer;
@@ -11770,7 +11883,7 @@ async function fillCard(reader, id) {
   updateRecord(id, (record) => {
     record.pid = process.pid;
   });
-  const read = () => reader.read(id, start.prompt, start.cwd, (card2) => updateRecord(id, (record) => {
+  const read = () => reader.read(start.card, start.cwd, (card2) => updateRecord(id, (record) => {
     record.card = card2;
   })).catch(() => null);
   let source = await read();
@@ -11825,12 +11938,12 @@ var TOOL_LIST = [
   },
   {
     name: "margincue_read",
-    description: "Follow an open MarginCue card while its reading and first preview arrive.",
+    description: "Start a reading when the user asks, or follow an open MarginCue card while its reading and first preview arrive.",
     inputSchema: {
       type: "object",
       required: ["card"],
       additionalProperties: false,
-      properties: { card: { type: "string" }, after: { type: "integer" } }
+      properties: { card: { type: "string" }, after: { type: "integer" }, start: { type: "boolean" } }
     },
     annotations: { readOnlyHint: true },
     _meta: APP_ONLY
@@ -11912,25 +12025,13 @@ async function dispatch(reader, method, params) {
           if (typeof args.prompt !== "string" || !args.prompt.trim() || typeof args.cwd !== "string" || !isAbsolute(args.cwd)) {
             return toolError("MarginCue needs the card id from its prompt hook, or the prompt and its absolute project directory.");
           }
-          if (readSettings().mode === "off") return toolError("MarginCue is off.");
-          const id = randomBytes2(6).toString("base64url");
-          record = {
-            id,
-            prompt: args.prompt,
-            cwd: args.cwd,
-            at: Date.now(),
-            version: 1,
-            state: "reading",
-            card: emptyCard(id, args.prompt),
-            sketchState: "none",
-            sketch: null,
-            names: [],
-            pid: process.pid
-          };
+          const settings = readSettings();
+          if (settings.mode === "off") return toolError("MarginCue is off.");
+          record = newCardRecord(args.prompt, args.cwd, settings);
           writeRecord(record);
-          void fillCard(reader, id);
+          if (record.state === "reading") void fillCard(reader, record.id);
         }
-        reader.warm(record.cwd);
+        if (record.state !== "waiting") reader.warm(record.cwd);
         return {
           structuredContent: output(record),
           _meta: CARD_META,
@@ -11939,9 +12040,19 @@ async function dispatch(reader, method, params) {
       }
       if (params.name === "margincue_read") {
         const after = typeof args.after === "number" ? args.after : 0;
-        const record = isCardId(args.card) ? await waitForRecord(args.card, after, FOLLOW_MS) : null;
+        let record = isCardId(args.card) ? readRecord(args.card) : null;
+        if (record?.state === "waiting" && args.start === true) {
+          if (readSettings().mode === "off") return toolError("MarginCue is off.");
+          record = updateRecord(record.id, (card) => {
+            card.state = "reading";
+          });
+          if (record) void fillCard(reader, record.id);
+        } else if (record && record.state !== "waiting" && args.start !== true) {
+          record = await waitForRecord(record.id, after, FOLLOW_MS);
+        }
         if (!record) return toolError("This card is no longer available.");
-        return { structuredContent: output(record), content: content(record.state === "reading" ? "Reading." : "Read.") };
+        const status3 = record.state === "waiting" ? "Ready to read." : record.state === "reading" ? "Reading." : "Read.";
+        return { structuredContent: output(record), content: content(status3) };
       }
       if (params.name === "margincue_sketch") {
         let record = isCardId(args.cardId) ? readRecord(args.cardId) : null;
@@ -12016,6 +12127,8 @@ var Band = class {
   cwd;
   send;
   model;
+  readOnDemand;
+  sendOpen;
   core = createCore(ASSETS);
   inflight = /* @__PURE__ */ new Map();
   timer = null;
@@ -12027,6 +12140,7 @@ var Band = class {
   /** The text the core last saw. */
   coreText = "";
   on = true;
+  readKey = false;
   /** The draft the card was hidden for (ctrl+] d), until it changes. */
   dismissed = null;
   agent = null;
@@ -12051,7 +12165,10 @@ var Band = class {
     this.send = options2.send;
     this.model = options2.model ?? new CodexModel(options2.cwd);
     const settings = readSettings();
-    this.run(cardConfig(settings));
+    this.readOnDemand = settings.mode !== "off" && settings.read === "key";
+    const config = cardConfig(settings);
+    this.sendOpen = config.send === "open";
+    this.run(config);
     this.run({ type: "learned", picks: readLearned(this.cwd) });
     void this.model.start().then((name) => {
       this.ready = true;
@@ -12078,6 +12195,9 @@ var Band = class {
     if (this.closed) return;
     switch (message.t) {
       case "hello":
+        this.readKey = message.readKey === true;
+        this.size = { cols: message.cols, rows: message.rows, max: message.max, full: message.full };
+        break;
       case "size":
         this.size = { cols: message.cols, rows: message.rows, max: message.max, full: message.full };
         break;
@@ -12202,12 +12322,12 @@ var Band = class {
       } else this.effect(fx);
     }
     this.coreText = "";
-    this.sent = decisions.length;
+    this.sent = decisions.filter((line) => !line.startsWith(FILE_REFERENCES_HEADING)).length;
     this.sendingUntil = Date.now() + 3e3;
     this.height = 1;
     const head = text2.replace(/\s+$/, "");
     let answer;
-    if (sent === text2 || !decisions.length) answer = { t: "enter", do: "pass" };
+    if (sent === text2) answer = { t: "enter", do: "pass" };
     else if (sent.startsWith(head)) answer = { t: "enter", do: "append", text: sent.slice(head.length) };
     else if (!approx) answer = { t: "enter", do: "replace", text: sent };
     else answer = { t: "enter", do: "pass" };
@@ -12216,6 +12336,10 @@ var Band = class {
     this.send(answer);
   }
   onKey(key) {
+    if (key === "read") {
+      if (this.on && this.draft.plain && this.shownCard()?.awaitingRead) this.run({ type: "cardRead", now: now2() });
+      return;
+    }
     const agent = this.shownAgent();
     if (agent) {
       if (key === "up") agent.focus = (agent.focus + 1) % agent.blanks.length;
@@ -12309,7 +12433,7 @@ var Band = class {
     if (max > 0) {
       if (card) {
         const budget = full && (card.rows.length || card.read && !card.reading) ? max : 1;
-        lines = layoutCard(card, cols, budget, { chords: true, extra: [], palette: P2, sketchKey: "ctrl+g" }).slice(0, budget).map((line, y) => drawLine(line, cols, y, this.hits, this.frame));
+        lines = layoutCard(card, cols, budget, { chords: true, extra: [], palette: P2, sketchKey: "ctrl+g", readHint: this.readHint() }).slice(0, budget).map((line, y) => drawLine(line, cols, y, this.hits, this.frame));
         if (!this.shownAgent()) this.mark(this.coreText);
       } else lines = [drawLine(this.status(), cols, 0, this.hits, this.frame)];
     }
@@ -12320,14 +12444,20 @@ var Band = class {
     this.emit({ t: "band", lines });
     const decisions = this.view?.decisions.length ?? 0;
     const agentShown = Boolean(this.shownAgent());
-    const plan = !agentShown && card?.stage === "draft" && !card.reading;
+    const openFile = this.sendOpen && card?.rows.some((row) => row.origin === "repo" && row.key.startsWith("file_") && !row.chosen);
+    const plan = card?.stage === "draft" && (openFile || !card.reading && !card.awaitingRead);
     const hidden = this.dismissed !== null && this.dismissed === this.draft.text;
+    const read = this.readKey && this.readOnDemand && this.on && this.draft.plain;
     this.emit({
       t: "claims",
       enter: this.on && !agentShown && !hidden && (decisions > 0 || plan) && Boolean(this.draft.text?.trim()),
-      arrows: this.on && Boolean(card?.rows.length)
+      arrows: this.on && Boolean(card?.rows.length),
+      ...read && { read }
     });
     this.spin(Boolean(card?.reading || card?.sketch?.drawing));
+  }
+  readHint() {
+    return this.readKey ? "ctrl+] c to read" : "ctrl+g, then tab, c to read";
   }
   status() {
     const tag = { kind: "text", text: " MarginCue ", style: P2.tag };
@@ -12341,6 +12471,7 @@ var Band = class {
     if (text2 === null) return say("");
     if (this.dismissed !== null && this.dismissed === text2) return say("card hidden for this prompt \xB7 ctrl+] d");
     if (!this.ready) return say("starting\u2026");
+    if (this.readOnDemand && !this.turnRunning) return say(this.readHint());
     if (!text2.trim()) {
       if (this.turnRunning) return say("Codex is working \xB7 the choices it makes for you show here");
       return say(`reads your prompt as you type \xB7 alt\u2191 alt\u2193 change a choice \xB7 ctrl+g full card${this.modelName ? ` \xB7 ${this.modelName}` : ""}`);
@@ -12400,7 +12531,7 @@ function serveBand(link, cwd, model) {
 
 // src/relay.ts
 var RELAY = join4(PATHS.bin, "margincue-relay");
-var RELAY_VERSION = "0.1.2";
+var RELAY_VERSION = "0.1.3";
 var SUPPORTED = process.platform === "darwin" || process.platform === "linux";
 var VALUE_OPTIONS = /* @__PURE__ */ new Set([
   "-c",
@@ -12821,6 +12952,7 @@ function status2() {
   const settings = readSettings();
   process.stdout.write([
     `MarginCue for Codex: ${settings.mode ?? "auto"} \xB7 sketch ${settings.sketch === false ? "off" : "on"} \xB7 blanks ${settings.blanks === false ? "off" : "on"}`,
+    `Read: ${settings.read === "key" ? "key" : "auto"} \xB7 Send: ${sendSetting(settings)}`,
     settings.user ? `You: ${describeUser(settings.user)}` : "You: not set up yet (margincue setup asks a few questions).",
     `Composer: ${existsSync2(STABLE) ? STABLE : "not installed (margincue setup)"}`
   ].join("\n") + "\n");

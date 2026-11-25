@@ -18,6 +18,8 @@ pub enum Up<'a> {
         rows: u16,
         max: u16,
         full: bool,
+        #[serde(rename = "readKey")]
+        read_key: bool,
     },
     Size {
         cols: u16,
@@ -67,6 +69,8 @@ pub enum Down {
         enter: bool,
         #[serde(default)]
         arrows: bool,
+        #[serde(default)]
+        read: bool,
     },
     /// The answer to `enter`.
     Enter {
@@ -199,7 +203,7 @@ mod tests {
         let messages = decode(&mut buffer);
         assert_eq!(messages.len(), 2);
         assert_eq!(buffer, b"{\"t\":\"ba");
-        assert!(matches!(messages[0], Down::Claims { enter: true, arrows: false }));
+        assert!(matches!(messages[0], Down::Claims { enter: true, arrows: false, read: false }));
     }
 
     #[test]

@@ -12,7 +12,7 @@
     --line: rgba(13, 13, 13, 0.1);
     --ink: #0d0d0d;
     --ink-2: #5d5d5d;
-    --ink-3: #8f8f8f;
+    --ink-3: #6d6d6d;
     --pencil: #1a66c9;
     --pencil-wash: rgba(26, 102, 201, 0.1);
     --squiggle: #b45309;
@@ -28,7 +28,7 @@
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       color-scheme: dark;
-      --line: rgba(255, 255, 255, 0.1); --ink: #ececec; --ink-2: #a8a8a8; --ink-3: #7a7a7a; --pencil: #7cb1ff;
+      --line: rgba(255, 255, 255, 0.1); --ink: #ececec; --ink-2: #a8a8a8; --ink-3: #989898; --pencil: #7cb1ff;
       --pencil-wash: rgba(124, 177, 255, 0.14); --squiggle: #e3a54e; --squiggle-wash: rgba(227, 165, 78, 0.14);
       --wash: rgba(255, 255, 255, 0.06); --inset: rgba(255, 255, 255, 0.035); --rule: rgba(255, 255, 255, 0.28);
       --go-bg: #ececec; --go-ink: #0d0d0d; --menu: #303030;
@@ -37,7 +37,7 @@
   }
   :root[data-theme="dark"] {
     color-scheme: dark;
-    --line: rgba(255, 255, 255, 0.1); --ink: #ececec; --ink-2: #a8a8a8; --ink-3: #7a7a7a; --pencil: #7cb1ff;
+    --line: rgba(255, 255, 255, 0.1); --ink: #ececec; --ink-2: #a8a8a8; --ink-3: #989898; --pencil: #7cb1ff;
     --pencil-wash: rgba(124, 177, 255, 0.14); --squiggle: #e3a54e; --squiggle-wash: rgba(227, 165, 78, 0.14);
     --wash: rgba(255, 255, 255, 0.06); --inset: rgba(255, 255, 255, 0.035); --rule: rgba(255, 255, 255, 0.28);
     --go-bg: #ececec; --go-ink: #0d0d0d; --menu: #303030;
@@ -60,6 +60,7 @@
 
   .reading { margin: 0 0 8px; color: var(--ink-2); font-size: 13.5px; line-height: 1.5; text-wrap: pretty; }
   .plan { margin: 0; text-wrap: pretty; }
+  .row-note { font-size: 12px; color: var(--ink-2); }
   .sentence.arriving { animation: arrive 0.24s ease-out; }
   @keyframes arrive { from { opacity: 0; } }
 
@@ -191,7 +192,7 @@
   }
   .skeleton-line::before { content: ""; width: 62%; margin: 5px 0 6px; }
   .pending { display: inline-block; width: 120px; vertical-align: middle; margin-left: 4px; }
-  .plan:empty::before { content: ""; display: block; height: 12px; width: 88%; margin: 7px 0 10px; border-radius: 6px; background: var(--wash); }
+  .is-reading .plan:empty::before { content: ""; display: block; height: 12px; width: 88%; margin: 7px 0 10px; border-radius: 6px; background: var(--wash); }
   @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 
   @media (prefers-reduced-motion: reduce) {
@@ -216,6 +217,7 @@
       </figure>
       <form id="actions" class="actions">
         <input id="note" class="note" type="text" placeholder="Add a note for Codex" aria-label="Add a note for Codex" autocomplete="off">
+        <button id="read" class="quiet" type="button" hidden>Read prompt</button>
         <button id="as-written" class="quiet" type="button">Use as written</button>
         <button id="go" class="go" type="submit">Go ahead</button>
       </form>
@@ -244,6 +246,24 @@
     if (row.type === "many") return labels.length ? joinList(labels) : "none of these";
     return labels[0] ?? row.options[0] ?? "";
   }
+  var STEP_ORDER_KEY = "step_order";
+  function openChoiceLine(row) {
+    const statement = row.statement.replace(/\s+/g, " ").trim();
+    const gap = statement.includes("{}") ? statement.replace("{}", "\u2026") : `${statement} \u2026`;
+    const head = gap.charAt(0).toUpperCase() + gap.slice(1);
+    const options = row.options.map((option) => option.trim()).filter((option) => option !== "");
+    if (!options.length) return `${head}?`;
+    if (row.type === "range") {
+      return `${head} (${options.length > 4 ? `between ${options[0]} and ${options.at(-1)}` : options.join(" / ")})?`;
+    }
+    const sorted = [...options].sort((a, b) => a.localeCompare(b, "en", { numeric: true, sensitivity: "base" }));
+    return `${head} (${row.type === "many" ? "any of: " : ""}${sorted.join(" / ")})?`;
+  }
+  function openChoicesBlock(choices) {
+    if (!choices.length) return "";
+    const heading = "Open choices (a quick read flagged these; they are not decisions, and its options may not fit the code. Settle each one yourself, without stopping to ask, and say what you chose where you first act on it):";
+    return [heading, ...choices.map((line) => `- ${line}`)].join("\n");
+  }
   function sameSelection(a, b) {
     if (a.length !== b.length) return false;
     const x = [...a].sort((p, q) => p - q);
@@ -257,7 +277,7 @@
   var BLANK = new RegExp(`${BLANK_OPEN}([^${BLANK_OPEN}${BLANK_CLOSE}\\n]{1,280})${BLANK_CLOSE}`, "g");
 
   // src/version.ts
-  var VERSION = "0.4.22";
+  var VERSION = "0.4.23";
 
   // src/widget-bridge.ts
   var legacy = () => window.openai;
@@ -384,31 +404,43 @@
     const value = rowValue(row, selected2);
     return decisionLine({ statement: row.statement, option: file ? `${value} (${file})` : value });
   }
+  function cardPlan(rows, picks2, send2) {
+    const decisions = [];
+    const openChoices = [];
+    for (const row of rows) {
+      const repo = row.origin === "repo" || row.files !== void 0;
+      const order = row.key === STEP_ORDER_KEY;
+      const defaultIsOpen = send2 === "all" && row.openOnSend;
+      const assumed = !repo && row.assumed.length && (row.learned || order || send2 === "all" && !defaultIsOpen) ? row.assumed : void 0;
+      const selected2 = picks2[row.id] ?? assumed;
+      if (selected2 !== void 0) decisions.push(choiceLine(row, selected2));
+      else if (defaultIsOpen || send2 === "open" && !order && (!repo || row.key?.startsWith("file_"))) openChoices.push(openChoiceLine(row));
+    }
+    return { decisions, openChoices };
+  }
   function targetLines(sketch) {
     return `Target output, as sketched (${sketch.title}):
 \`\`\`text
 ${sketch.lines.join("\n")}
 \`\`\``;
   }
-  function composeFollowUp(rows, picks2, note2, asWritten2 = false, sketch = null, fileReferences = []) {
+  function composeFollowUp(rows, picks2, note2, asWritten2 = false, sketch = null, send2 = "all", fileReferences = []) {
     if (asWritten2) return { text: AS_WRITTEN, decisions: [], extra: "" };
-    const decisions = rows.flatMap((row) => {
-      const picked = picks2[row.id];
-      if (picked) return [choiceLine(row, picked)];
-      return !row.files && row.assumed.length ? [choiceLine(row, row.assumed)] : [];
-    });
+    const { decisions, openChoices } = cardPlan(rows, picks2, send2);
     const unresolved = fileReferences.filter((ref) => ref.rowId === void 0 || picks2[ref.rowId] === void 0);
     if (unresolved.length) decisions.push(decisionLine(fileReferenceDecision(unresolved)));
+    const open2 = openChoicesBlock(openChoices);
     const extra = note2.trim().replace(/\s*[\r\n]+\s*/g, " ");
     const target = sketch?.lines.length ? targetLines(sketch) : null;
-    const text = decisions.length || extra || target ? [
+    const text = decisions.length || open2 || extra || target ? [
       WITH_EDITS,
       ...decisions.length ? [`Decisions:
 ${decisions.map((line) => `- ${line}`).join("\n")}`] : [],
+      ...open2 ? [open2] : [],
       ...extra ? [`Also: ${extra}`] : [],
       ...target ? [target] : []
     ].join("\n\n") : AS_WRITTEN;
-    return { text, decisions, extra };
+    return { text, decisions, extra, ...openChoices.length && { openChoices } };
   }
 
   // src/widget.ts
@@ -422,6 +454,7 @@ ${decisions.map((line) => `- ${line}`).join("\n")}`] : [],
   var drawing = byId("drawing");
   var form = byId("actions");
   var note = byId("note");
+  var readButton = byId("read");
   var goButton = byId("go");
   var asWritten = byId("as-written");
   var errorMessage = byId("send-error");
@@ -431,6 +464,7 @@ ${decisions.map((line) => `- ${line}`).join("\n")}`] : [],
   var picks = {};
   var sending = false;
   var sent = false;
+  var startingRead = false;
   var following = false;
   var timer;
   var previewVersion = 0;
@@ -461,7 +495,7 @@ ${decisions.map((line) => `- ${line}`).join("\n")}`] : [],
     const button = element("button", `mark${yours ? " yours" : ""}${unknown ? " unknown" : ""}`, text);
     button.type = "button";
     button.dataset.row = row.id;
-    button.title = unknown ? text : yours ? "Your choice. Click to change it." : "Codex would choose this. Click to change it.";
+    button.title = unknown ? text : yours ? "Your choice. Click to change it." : row.openOnSend ? "Left to agent unless you pick." : "Codex would choose this. Click to change it.";
     button.setAttribute("aria-haspopup", "listbox");
     button.setAttribute("aria-expanded", String(open?.row.id === row.id));
     button.addEventListener("click", (event) => {
@@ -508,9 +542,11 @@ ${decisions.map((line) => `- ${line}`).join("\n")}`] : [],
       const at = row.statement.indexOf("{}");
       const before = at < 0 ? `${row.statement} ` : row.statement.slice(0, at);
       const after = (at < 0 ? "" : row.statement.slice(at + 2)).replace(/[\s.:;]+$/, "");
-      sentences.push(sentence([before.charAt(0).toUpperCase() + before.slice(1), mark(row, valueOf(row)), `${after}.`], row.id));
+      const parts2 = [before.charAt(0).toUpperCase() + before.slice(1), mark(row, valueOf(row)), `${after}.`];
+      if (row.openOnSend && picks[row.id] === void 0) parts2.push(element("small", "row-note", " \xB7 left to agent"));
+      sentences.push(sentence(parts2, row.id));
     }
-    if (!sentences.length && !stillReading()) {
+    if (!sentences.length && !stillReading() && card.state !== "waiting") {
       const words = card.reading ? "Nothing is left open: Codex can start as you wrote it." : "MarginCue could not read this prompt in time. Codex can still go ahead with it as written.";
       sentences.push(sentence([words], "empty"));
     }
@@ -528,7 +564,10 @@ ${decisions.map((line) => `- ${line}`).join("\n")}`] : [],
     updateActions();
   }
   function updateActions() {
-    goButton.title = "Codex starts with this plan: every choice as shown, your note, and the preview.";
+    readButton.hidden = card?.state !== "waiting";
+    readButton.disabled = startingRead || sending || sent;
+    const send2 = card?.send ?? "all";
+    goButton.title = send2 === "open" ? "Send your decisions and let Codex answer the open choices." : send2 === "picked" ? "Send your picks, saved choices, and written step order." : "Send the shown decisions, your note, and the preview. Codex settles open questions.";
     asWritten.title = "Codex starts with your prompt alone: it makes these choices itself.";
   }
   function openMenu(row, anchor) {
@@ -583,12 +622,13 @@ ${decisions.map((line) => `- ${line}`).join("\n")}`] : [],
   function choose(index) {
     if (!open) return;
     const { row } = open;
+    const assumedBinds = (card?.send ?? "all") === "all" && !row.openOnSend;
     if (index < 0) delete picks[row.id];
     else if (row.type === "many") {
       const next = toggleSelection(row, selected(row), index);
-      if (sameSelection(next, row.assumed)) delete picks[row.id];
+      if (assumedBinds && sameSelection(next, row.assumed)) delete picks[row.id];
       else picks[row.id] = next;
-    } else if (!missingFor(row) && sameSelection([index], row.assumed)) delete picks[row.id];
+    } else if (assumedBinds && !missingFor(row) && sameSelection([index], row.assumed)) delete picks[row.id];
     else picks[row.id] = [index];
     renderPlan();
     const anchor = plan.querySelector(`[data-row="${CSS.escape(row.id)}"]`);
@@ -719,6 +759,7 @@ ${decisions.map((line) => `- ${line}`).join("\n")}`] : [],
     }, delay);
   }
   function accept(next) {
+    if (sent) return;
     const before = card;
     if (before && (next.version ?? 0) < (before.version ?? 0)) return;
     card = next;
@@ -727,6 +768,7 @@ ${decisions.map((line) => `- ${line}`).join("\n")}`] : [],
       if (!row || picks[id].some((i) => i >= row.options.length)) delete picks[id];
     }
     root.classList.toggle("is-reading", stillReading());
+    reading.hidden = next.state === "waiting";
     reading.textContent = next.reading ?? "";
     reading.classList.toggle("skeleton-line", !next.reading && stillReading());
     editor.hidden = false;
@@ -762,6 +804,26 @@ ${decisions.map((line) => `- ${line}`).join("\n")}`] : [],
     }
     following = false;
   }
+  async function startReading() {
+    if (!card || card.state !== "waiting" || startingRead || sending || sent) return;
+    startingRead = true;
+    errorMessage.hidden = true;
+    updateActions();
+    try {
+      const result = await bridge.read({ card: card.id, start: true });
+      if (result?.isError || !result?.structuredContent) throw new Error();
+      accept(result.structuredContent);
+      void follow();
+    } catch {
+      if (!sent) {
+        errorMessage.textContent = "Could not read this prompt. Try again or continue as written.";
+        errorMessage.hidden = false;
+      }
+    } finally {
+      startingRead = false;
+      updateActions();
+    }
+  }
   function showOutput(output) {
     if (!output || typeof output !== "object") return;
     if ("isError" in output && output.isError && !card) {
@@ -787,12 +849,17 @@ ${decisions.map((line) => `- ${line}`).join("\n")}`] : [],
     closeMenu();
     root.classList.remove("is-reading");
     editor.hidden = true;
-    const head = message.decisions.length || message.extra || message.text.includes("Target output") ? "Codex is going ahead with this plan." : "Codex is going ahead with your prompt as written.";
+    const head = message.decisions.length || message.openChoices?.length || message.extra || message.text.includes("Target output") ? "Codex is going ahead with this plan." : "Codex is going ahead with your prompt as written.";
     summary.replaceChildren(element("p", "summary-head", head));
     if (message.decisions.length) {
       const list = element("ul");
       for (const decision of message.decisions) list.append(element("li", void 0, decision));
       summary.append(list);
+    }
+    if (message.openChoices?.length) {
+      const list = element("ul");
+      for (const question of message.openChoices) list.append(element("li", void 0, question));
+      summary.append(element("p", "summary-note", "Codex will decide"), list);
     }
     if (message.extra) summary.append(element("p", "summary-note", `Your note: ${message.extra}`));
     summary.hidden = false;
@@ -801,10 +868,11 @@ ${decisions.map((line) => `- ${line}`).join("\n")}`] : [],
   async function send(asWrittenOnly) {
     if (sending || sent) return;
     const target = shownKey === picksKey() && !preview.hidden && !preview.classList.contains("stale") ? shownSketch : null;
-    const message = composeFollowUp(card?.rows ?? [], picks, note.value, asWrittenOnly, target, card?.fileReferences);
+    const message = composeFollowUp(card?.rows ?? [], picks, note.value, asWrittenOnly, target, card?.send, card?.fileReferences);
     sending = true;
     closeMenu();
     goButton.disabled = asWritten.disabled = note.disabled = true;
+    updateActions();
     errorMessage.hidden = true;
     try {
       await bridge.send(message.text);
@@ -819,6 +887,7 @@ ${decisions.map((line) => `- ${line}`).join("\n")}`] : [],
     } finally {
       sending = false;
       goButton.disabled = asWritten.disabled = note.disabled = false;
+      updateActions();
     }
   }
   form.addEventListener("submit", (event) => {
@@ -826,7 +895,7 @@ ${decisions.map((line) => `- ${line}`).join("\n")}`] : [],
     void send(false);
   });
   asWritten.addEventListener("click", () => void send(true));
-  note.addEventListener("input", updateActions);
+  readButton.addEventListener("click", () => void startReading());
   var bridge = connectWidget(showOutput);
   new ResizeObserver(() => fit()).observe(root);
 })();

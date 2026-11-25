@@ -22,6 +22,8 @@ pub enum Action {
     Toggle,
     /// Ctrl+] d: hide the card until the draft changes.
     Dismiss,
+    /// Ctrl+] c: read the draft on demand.
+    Read,
     /// Claimed Enter. `bytes` is how it arrived, to forward it later.
     Enter(EnterKey),
     Up,
@@ -49,6 +51,7 @@ impl EnterKey {
 pub struct Claims {
     pub enter: bool,
     pub arrows: bool,
+    pub read: bool,
 }
 
 #[derive(Default)]
@@ -256,6 +259,7 @@ impl Input {
             let action = match code.and_then(|code| u8::try_from(code).ok()) {
                 Some(b't') => Some(Action::Toggle),
                 Some(b'd') => Some(Action::Dismiss),
+                Some(b'c') if self.claims.read => Some(Action::Read),
                 _ => None,
             };
             if action.is_some() {
@@ -501,6 +505,14 @@ mod tests {
         assert_eq!(run(&mut input, b"\x1dt").1, vec![Action::Toggle]);
         assert_eq!(run(&mut input, b"\x1dd").1, vec![Action::Dismiss]);
         assert_eq!(run(&mut input, b"\x1dx").0, b"\x1dx");
+        assert_eq!(run(&mut input, b"\x1dc"), (b"\x1dc".to_vec(), vec![]));
+        input.claims.read = true;
+        assert_eq!(run(&mut input, b"\x1dc"), (vec![], vec![Action::Read]));
+        assert_eq!(
+            run(&mut input, b"\x1b[93;5u\x1b[99u\x1b[99;1:3u"),
+            (vec![], vec![Action::Read])
+        );
+        assert_eq!(run(&mut input, b"c"), (b"c".to_vec(), vec![]));
     }
 
     #[test]

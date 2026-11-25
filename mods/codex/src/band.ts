@@ -12,6 +12,7 @@ import { performance } from 'node:perf_hooks'
 import { createInterface } from 'node:readline'
 import type { Duplex } from 'node:stream'
 import { diffSplice } from '../../claude-code/core/anchor'
+import { FILE_REFERENCES_HEADING } from '../../claude-code/core/decisions'
 import { createCore } from '../../claude-code/core/index'
 import type { Effect, Event, View } from '../../claude-code/core/index'
 import { ASSETS } from '../../claude-code/hooks/assets'
@@ -34,10 +35,10 @@ export const PROTOCOL = 1
 
 /** Relay to MarginCue. */
 export type Up =
-  | { t: 'hello'; protocol: number; cols: number; rows: number; max: number; full: boolean }
+  | { t: 'hello'; protocol: number; cols: number; rows: number; max: number; full: boolean; readKey?: boolean }
   | { t: 'size'; cols: number; rows: number; max: number; full: boolean }
   | { t: 'draft'; text: string | null; approx: boolean; end: boolean; plain: boolean }
-  | { t: 'key'; key: 'up' | 'down' }
+  | { t: 'key'; key: 'up' | 'down' | 'read' }
   | { t: 'click'; x: number; y: number }
   | { t: 'enter'; text: string; approx: boolean }
   | { t: 'wrote'; id: number; ok: boolean }
@@ -47,7 +48,7 @@ export type Up =
 /** MarginCue to the relay. */
 export type Down =
   | { t: 'band'; lines: string[] }
-  | { t: 'claims'; enter: boolean; arrows: boolean }
+  | { t: 'claims'; enter: boolean; arrows: boolean; read?: boolean }
   | { t: 'enter'; do: 'pass' | 'append' | 'replace'; text?: string }
   | { t: 'write'; id: number; text: string; expect?: string }
 
@@ -78,6 +79,8 @@ export class Band {
   private readonly cwd: string
   private readonly send: (message: Down) => void
   private readonly model: Reader
+  private readonly readOnDemand: boolean
+  private readonly sendOpen: boolean
   private readonly core = createCore(ASSETS)
   private readonly inflight = new Map<number, AbortController>()
   private timer: NodeJS.Timeout | null = null
@@ -89,6 +92,7 @@ export class Band {
   /** The text the core last saw. */
   private coreText = ''
   private on = true
+  private readKey = false
   /** The draft the card was hidden for (ctrl+] d), until it changes. */
   private dismissed: string | null = null
   private agent: Agent | null = null
@@ -114,7 +118,10 @@ export class Band {
     this.send = options.send
     this.model = options.model ?? new CodexModel(options.cwd)
     const settings = readSettings()
-    this.run(cardConfig(settings))
+    this.readOnDemand = settings.mode !== 'off' && settings.read === 'key'
+    const config = cardConfig(settings)
+    this.sendOpen = config.send === 'open'
+    this.run(config)
     this.run({ type: 'learned', picks: readLearned(this.cwd) })
     void this.model.start().then((name) => {
       this.ready = true
@@ -122,7 +129,7 @@ export class Band {
       this.render()
     })
     if (options.vocabulary !== false) {
-      void collectVocabulary(processEngine as never, this.cwd)
+      void collectVocabulary(processEngine, this.cwd)
         .then((vocab) => this.run({ type: 'vocabulary', vocab }))
         .catch(() => {})
     }
@@ -144,6 +151,9 @@ export class Band {
     if (this.closed) return
     switch (message.t) {
       case 'hello':
+        this.readKey = message.readKey === true
+        this.size = { cols: message.cols, rows: message.rows, max: message.max, full: message.full }
+        break
       case 'size':
         this.size = { cols: message.cols, rows: message.rows, max: message.max, full: message.full }
         break
@@ -275,12 +285,12 @@ export class Band {
       } else this.effect(fx)
     }
     this.coreText = ''
-    this.sent = decisions.length
+    this.sent = decisions.filter((line) => !line.startsWith(FILE_REFERENCES_HEADING)).length
     this.sendingUntil = Date.now() + 3000
     this.height = 1
     const head = text.replace(/\s+$/, '')
     let answer: Down
-    if (sent === text || !decisions.length) answer = { t: 'enter', do: 'pass' }
+    if (sent === text) answer = { t: 'enter', do: 'pass' }
     else if (sent.startsWith(head)) answer = { t: 'enter', do: 'append', text: sent.slice(head.length) }
     else if (!approx) answer = { t: 'enter', do: 'replace', text: sent }
     else answer = { t: 'enter', do: 'pass' }
@@ -290,7 +300,11 @@ export class Band {
     this.send(answer)
   }
 
-  private onKey(key: 'up' | 'down'): void {
+  private onKey(key: 'up' | 'down' | 'read'): void {
+    if (key === 'read') {
+      if (this.on && this.draft.plain && this.shownCard()?.awaitingRead) this.run({ type: 'cardRead', now: now() })
+      return
+    }
     const agent = this.shownAgent()
     if (agent) {
       if (key === 'up') agent.focus = (agent.focus + 1) % agent.blanks.length
@@ -395,7 +409,7 @@ export class Band {
       if (card) {
         // Until its first rows arrive the card is one line; then it takes its room in one step.
         const budget = full && (card.rows.length || (card.read && !card.reading)) ? max : 1
-        lines = layoutCard(card, cols, budget, { chords: true, extra: [], palette: P, sketchKey: 'ctrl+g' })
+        lines = layoutCard(card, cols, budget, { chords: true, extra: [], palette: P, sketchKey: 'ctrl+g', readHint: this.readHint() })
           .slice(0, budget)
           .map((line, y) => drawLine(line, cols, y, this.hits, this.frame))
         if (!this.shownAgent()) this.mark(this.coreText)
@@ -411,16 +425,22 @@ export class Band {
     this.emit({ t: 'band', lines })
     const decisions = this.view?.decisions.length ?? 0
     const agentShown = Boolean(this.shownAgent())
-    // A finished card for this prompt goes with it as the plan (the core decides what at Enter);
-    // before that, only what the person switched does.
-    const plan = !agentShown && card?.stage === 'draft' && !card.reading
+    // An indexed file question can go with the prompt as soon as its candidates are known.
+    const openFile = this.sendOpen && card?.rows.some((row) => row.origin === 'repo' && row.key.startsWith('file_') && !row.chosen)
+    const plan = card?.stage === 'draft' && (openFile || !card.reading && !card.awaitingRead)
     const hidden = this.dismissed !== null && this.dismissed === this.draft.text
+    const read = this.readKey && this.readOnDemand && this.on && this.draft.plain
     this.emit({
       t: 'claims',
       enter: this.on && !agentShown && !hidden && (decisions > 0 || plan) && Boolean(this.draft.text?.trim()),
       arrows: this.on && Boolean(card?.rows.length),
+      ...(read && { read }),
     })
     this.spin(Boolean(card?.reading || card?.sketch?.drawing))
+  }
+
+  private readHint(): string {
+    return this.readKey ? 'ctrl+] c to read' : 'ctrl+g, then tab, c to read'
   }
 
   private status(): Segment[] {
@@ -435,6 +455,7 @@ export class Band {
     if (text === null) return say('')
     if (this.dismissed !== null && this.dismissed === text) return say('card hidden for this prompt · ctrl+] d')
     if (!this.ready) return say('starting…')
+    if (this.readOnDemand && !this.turnRunning) return say(this.readHint())
     if (!text.trim()) {
       if (this.turnRunning) return say('Codex is working · the choices it makes for you show here')
       return say(`reads your prompt as you type · alt↑ alt↓ change a choice · ctrl+g full card${this.modelName ? ` · ${this.modelName}` : ''}`)

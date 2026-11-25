@@ -496,6 +496,20 @@ test('in the desktop app MarginCue draws its own card above Claude\'s dialog; Go
   await ui.unmount()
 })
 
+test('the app card marks an untouched purge and sends the row as a question', async ($, on) => {
+  const card = [
+    'read | You want a team retention setting.', 'kind | change',
+    'row | purge | retention | one | After {}, the agent will permanently delete the team in a scheduled job | 30 days | 7 days',
+  ].join('\n')
+  const { gate, pending, ui } = await desktopAtEnter($, on, card)
+  expect(await ui.find({ type: 'Text', text: 'left to agent' })).toBeDefined()
+  gate.answer('Go ahead with this plan')
+  const sent = (await pending).text
+  expect(sent).toContain(`${DRAFT}.\n\nOpen choices (`)
+  expect(sent).toContain('\n- After …, the agent will permanently delete the team in a scheduled job (7 days / 30 days)?')
+  await ui.unmount()
+})
+
 test('the card keeps within the 48 rows the app allows there: the preview joins it once drawn, whole, and only if it fits', async ($, on) => {
   const { clock, gate, pending, ui } = await desktopAtEnter($, on)
   await clock.advance(5000)

@@ -12,7 +12,7 @@
     --line: rgba(13, 13, 13, 0.1);
     --ink: #0d0d0d;
     --ink-2: #5d5d5d;
-    --ink-3: #8f8f8f;
+    --ink-3: #6d6d6d;
     --pencil: #1a66c9;
     --pencil-wash: rgba(26, 102, 201, 0.1);
     --squiggle: #b45309;
@@ -28,7 +28,7 @@
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       color-scheme: dark;
-      --line: rgba(255, 255, 255, 0.1); --ink: #ececec; --ink-2: #a8a8a8; --ink-3: #7a7a7a; --pencil: #7cb1ff;
+      --line: rgba(255, 255, 255, 0.1); --ink: #ececec; --ink-2: #a8a8a8; --ink-3: #989898; --pencil: #7cb1ff;
       --pencil-wash: rgba(124, 177, 255, 0.14); --squiggle: #e3a54e; --squiggle-wash: rgba(227, 165, 78, 0.14);
       --wash: rgba(255, 255, 255, 0.06); --inset: rgba(255, 255, 255, 0.035); --rule: rgba(255, 255, 255, 0.28);
       --go-bg: #ececec; --go-ink: #0d0d0d; --menu: #303030;
@@ -37,7 +37,7 @@
   }
   :root[data-theme="dark"] {
     color-scheme: dark;
-    --line: rgba(255, 255, 255, 0.1); --ink: #ececec; --ink-2: #a8a8a8; --ink-3: #7a7a7a; --pencil: #7cb1ff;
+    --line: rgba(255, 255, 255, 0.1); --ink: #ececec; --ink-2: #a8a8a8; --ink-3: #989898; --pencil: #7cb1ff;
     --pencil-wash: rgba(124, 177, 255, 0.14); --squiggle: #e3a54e; --squiggle-wash: rgba(227, 165, 78, 0.14);
     --wash: rgba(255, 255, 255, 0.06); --inset: rgba(255, 255, 255, 0.035); --rule: rgba(255, 255, 255, 0.28);
     --go-bg: #ececec; --go-ink: #0d0d0d; --menu: #303030;
@@ -60,6 +60,7 @@
 
   .reading { margin: 0 0 8px; color: var(--ink-2); font-size: 13.5px; line-height: 1.5; text-wrap: pretty; }
   .plan { margin: 0; text-wrap: pretty; }
+  .row-note { font-size: 12px; color: var(--ink-2); }
   .sentence.arriving { animation: arrive 0.24s ease-out; }
   @keyframes arrive { from { opacity: 0; } }
 
@@ -191,7 +192,7 @@
   }
   .skeleton-line::before { content: ""; width: 62%; margin: 5px 0 6px; }
   .pending { display: inline-block; width: 120px; vertical-align: middle; margin-left: 4px; }
-  .plan:empty::before { content: ""; display: block; height: 12px; width: 88%; margin: 7px 0 10px; border-radius: 6px; background: var(--wash); }
+  .is-reading .plan:empty::before { content: ""; display: block; height: 12px; width: 88%; margin: 7px 0 10px; border-radius: 6px; background: var(--wash); }
   @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 
   @media (prefers-reduced-motion: reduce) {
@@ -216,6 +217,7 @@
       </figure>
       <form id="actions" class="actions">
         <input id="note" class="note" type="text" placeholder="Add a note for Codex" aria-label="Add a note for Codex" autocomplete="off">
+        <button id="read" class="quiet" type="button" hidden>Read prompt</button>
         <button id="as-written" class="quiet" type="button">Use as written</button>
         <button id="go" class="go" type="submit">Go ahead</button>
       </form>

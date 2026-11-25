@@ -266,6 +266,14 @@ export function openChoiceLine(row: Pick<ParsedRow, 'type' | 'statement' | 'opti
   return `${head} (${row.type === 'many' ? 'any of: ' : ''}${sorted.join(' / ')})?`
 }
 
+/** Questions flagged by a quick reading, left for the agent to settle. */
+export function openChoicesBlock(choices: string[]): string {
+  if (!choices.length) return ''
+  const heading = 'Open choices (a quick read flagged these; they are not decisions, and its options may not fit the code. ' +
+    'Settle each one yourself, without stopping to ask, and say what you chose where you first act on it):'
+  return [heading, ...choices.map((line) => `- ${line}`)].join('\n')
+}
+
 export function sameSelection(a: number[], b: number[]): boolean {
   if (a.length !== b.length) return false
   const x = [...a].sort((p, q) => p - q)

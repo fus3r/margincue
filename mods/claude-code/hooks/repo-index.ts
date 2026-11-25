@@ -2,10 +2,16 @@
 // quoted display names, in three git calls run in the background. Nothing
 // here runs on a keystroke; the core indexes the result once.
 
-import type { EngineInterface } from 'claude-code'
 import { buildVocabulary } from '../core/grounding'
 import type { Vocabulary } from '../core/grounding'
 import { countLibraries } from '../core/project'
+
+type IndexEngine = {
+  env: { get: (name: string) => Promise<string | undefined> }
+  process: {
+    run: (argv: string[], options: { cwd: string; timeoutMs: number }) => Promise<{ exitCode: number | null; stdout: string }>
+  }
+}
 
 const SOURCES = ['*.ts', '*.tsx', '*.js', '*.jsx', '*.mjs', '*.cjs', '*.py', '*.rs', '*.go', '*.java', '*.kt', '*.swift',
   '*.c', '*.h', '*.cc', '*.cpp', '*.hpp', '*.cs', '*.rb', '*.php', '*.lua', '*.gd', '*.vue', '*.svelte', '*.scala', '*.dart']
@@ -30,7 +36,7 @@ const DECLARED = ['^[A-Za-z][A-Za-z0-9_.-]*', '^[[:space:]]*"[A-Za-z][A-Za-z0-9_
   '"@?[a-z0-9][a-z0-9._/-]*"[[:space:]]*:[[:space:]]*"[~^]?[0-9]']
 const DECLARED_FILES = ['requirements*.txt', '*/requirements*.txt', 'pyproject.toml', 'package.json', 'environment.yml']
 
-export async function collectVocabulary($: EngineInterface, root: string): Promise<Vocabulary | null> {
+export async function collectVocabulary($: IndexEngine, root: string): Promise<Vocabulary | null> {
   if (await tooBroad($, root)) return null
   const vocab = await fromGit($, root) ?? await fromRipgrep($, root)
   const project = root.replace(/[\\/]+$/, '').split(/[\\/]/).pop()
@@ -42,7 +48,7 @@ export async function collectVocabulary($: EngineInterface, root: string): Promi
  * whole disk (every reading after a turn too) and opens folders the system guards. Such a folder gets no index.
  * The home folder comes from the engine (Claude Code), else from the process (Codex).
  */
-async function tooBroad($: EngineInterface, root: string): Promise<boolean> {
+async function tooBroad($: IndexEngine, root: string): Promise<boolean> {
   const norm = (path: string) => path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
   const at = norm(root)
   if (/^(?:[a-z]:)?$/.test(at)) return true
@@ -50,14 +56,14 @@ async function tooBroad($: EngineInterface, root: string): Promise<boolean> {
   try {
     home = await $.env.get('HOME') ?? await $.env.get('USERPROFILE')
   } catch {
-    // Codex's engine has no $.env: its process's own environment says.
+    // A host can refuse the environment lookup. On Node, the process can supply it.
     const own = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
     home = own?.['HOME'] ?? own?.['USERPROFILE']
   }
   return Boolean(home) && norm(home!) === at
 }
 
-async function fromGit($: EngineInterface, root: string): Promise<Vocabulary | null> {
+async function fromGit($: IndexEngine, root: string): Promise<Vocabulary | null> {
   const git = (args: string[]) => $.process.run(['git', '-C', root, ...args], { cwd: root, timeoutMs: 20000 })
   const listed = await git(['ls-files', '--cached', '--others', '--exclude-standard']).catch(() => null)
   if (!listed || listed.exitCode !== 0) return null
@@ -84,7 +90,7 @@ function slashed(output: string): string {
 }
 
 /** A folder that is not a git work tree: ripgrep, when installed, honours its .gitignore all the same. */
-async function fromRipgrep($: EngineInterface, root: string): Promise<Vocabulary | null> {
+async function fromRipgrep($: IndexEngine, root: string): Promise<Vocabulary | null> {
   const globs = [...SOURCES.flatMap((glob) => ['-g', glob]), ...RG_EXCLUDE.flatMap((glob) => ['-g', glob])]
   // The '.' matters: with no path, ripgrep searches its stdin whenever that is a pipe, and finds nothing.
   const rg = (args: string[]) => $.process.run(['rg', '--no-require-git', '--no-messages', ...args, '.'], { cwd: root, timeoutMs: 20000 })

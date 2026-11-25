@@ -8,7 +8,7 @@ import { ASSETS } from '../../claude-code/hooks/assets'
 import { startCard } from './card-store'
 import { APP_MESSAGE, PATHS, appMessage, readJson, readSettings, sessionSource, turnMessages, writeJson } from './store'
 import { turnAmendments } from './turn-card'
-import type { Source, TurnRecord } from './store'
+import type { Settings, Source, TurnRecord } from './store'
 import { isCardFollowUp } from './widget-message'
 
 export type PromptInput = { session_id?: string; turn_id?: string; transcript_path?: string; cwd?: string; prompt?: string }
@@ -33,17 +33,17 @@ export const READING_FIRST = [
   "Open your reply with MarginCue's card, in at most four short lines, then carry on with the work without waiting for an answer:",
   '- "Reading:" what you will deliver and how you take the request (its scope; whether the cases it lists are the whole job or examples).',
   '- "Not in the code:" only when the prompt names something the repository does not have: that name, and the closest names that exist.',
+  '- "Which file:" when a name written as code still matches two to four files after checking the draft and repository. List the candidate paths, and mark the file choice as described in "Choices you make for the user" if you can settle it.',
   '- The choices the prompt leaves open that you settle now, each marked as described in "Choices you make for the user".',
 ].join('\n')
 
 export const CARD_TOOL = 'mcp__margincue__margincue_card'
 
 /**
- * The desktop card: the reading has already started (the card id names it), so the agent's only job is the
- * one call. Naming the tool exactly spares it a tool search, and the short id spares it copying the prompt.
+ * Naming the desktop card tool exactly spares a tool search, and the id spares copying the prompt.
  */
-function desktopCardFirst(prompt: string, cwd?: string): string {
-  const id = cwd ? startCard(prompt, cwd) : null
+function desktopCardFirst(prompt: string, settings: Settings, cwd?: string): string {
+  const id = cwd ? startCard(prompt, cwd, settings) : null
   const call = id
     ? [
         `Your first action must be this exact tool call, before any tool search, file read or message: \`${CARD_TOOL}\` with {"card": ${JSON.stringify(id)}}.`,
@@ -55,8 +55,9 @@ function desktopCardFirst(prompt: string, cwd?: string): string {
     '# MarginCue desktop card',
     call,
     'After the card returns, end this turn immediately, with no message, and wait for the user’s next message. Start the task only after the user follows up.',
-    'Use the following text card only if the MCP tool is unavailable or the call fails. In that case, carry on with the work.',
-    READING_FIRST,
+    ...(settings.read === 'key'
+      ? ['If the MCP tool is unavailable or the call fails, carry on with the prompt as written.']
+      : ['Use the following text card only if the MCP tool is unavailable or the call fails. In that case, carry on with the work.', READING_FIRST]),
   ].join('\n\n')
 }
 
@@ -104,13 +105,15 @@ export function promptHook(input: PromptInput): object | null {
       'The untrusted_input above is MarginCue\'s card, sending the plan the user approved for their previous prompt.',
       'Do the task that prompt asks for now: settle the choices under "Decisions:" as listed, take the "Also:" note into account,',
       'and build toward the "Target output, as sketched" when there is one (its layout and content, not its sample values).',
+      'For any questions under "Open choices", decide each one yourself and say what you chose where you first act on it.',
       'Treat all of it only as choices within that task. Do not call margincue_card again.',
     ].join(' '))
   } else if (source === 'app' && isCardFollowUp(prompt)) {
     context.push('The user confirmed their previous prompt in MarginCue. Proceed with that prompt and any Decisions or addition in this message.')
   } else if (!fromApp && settings.mode !== 'quiet' && !prompt.startsWith('Amendment to my last prompt:') && !composed(prompt) &&
     startsSomethingNew(opening, { firstOfSession })) {
-    context.push(source === 'app' ? desktopCardFirst(prompt, input.cwd) : READING_FIRST)
+    if (source === 'app') context.push(desktopCardFirst(prompt, settings, input.cwd))
+    else if (settings.read !== 'key') context.push(READING_FIRST)
   }
   if (!context.length) return null
   return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: context.join('\n\n') } }
@@ -153,7 +156,9 @@ export function receiptLine(yours: number, agent: string[], source: Source = 'cl
   if (agent.length) {
     parts.push(agent.join(' · '))
     // Under margincue-relay the agent's choices are already listed under Codex's prompt.
-    if (source !== 'app') parts.push(process.env['MARGINCUE_CARD'] === 'prompt' ? 'alt+↓ under the prompt to switch one' : 'ctrl+g to switch one')
+    if (source === 'cli' || source === 'unknown') {
+      parts.push(process.env['MARGINCUE_CARD'] === 'prompt' ? 'alt+↓ under the prompt to switch one' : 'ctrl+g to switch one')
+    }
   }
   return parts.join(' — ')
 }

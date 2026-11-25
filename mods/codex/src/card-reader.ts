@@ -7,7 +7,7 @@ import { collectVocabulary } from '../../claude-code/hooks/repo-index'
 import { cardConfig } from './card-config'
 import { CodexModel } from './model'
 import { processEngine, readLearned, readSettings } from './store'
-import { choiceLine } from './widget-message'
+import { cardPlan } from './widget-message'
 import type { Selections, WidgetCard } from './widget-message'
 
 /** A reading streams into the card as it comes, so this only bounds a reading that stalls. */
@@ -59,19 +59,20 @@ export class CardReader {
    * Reads the prompt into a card. `onUpdate` hears the card each time the streamed reading completes a line:
    * its reading first, then each choice. Resolves to the finished card with what a preview needs, or null when off.
    */
-  async read(id: string, prompt: string, cwd: string, onUpdate?: (card: WidgetCard) => void): Promise<CardSource | null> {
+  async read(seed: WidgetCard, cwd: string, onUpdate?: (card: WidgetCard) => void): Promise<CardSource | null> {
     const settings = readSettings()
     if (settings.mode === 'off') return null
     const started = Date.now()
     const config = cardConfig(settings)
     const model = this.warm(cwd)
     const core = createCore(ASSETS, { readSubmittedPrompt: true })
-    const currentCard = () => cardOf(core, id, prompt, config.sketch !== false, config.refs !== false)
-    core.handle({ ...config, sketch: false })
+    const currentCard = () => cardOf(core, seed, config.sketch !== false, config.refs !== false)
+    core.handle({ ...config, read: 'key', send: seed.send ?? 'all', sketch: false })
     core.handle({ type: 'learned', picks: readLearned(cwd) })
     const indexBy = started + INDEX_MS
     core.handle({ type: 'vocabulary', vocab: await before(vocabulary(cwd, indexBy), indexBy) })
-    const request = core.handle({ type: 'draft', text: prompt, now: Date.now(), origin: 'open' })
+    core.handle({ type: 'draft', text: seed.prompt, now: Date.now(), origin: 'open' })
+    const request = core.handle({ type: 'cardRead', now: Date.now() })
       .find((effect) => effect.type === 'request' && effect.kind === 'card')
     if (request?.type === 'request') {
       const reply = (text: string, done: boolean, ok = true) => core.handle({ type: 'reply', now: Date.now(), req: request.req, text, done, ok })
@@ -112,8 +113,7 @@ export class CardReader {
   /** Draws the preview for the card with these choices (none: as Codex would decide them). */
   async sketch(source: CardSource, picks: Selections): Promise<ParsedSketch | null> {
     const { card, cwd, names, today } = source
-    const choices = card.rows.filter((row) => row.assumed.length > 0 || picks[row.id] !== undefined)
-      .map((row) => choiceLine(row, picks[row.id] ?? row.assumed))
+    const { decisions: choices } = cardPlan(card.rows, picks, card.send ?? 'all')
     const prompt = buildSketchPrompt({ draft: card.prompt, read: card.reading, choices, names, today })
     const system = ASSETS.sketchSystem!.replace('{language}', 'in English')
     // The lightest model often answers that there is nothing to draw; the default one draws.
@@ -124,15 +124,17 @@ export class CardReader {
   }
 }
 
-function cardOf(core: ReturnType<typeof createCore>, id: string, prompt: string, sketchOn: boolean, refsOn: boolean): WidgetCard {
+function cardOf(core: ReturnType<typeof createCore>, seed: WidgetCard, sketchOn: boolean, refsOn: boolean): WidgetCard {
   const view = core.currentView().card
   const missing = (view?.mentions ?? []).filter((mention) => mention.status === 'missing').map((mention) => {
     const row = view?.rows.find((row) => row.origin === 'repo' && row.statement === `"${mention.phrase}" is {}`)
     return { phrase: mention.phrase, candidates: mention.near, ...(row && { rowId: row.id }) }
   })
-  const rows = (view?.rows ?? []).map(({ id, label, type, statement, options, selected }) => {
+  const rows = (view?.rows ?? []).map(({ id, key, origin, learned, label, type, statement, options, selected, openOnSend }) => {
     const mention = missing.find((name) => name.rowId === id)
-    return { id, label, type, statement, options, assumed: selected, ...(mention && { files: mention.candidates.map((candidate) => candidate.file) }) }
+    return { id, key, origin, ...(learned && { learned }), label, type, statement, options, assumed: selected,
+      ...(openOnSend && { openOnSend }),
+      ...(mention && { files: mention.candidates.map((candidate) => candidate.file) }) }
   })
   const fileReferences = refsOn ? (view?.mentions ?? []).flatMap((mention) => {
     if (!mention.places?.length) return []
@@ -140,7 +142,9 @@ function cardOf(core: ReturnType<typeof createCore>, id: string, prompt: string,
     return [{ phrase: mention.phrase, files: mention.places, ...(row && { rowId: row.id }) }]
   }) : []
   const preview = sketchOn && Boolean(ASSETS.sketchSystem) && canSketch(view?.kind ?? null)
-  return { id, prompt, reading: view?.read ?? null, rows, missing, preview, sketch: null, ...(fileReferences.length && { fileReferences }) }
+  const { id, prompt, send } = seed
+  return { id, prompt, send, reading: view?.read ?? null, rows, missing, preview, sketch: null,
+    ...(fileReferences.length && { fileReferences }) }
 }
 
 /** The picks a widget sent, if every one names a row and options it has. */
@@ -163,7 +167,7 @@ async function vocabulary(cwd: string, deadline: number) {
     if (left <= 0) return Promise.resolve({ exitCode: 1, stdout: '', stderr: '' })
     return processEngine.process.run(argv, { ...options, timeoutMs: left })
   }
-  return collectVocabulary({ process: { run } } as never, cwd).catch(() => null)
+  return collectVocabulary({ ...processEngine, process: { run } }, cwd).catch(() => null)
 }
 
 async function before<T>(work: Promise<T>, deadline: number): Promise<T | null> {

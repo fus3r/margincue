@@ -18,6 +18,7 @@ const previewTitle = byId('preview-title')
 const drawing = byId('drawing')
 const form = byId<HTMLFormElement>('actions')
 const note = byId<HTMLInputElement>('note')
+const readButton = byId<HTMLButtonElement>('read')
 const goButton = byId<HTMLButtonElement>('go')
 const asWritten = byId<HTMLButtonElement>('as-written')
 const errorMessage = byId('send-error')
@@ -28,6 +29,7 @@ let card: CardOutput | undefined
 const picks: Selections = {}
 let sending = false
 let sent = false
+let startingRead = false
 let following = false
 let timer: number | undefined
 let previewVersion = 0
@@ -67,7 +69,7 @@ function mark(row: WidgetRow, text: string, unknown = false): HTMLButtonElement 
   const button = element('button', `mark${yours ? ' yours' : ''}${unknown ? ' unknown' : ''}`, text)
   button.type = 'button'
   button.dataset.row = row.id
-  button.title = unknown ? text : yours ? 'Your choice. Click to change it.' : 'Codex would choose this. Click to change it.'
+  button.title = unknown ? text : yours ? 'Your choice. Click to change it.' : row.openOnSend ? 'Left to agent unless you pick.' : 'Codex would choose this. Click to change it.'
   button.setAttribute('aria-haspopup', 'listbox')
   button.setAttribute('aria-expanded', String(open?.row.id === row.id))
   button.addEventListener('click', (event) => {
@@ -116,9 +118,11 @@ function renderPlan(): void {
     const at = row.statement.indexOf('{}')
     const before = at < 0 ? `${row.statement} ` : row.statement.slice(0, at)
     const after = (at < 0 ? '' : row.statement.slice(at + 2)).replace(/[\s.:;]+$/, '')
-    sentences.push(sentence([before.charAt(0).toUpperCase() + before.slice(1), mark(row, valueOf(row)), `${after}.`], row.id))
+    const parts: (string | Node)[] = [before.charAt(0).toUpperCase() + before.slice(1), mark(row, valueOf(row)), `${after}.`]
+    if (row.openOnSend && picks[row.id] === undefined) parts.push(element('small', 'row-note', ' · left to agent'))
+    sentences.push(sentence(parts, row.id))
   }
-  if (!sentences.length && !stillReading()) {
+  if (!sentences.length && !stillReading() && card.state !== 'waiting') {
     const words = card.reading ? 'Nothing is left open: Codex can start as you wrote it.' : 'MarginCue could not read this prompt in time. Codex can still go ahead with it as written.'
     sentences.push(sentence([words], 'empty'))
   }
@@ -137,7 +141,12 @@ function renderPlan(): void {
 }
 
 function updateActions(): void {
-  goButton.title = 'Codex starts with this plan: every choice as shown, your note, and the preview.'
+  readButton.hidden = card?.state !== 'waiting'
+  readButton.disabled = startingRead || sending || sent
+  const send = card?.send ?? 'all'
+  goButton.title = send === 'open' ? 'Send your decisions and let Codex answer the open choices.'
+    : send === 'picked' ? 'Send your picks, saved choices, and written step order.'
+    : 'Send the shown decisions, your note, and the preview. Codex settles open questions.'
   asWritten.title = 'Codex starts with your prompt alone: it makes these choices itself.'
 }
 
@@ -197,12 +206,13 @@ function renderMenu(): void {
 function choose(index: number): void {
   if (!open) return
   const { row } = open
+  const assumedBinds = (card?.send ?? 'all') === 'all' && !row.openOnSend
   if (index < 0) delete picks[row.id]
   else if (row.type === 'many') {
     const next = toggleSelection(row, selected(row), index)
-    if (sameSelection(next, row.assumed)) delete picks[row.id]
+    if (assumedBinds && sameSelection(next, row.assumed)) delete picks[row.id]
     else picks[row.id] = next
-  } else if (!missingFor(row) && sameSelection([index], row.assumed)) delete picks[row.id]
+  } else if (assumedBinds && !missingFor(row) && sameSelection([index], row.assumed)) delete picks[row.id]
   else picks[row.id] = [index]
   renderPlan()
   const anchor = plan.querySelector<HTMLElement>(`[data-row="${CSS.escape(row.id)}"]`)
@@ -351,6 +361,7 @@ function schedulePreview(delay: number): void {
 
 /** Takes in a newer state of the card; picks made already are kept where their choice still exists. */
 function accept(next: CardOutput): void {
+  if (sent) return
   const before = card
   if (before && (next.version ?? 0) < (before.version ?? 0)) return
   card = next
@@ -359,6 +370,7 @@ function accept(next: CardOutput): void {
     if (!row || picks[id]!.some((i) => i >= row.options.length)) delete picks[id]
   }
   root.classList.toggle('is-reading', stillReading())
+  reading.hidden = next.state === 'waiting'
   reading.textContent = next.reading ?? ''
   reading.classList.toggle('skeleton-line', !next.reading && stillReading())
   editor.hidden = false
@@ -396,6 +408,27 @@ async function follow(): Promise<void> {
   following = false
 }
 
+async function startReading(): Promise<void> {
+  if (!card || card.state !== 'waiting' || startingRead || sending || sent) return
+  startingRead = true
+  errorMessage.hidden = true
+  updateActions()
+  try {
+    const result = await bridge.read({ card: card.id, start: true }) as { isError?: boolean; structuredContent?: CardOutput }
+    if (result?.isError || !result?.structuredContent) throw new Error()
+    accept(result.structuredContent)
+    void follow()
+  } catch {
+    if (!sent) {
+      errorMessage.textContent = 'Could not read this prompt. Try again or continue as written.'
+      errorMessage.hidden = false
+    }
+  } finally {
+    startingRead = false
+    updateActions()
+  }
+}
+
 function showOutput(output: unknown): void {
   if (!output || typeof output !== 'object') return
   if ('isError' in output && output.isError && !card) {
@@ -422,12 +455,18 @@ function showSummary(message: FollowUp): void {
   closeMenu()
   root.classList.remove('is-reading')
   editor.hidden = true
-  const head = message.decisions.length || message.extra || message.text.includes('Target output') ? 'Codex is going ahead with this plan.' : 'Codex is going ahead with your prompt as written.'
+  const head = message.decisions.length || message.openChoices?.length || message.extra || message.text.includes('Target output')
+    ? 'Codex is going ahead with this plan.' : 'Codex is going ahead with your prompt as written.'
   summary.replaceChildren(element('p', 'summary-head', head))
   if (message.decisions.length) {
     const list = element('ul')
     for (const decision of message.decisions) list.append(element('li', undefined, decision))
     summary.append(list)
+  }
+  if (message.openChoices?.length) {
+    const list = element('ul')
+    for (const question of message.openChoices) list.append(element('li', undefined, question))
+    summary.append(element('p', 'summary-note', 'Codex will decide'), list)
   }
   if (message.extra) summary.append(element('p', 'summary-note', `Your note: ${message.extra}`))
   summary.hidden = false
@@ -439,10 +478,11 @@ async function send(asWrittenOnly: boolean): Promise<void> {
   // Going ahead before the card has arrived is going ahead as written, with the note if there is one.
   // The preview goes as the target only when it shows these very choices, not while it is redrawn for them.
   const target = shownKey === picksKey() && !preview.hidden && !preview.classList.contains('stale') ? shownSketch : null
-  const message = composeFollowUp(card?.rows ?? [], picks, note.value, asWrittenOnly, target, card?.fileReferences)
+  const message = composeFollowUp(card?.rows ?? [], picks, note.value, asWrittenOnly, target, card?.send, card?.fileReferences)
   sending = true
   closeMenu()
   goButton.disabled = asWritten.disabled = note.disabled = true
+  updateActions()
   errorMessage.hidden = true
   try {
     await bridge.send(message.text)
@@ -457,6 +497,7 @@ async function send(asWrittenOnly: boolean): Promise<void> {
   } finally {
     sending = false
     goButton.disabled = asWritten.disabled = note.disabled = false
+    updateActions()
   }
 }
 
@@ -465,6 +506,6 @@ form.addEventListener('submit', (event) => {
   void send(false)
 })
 asWritten.addEventListener('click', () => void send(true))
-note.addEventListener('input', updateActions)
+readButton.addEventListener('click', () => void startReading())
 const bridge = connectWidget(showOutput)
 new ResizeObserver(() => fit()).observe(root)

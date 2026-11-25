@@ -10,8 +10,9 @@ import { Lru } from './lru'
 import { normalize, parseReply } from './parse'
 import { parseProfile } from './profile'
 import { buildPrompt, buildSystem, isTerminated, lastSentenceStart } from './request'
-import { buildSketchPrompt, canSketch, CARD_MAX_TOKENS, cycleSelection, deriveCardKind, listsSteps, openChoiceLine, parseCard, parseSketch, rowValue, sameSelection, SKETCH_MAX_TOKENS, STEP_ORDER_KEY, toggleSelection } from './card'
+import { buildSketchPrompt, canSketch, CARD_MAX_TOKENS, cycleSelection, deriveCardKind, listsSteps, openChoiceLine, openChoicesBlock, parseCard, parseSketch, rowValue, sameSelection, SKETCH_MAX_TOKENS, STEP_ORDER_KEY, toggleSelection } from './card'
 import type { CardKind, ParsedCard, ParsedRow, ParsedSketch, RowType } from './card'
+import { isHardToUndo } from './hard-to-undo'
 import { ground, indexVocabulary, nameKey, relatedFolders } from './grounding'
 import type { GroundIndex, Mention } from './grounding'
 import { detectLenses } from './project'
@@ -87,6 +88,7 @@ type CardRow = {
   statement: string
   options: string[]
   defaults: number[]
+  hardToUndo?: true
   originalOptions?: string[]
   unit?: string
   anchor?: string
@@ -141,9 +143,6 @@ const AMEND_MS = 3500
 const CARD_GAP_MS = 3000
 const CARD_IDLE_MS = 900
 const CARD_MIN_WORDS = 6
-/** Heads the rows sent as questions in `send open` mode: flagged by a quick read, decided by the agent. */
-const OPEN_CHOICES = 'Open choices (a quick read flagged these; they are not decisions, and its options may not fit the code. ' +
-  'Settle each one yourself, without stopping to ask, and say what you chose where you first act on it):'
 const SKETCH_DELAY_MS = 700
 /** alt+down during a turn waits this long for the next press before the change is sent. */
 const AMEND_DELAY_MS = 1500
@@ -751,12 +750,13 @@ export class Core {
     if (this.mode !== undefined && text !== this.text) this.refreshState(text)
     const exact = text === this.text
     // The card is the plan the person saw only if its reading is for this very prompt and finished.
-    const whole = plan && exact && this.hasReadingFor(text)
+    const read = exact && this.hasReadingFor(text)
+    const whole = plan && read
     const decisions = isPrompt ? this.decisions(exact, whole) : []
     const attached = attachDecisions(text, decisions)
     const added = attached.added
-    const open = isPrompt && whole ? this.openChoices() : []
-    const asked = open.length ? `${attached.text.replace(/\s+$/, '')}\n\n${OPEN_CHOICES}\n${open.map((line) => `- ${line}`).join('\n')}` : attached.text
+    const open = isPrompt && exact ? openChoicesBlock(this.openChoices(plan, read)) : ''
+    const asked = open ? `${attached.text.replace(/\s+$/, '')}\n\n${open}` : attached.text
     const target = isPrompt && exact ? this.targetSketch(plan, added) : null
     const sent = target ? `${asked.replace(/\s+$/, '')}\n\n${target}` : asked
     if (this.sheetEnabled !== undefined) this.onCardSubmit(prompt, exact, amendable, added)
@@ -1315,7 +1315,12 @@ export class Core {
       const match = old.find((entry) => !used.has(entry.id) && (entry.key === row.key || normalize(entry.statement) === normalize(row.statement)))
       if (match) used.add(match.id)
       if (match && match.picked !== null) next.push(row.anchor ? { ...match, anchor: row.anchor } : match)
-      else next.push(this.withLearned({ ...row, id: match?.id ?? this.newId(), picked: null }))
+      else {
+        const entry = this.withLearned({ ...row, id: match?.id ?? this.newId(), picked: null })
+        if (entry.key !== STEP_ORDER_KEY && entry.learned === undefined && entry.defaults.length &&
+          isHardToUndo(entry.statement, rowValue(entry, entry.defaults))) entry.hardToUndo = true
+        next.push(entry)
+      }
     }
     // A choice the person made stands until they dismiss it, whatever a newer reading says.
     for (const row of old) if (!used.has(row.id) && (partial || row.picked !== null)) next.push(row)
@@ -1425,13 +1430,17 @@ export class Core {
     return card?.stage === 'draft' && card.req === null && card.readFor === text
   }
 
-  /** A finished reading adds learned picks, and adds suggested defaults in `all` mode. */
+  private defaultIsOpen(row: CardRow): boolean {
+    return !this.pickedOnly && row.picked === null && row.hardToUndo === true
+  }
+
+  /** A finished reading adds learned picks, and adds binding defaults in `all` mode. */
   private cardDecisions(whole = false): Decision[] {
     const card = this.card!
     // The written step order travels in every mode: it comes from the draft, not from the reading's guess.
     const out: Decision[] = card.rows
       .filter((row) => row.picked !== null || whole && row.origin !== 'repo' &&
-        (row.learned !== undefined || !this.pickedOnly && row.defaults.length > 0 ||
+        (row.learned !== undefined || !this.pickedOnly && row.defaults.length > 0 && !row.hardToUndo ||
           row.key === STEP_ORDER_KEY && row.defaults.length > 0))
       .map((row) => ({ statement: row.statement, option: row.said ?? this.rowText(row, row.picked ?? row.learned ?? row.defaults) }))
     if (this.refsEnabled) {
@@ -1447,13 +1456,14 @@ export class Core {
     return out
   }
 
-  /** `send open`: the rows the person left alone, as questions for the agent (the step order travels as a decision). */
-  private openChoices(): string[] {
+  private openChoices(plan: boolean, read: boolean): string[] {
     const card = this.card
-    if (!this.openRows || card?.stage !== 'draft') return []
+    if (card?.stage !== 'draft') return []
+    const leaveOpen = plan && this.openRows
     return card.rows
-      .filter((row) => (row.origin === 'model' || row.origin === 'lens') && row.picked === null && row.learned === undefined &&
-        row.key !== STEP_ORDER_KEY)
+      .filter((row) => row.picked === null && row.learned === undefined && row.key !== STEP_ORDER_KEY)
+      .filter((row) => row.origin === 'repo' ? leaveOpen && row.key.startsWith('file_')
+        : read && (row.origin === 'model' || row.origin === 'lens') && (leaveOpen || this.defaultIsOpen(row)))
       .map((row) => openChoiceLine(row))
   }
 
@@ -1484,6 +1494,7 @@ export class Core {
       defaults: [...row.defaults], selected: [...(row.picked ?? row.learned ?? row.defaults)], chosen: row.picked !== null,
       origin: row.origin, ...(row.unit && { unit: row.unit }), ...(row.lens && { lens: row.lens }),
       ...(learned && row.picked === null && { learned: true as const }),
+      ...(draft && this.defaultIsOpen(row) && { openOnSend: true as const }),
       ...(span && { start: span.start, end: span.end }),
     }
   }
@@ -1535,7 +1546,7 @@ export class Core {
   private sketchPrompt(card: Card, added?: string[]): string {
     const choices = this.pickedOnly
       ? added ?? attachDecisions(this.text, this.decisions(true, this.hasReadingFor(this.text))).added
-      : card.rows.filter((row) => row.origin !== 'repo' || row.picked !== null).map((row) =>
+      : card.rows.filter((row) => (row.origin !== 'repo' || row.picked !== null) && !this.defaultIsOpen(row)).map((row) =>
         decisionLine({ statement: row.statement, option: this.rowText(row, row.picked ?? row.learned ?? row.defaults) }))
     const found = this.mentions.filter((m) => m.status === 'found').slice(0, 8)
     return buildSketchPrompt({ draft: this.text, read: card.read, choices, names: found.map((m) => m.match ?? m.phrase), today: this.today })

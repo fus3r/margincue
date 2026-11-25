@@ -643,6 +643,7 @@ impl State {
             rows: self.rows,
             max: self.max,
             full: self.full,
+            read_key: true,
         });
     }
 
@@ -793,6 +794,7 @@ impl State {
         input.claims = Claims {
             enter: live && plain && self.claims.enter,
             arrows: live && visible && self.claims.arrows,
+            read: live && plain && self.claims.read,
         };
     }
 
@@ -818,6 +820,7 @@ impl State {
                 self.apply_claims(input);
             }
             Action::Dismiss => self.send(Up::Dismiss),
+            Action::Read => self.send(Up::Key { key: "read" }),
             Action::Up => self.send(Up::Key { key: "up" }),
             Action::Down => self.send(Up::Key { key: "down" }),
             Action::Click { x, y } => self.send(Up::Click { x, y }),
@@ -868,8 +871,8 @@ impl State {
                 self.reshape(terminal, out, child_fd)?;
                 self.repaint(terminal);
             }
-            Down::Claims { enter, arrows } => {
-                self.claims = Claims { enter, arrows };
+            Down::Claims { enter, arrows, read } => {
+                self.claims = Claims { enter, arrows, read };
                 self.apply_claims(input);
             }
             Down::Enter { action, text } => {

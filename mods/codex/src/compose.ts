@@ -191,7 +191,7 @@ export async function compose(file: string): Promise<void> {
     draw()
   }
 
-  /** Tab gives the card the keys: a digit picks, x drops the row, s shows the sketch, p attaches it. */
+  /** Tab gives the card its keys. */
   function cardKey(key: Key, focus: string | null): void {
     if (inAgent()) {
       if (key.kind === 'text' && /^[1-9]$/.test(key.text)) return switchAgent(agent!.focus, Number(key.text) - 1)
@@ -206,6 +206,7 @@ export async function compose(file: string): Promise<void> {
     if (key.kind === 'text') {
       const ch = key.text.toLowerCase()
       if (/^[1-9]$/.test(ch) && focus) run({ type: 'cardSet', now: now(), row: focus, option: Number(ch) - 1 })
+      else if (ch === 'c') run({ type: 'cardRead', now: now() })
       else if (ch === 'x' && focus) run({ type: 'cardDismiss', now: now(), row: focus })
       else if (ch === 's') run({ type: 'sketch', now: now(), action: 'toggle' })
       else if (ch === 'p') run({ type: 'sketch', now: now(), action: 'pin' })
@@ -311,8 +312,8 @@ export async function compose(file: string): Promise<void> {
     const card = inAgent() ? agentCard(agent!) : view?.card ?? null
     const busy = Boolean(card?.reading || card?.sketch?.drawing)
     const body: Segment[][] = card
-      ? layoutCard(card, width, budget, { chords: true, extra: [], palette: P, sketchKey: 'tab, s' })
-      : [[{ kind: 'text', text: ' MarginCue ', style: P.tag }, { kind: 'text', text: draft.text.trim()
+      ? layoutCard(card, width, budget, { chords: true, extra: [], palette: P, sketchKey: 'tab, s', readHint: 'tab, c to read' })
+      : [[{ kind: 'text', text: ' MarginCue ', style: P.tag }, { kind: 'text', text: settings.read === 'key' ? '  tab, c to read the draft.' : draft.text.trim()
         ? '  reads the prompt once you pause.' : '  Write the prompt; MarginCue reads it as you go.', style: { dim: true } }]]
     const lines = body.slice(0, budget)
     const top = height - footer - editorRows - 1 - lines.length - 1
@@ -427,7 +428,7 @@ export async function compose(file: string): Promise<void> {
     modelName = name ? `readings by ${name}` : 'Codex unavailable'
     draw()
   })
-  void collectVocabulary(processEngine as never, cwd).then((vocab) => run({ type: 'vocabulary', vocab })).catch(() => {})
+  void collectVocabulary(processEngine, cwd).then((vocab) => run({ type: 'vocabulary', vocab })).catch(() => {})
   if (agent) {
     draft.replace(0, draft.text.length, '')
     agent.text = ''

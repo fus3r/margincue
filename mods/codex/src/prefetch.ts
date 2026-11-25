@@ -11,7 +11,7 @@ export async function fillCard(reader: CardReader, id: string): Promise<void> {
   const start = readRecord(id)
   if (!start || start.state !== 'reading') return
   updateRecord(id, (record) => { record.pid = process.pid })
-  const read = () => reader.read(id, start.prompt, start.cwd, (card) => updateRecord(id, (record) => { record.card = card }))
+  const read = () => reader.read(start.card, start.cwd, (card) => updateRecord(id, (record) => { record.card = card }))
     .catch(() => null)
   let source = await read()
   // Something to build always leaves choices open: a reading of one that lists none slipped, so read it once more.

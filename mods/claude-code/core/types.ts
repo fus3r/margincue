@@ -75,7 +75,7 @@ export type Event =
   | { type: 'dismiss'; now?: number; cue: string }
   | { type: 'acceptAll'; now?: number }
   | { type: 'focus'; dir?: 1 | -1; cue?: string }
-  /** `plan: false`: only what the person set travels (they were asked each choice in turn, and skipped the rest). */
+  /** `plan: false`: only explicit picks bind (the person was asked each choice in turn). */
   | { type: 'submit'; now: number; text: string; amendable?: boolean; plan?: boolean }
   | { type: 'loadState'; now: number; state: StateLoad }
   | { type: 'set'; now: number; at?: number; slot: string; option: string; scope?: Scope; text?: string }
@@ -151,7 +151,7 @@ export type View = {
 
 /**
  * One row of the card. `selected` is what the row reads now: the person's pick,
- * else an earlier habit, else the default. Only `chosen` rows travel with the prompt.
+ * else an earlier habit, else the default. `chosen` records a pick on this card.
  */
 export type CardRowView = {
   id: string
@@ -167,6 +167,8 @@ export type CardRowView = {
   unit?: string
   lens?: string
   learned?: true
+  /** The untouched default will travel as a question. */
+  openOnSend?: true
   start?: number
   end?: number
 }

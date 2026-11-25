@@ -21,7 +21,7 @@ import { promptHook, stopHook } from './hooks'
 import { serveMcp } from './mcp'
 import { findRelay, installRelay, startRelay } from './relay'
 import { runPrefetch } from './prefetch'
-import { PATHS, readSettings, saveSettings } from './store'
+import { PATHS, readSettings, saveSettings, sendSetting } from './store'
 import { MIN_CODEX, tooOld } from './version'
 
 const SELF = fileURLToPath(import.meta.url)
@@ -279,6 +279,7 @@ function status(): void {
   const settings = readSettings()
   process.stdout.write([
     `MarginCue for Codex: ${settings.mode ?? 'auto'} · sketch ${settings.sketch === false ? 'off' : 'on'} · blanks ${settings.blanks === false ? 'off' : 'on'}`,
+    `Read: ${settings.read === 'key' ? 'key' : 'auto'} · Send: ${sendSetting(settings)}`,
     settings.user ? `You: ${describeUser(settings.user)}` : 'You: not set up yet (margincue setup asks a few questions).',
     `Composer: ${existsSync(STABLE) ? STABLE : 'not installed (margincue setup)'}`,
   ].join('\n') + '\n')

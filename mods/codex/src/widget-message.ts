@@ -1,9 +1,10 @@
-import { rowValue } from '../../claude-code/core/card'
+import { openChoiceLine, openChoicesBlock, rowValue, STEP_ORDER_KEY } from '../../claude-code/core/card'
 import type { ParsedSketch } from '../../claude-code/core/card'
 import { decisionLine, fileReferenceDecision } from '../../claude-code/core/decisions'
-import type { CardRowView } from '../../claude-code/core/types'
+import type { CardRowView, SendSetting } from '../../claude-code/core/types'
 
-export type WidgetRow = Pick<CardRowView, 'id' | 'label' | 'type' | 'statement' | 'options'> & {
+export type WidgetRow = Pick<CardRowView, 'id' | 'label' | 'type' | 'statement' | 'options'> &
+  Partial<Pick<CardRowView, 'key' | 'origin' | 'learned' | 'openOnSend'>> & {
   assumed: number[]
   files?: string[]
 }
@@ -17,16 +18,17 @@ export type WidgetCard = {
   fileReferences?: { phrase: string; files: string[]; rowId?: string }[]
   preview: boolean
   sketch: ParsedSketch | null
+  send?: SendSetting
 }
 
-export type CardState = 'reading' | 'done' | 'failed'
+export type CardState = 'waiting' | 'reading' | 'done' | 'failed'
 export type SketchState = 'none' | 'drawing' | 'done' | 'failed'
 
 /** What the card tools hand the widget: the card as far as it is read, and where its reading and preview are. */
 export type CardOutput = WidgetCard & { version?: number; state?: CardState; sketchState?: SketchState }
 
 export type Selections = Record<string, number[]>
-export type FollowUp = { text: string; decisions: string[]; extra: string }
+export type FollowUp = { text: string; decisions: string[]; extra: string; openChoices?: string[] }
 
 const AS_WRITTEN = 'Go ahead with my prompt as written.'
 const WITH_EDITS = 'Go ahead with my prompt above.'
@@ -42,33 +44,46 @@ export function choiceLine(row: WidgetRow, selected: number[]): string {
   return decisionLine({ statement: row.statement, option: file ? `${value} (${file})` : value })
 }
 
+export function cardPlan(rows: WidgetRow[], picks: Selections, send: SendSetting) {
+  const decisions: string[] = []
+  const openChoices: string[] = []
+  for (const row of rows) {
+    const repo = row.origin === 'repo' || row.files !== undefined
+    const order = row.key === STEP_ORDER_KEY
+    const defaultIsOpen = send === 'all' && row.openOnSend
+    const assumed = !repo && row.assumed.length && (row.learned || order || send === 'all' && !defaultIsOpen) ? row.assumed : undefined
+    const selected = picks[row.id] ?? assumed
+    if (selected !== undefined) decisions.push(choiceLine(row, selected))
+    else if (defaultIsOpen || send === 'open' && !order && (!repo || row.key?.startsWith('file_'))) openChoices.push(openChoiceLine(row))
+  }
+  return { decisions, openChoices }
+}
+
 /** The preview as it travels with a prompt: the same words the Claude Code and Codex composers use. */
 export function targetLines(sketch: ParsedSketch): string {
   return `Target output, as sketched (${sketch.title}):\n\`\`\`text\n${sketch.lines.join('\n')}\n\`\`\``
 }
 
 /**
- * The follow-up Go ahead sends: the whole plan the card showed, so the agent builds what the person saw. That is
- * every choice, switched or kept as shown (a name the code lacks has no default: only a pick of it travels), the
- * note, and the preview when it was drawn for exactly these choices. As written sends the prompt alone.
+ * Go ahead carries the choices for this send setting, the note, and the preview for those choices.
+ * Use as written sends the prompt alone.
  */
-export function composeFollowUp(rows: WidgetRow[], picks: Selections, note: string, asWritten = false, sketch: ParsedSketch | null = null,
+export function composeFollowUp(rows: WidgetRow[], picks: Selections, note: string, asWritten = false,
+  sketch: ParsedSketch | null = null, send: SendSetting = 'all',
   fileReferences: WidgetCard['fileReferences'] = []): FollowUp {
   if (asWritten) return { text: AS_WRITTEN, decisions: [], extra: '' }
-  const decisions = rows.flatMap((row) => {
-    const picked = picks[row.id]
-    if (picked) return [choiceLine(row, picked)]
-    return !row.files && row.assumed.length ? [choiceLine(row, row.assumed)] : []
-  })
+  const { decisions, openChoices } = cardPlan(rows, picks, send)
   const unresolved = fileReferences.filter((ref) => ref.rowId === undefined || picks[ref.rowId] === undefined)
   if (unresolved.length) decisions.push(decisionLine(fileReferenceDecision(unresolved)))
+  const open = openChoicesBlock(openChoices)
   const extra = note.trim().replace(/\s*[\r\n]+\s*/g, ' ')
   const target = sketch?.lines.length ? targetLines(sketch) : null
-  const text = decisions.length || extra || target ? [
+  const text = decisions.length || open || extra || target ? [
     WITH_EDITS,
     ...(decisions.length ? [`Decisions:\n${decisions.map((line) => `- ${line}`).join('\n')}`] : []),
+    ...(open ? [open] : []),
     ...(extra ? [`Also: ${extra}`] : []),
     ...(target ? [target] : []),
   ].join('\n\n') : AS_WRITTEN
-  return { text, decisions, extra }
+  return { text, decisions, extra, ...(openChoices.length && { openChoices }) }
 }

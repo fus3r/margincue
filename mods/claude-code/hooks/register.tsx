@@ -670,7 +670,7 @@ const unmatched = (row: MargincueRow) =>
 function choiceChip($: $, ui: Elements[RenderSurface], row: MargincueRow) {
   const { Box, Text, Select } = ui
   const options = row.options.map((_, i) => i)
-  const yours = row.chosen ? <Text dimColor>{'\u2713 yours'}</Text> : null
+  const status = row.chosen ? <Text dimColor>{'\u2713 yours'}</Text> : row.openOnSend ? <Text dimColor>left to agent</Text> : null
   if (row.origin === 'repo' && !row.chosen) {
     const items = [{ key: `card-${row.id}-none`, value: 'none', label: 'Choose a match\u2026' }, ...options.map((i) => ({ key: `card-${row.id}-${i}`, value: String(i), label: row.options[i]! }))]
     return (
@@ -698,7 +698,7 @@ function choiceChip($: $, ui: Elements[RenderSurface], row: MargincueRow) {
     return (
       <Box key={`row-${row.id}`} flexDirection="row" columnGap={1} alignItems="center">
         <Select key={`card-${row.id}`} label={chipName(row)} value="set" options={items} onSelect={toggle} />
-        {yours}
+        {status}
       </Box>
     )
   }
@@ -707,7 +707,7 @@ function choiceChip($: $, ui: Elements[RenderSurface], row: MargincueRow) {
       <Select key={`card-${row.id}`} label={chipName(row)} value={String(row.selected[0] ?? 0)}
         options={options.map((i) => ({ key: `card-${row.id}-${i}`, value: String(i), label: row.options[i]! }))}
         onSelect={(value) => act($, { type: 'cardSet', row: row.id, option: Number(value) })} />
-      {yours}
+      {status}
     </Box>
   )
 }
@@ -814,7 +814,7 @@ function panelQuestions(card: NonNullable<View['card']>): PanelQuestion[] {
       indexes = [...new Set([0, at, Math.round((at + last) / 2), last])].sort((a, b) => a - b)
     } else if (assumed !== undefined && !indexes.includes(assumed) && indexes.length === 4) indexes[3] = assumed
     if (row.origin !== 'repo' && assumed !== undefined && indexes.includes(assumed)) indexes = [assumed, ...indexes.filter((i) => i !== assumed)]
-    const mark = row.learned ? ' (your usual)' : ' (assumed)'
+    const mark = row.openOnSend ? ' (left to agent if skipped)' : row.learned ? ' (your usual)' : ' (assumed)'
     const labels = indexes.map((i) => `${row.options[i]}${row.origin !== 'repo' && row.selected.includes(i) ? mark : ''}`)
     if (new Set(labels).size < 2 || new Set(labels).size !== labels.length) continue
     const repo = row.origin === 'repo'

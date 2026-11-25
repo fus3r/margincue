@@ -8,8 +8,7 @@
     "noUncheckedIndexedAccess": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "types": ["node"],
-    "paths": { "claude-code": ["../claude-code/.claude-plugin/types/claude-code"] }
+    "types": ["node"]
   },
   "include": ["src", "../claude-code/types"]
 }

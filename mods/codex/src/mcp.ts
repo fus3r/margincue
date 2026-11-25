@@ -1,9 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 import { createInterface } from 'node:readline'
-import { randomBytes } from 'node:crypto'
 import { CardReader, validPicks } from './card-reader'
-import { emptyCard, isCardId, readRecord, waitForRecord, writeRecord } from './card-store'
+import { isCardId, newCardRecord, readRecord, updateRecord, waitForRecord, writeRecord } from './card-store'
 import type { CardRecord } from './card-store'
 import { codexCommand, fillCard } from './prefetch'
 import { readSettings } from './store'
@@ -31,10 +30,10 @@ const TOOL_LIST = [
   },
   {
     name: 'margincue_read',
-    description: 'Follow an open MarginCue card while its reading and first preview arrive.',
+    description: 'Start a reading when the user asks, or follow an open MarginCue card while its reading and first preview arrive.',
     inputSchema: {
       type: 'object', required: ['card'], additionalProperties: false,
-      properties: { card: { type: 'string' }, after: { type: 'integer' } },
+      properties: { card: { type: 'string' }, after: { type: 'integer' }, start: { type: 'boolean' } },
     },
     annotations: { readOnlyHint: true },
     _meta: APP_ONLY,
@@ -114,18 +113,14 @@ async function dispatch(reader: CardReader, method: string, params: Record<strin
           if (typeof args.prompt !== 'string' || !args.prompt.trim() || typeof args.cwd !== 'string' || !isAbsolute(args.cwd)) {
             return toolError('MarginCue needs the card id from its prompt hook, or the prompt and its absolute project directory.')
           }
-          if (readSettings().mode === 'off') return toolError('MarginCue is off.')
-          // No reading was started at Enter (the hook did not run): read here, and let the card follow it all the same.
-          const id = randomBytes(6).toString('base64url')
-          record = {
-            id, prompt: args.prompt, cwd: args.cwd, at: Date.now(), version: 1, state: 'reading', card: emptyCard(id, args.prompt),
-            sketchState: 'none', sketch: null, names: [], pid: process.pid,
-          }
+          const settings = readSettings()
+          if (settings.mode === 'off') return toolError('MarginCue is off.')
+          record = newCardRecord(args.prompt, args.cwd, settings)
           writeRecord(record)
-          void fillCard(reader, id)
+          if (record.state === 'reading') void fillCard(reader, record.id)
         }
         // The first preview after a pick should not wait for Codex to start.
-        reader.warm(record.cwd)
+        if (record.state !== 'waiting') reader.warm(record.cwd)
         return {
           structuredContent: output(record), _meta: CARD_META,
           content: content('The MarginCue card is up. End your turn now, without writing anything more. The user’s choices will arrive as their next message.'),
@@ -133,9 +128,17 @@ async function dispatch(reader: CardReader, method: string, params: Record<strin
       }
       if (params.name === 'margincue_read') {
         const after = typeof args.after === 'number' ? args.after : 0
-        const record = isCardId(args.card) ? await waitForRecord(args.card, after, FOLLOW_MS) : null
+        let record = isCardId(args.card) ? readRecord(args.card) : null
+        if (record?.state === 'waiting' && args.start === true) {
+          if (readSettings().mode === 'off') return toolError('MarginCue is off.')
+          record = updateRecord(record.id, (card) => { card.state = 'reading' })
+          if (record) void fillCard(reader, record.id)
+        } else if (record && record.state !== 'waiting' && args.start !== true) {
+          record = await waitForRecord(record.id, after, FOLLOW_MS)
+        }
         if (!record) return toolError('This card is no longer available.')
-        return { structuredContent: output(record), content: content(record.state === 'reading' ? 'Reading.' : 'Read.') }
+        const status = record.state === 'waiting' ? 'Ready to read.' : record.state === 'reading' ? 'Reading.' : 'Read.'
+        return { structuredContent: output(record), content: content(status) }
       }
       if (params.name === 'margincue_sketch') {
         let record = isCardId(args.cardId) ? readRecord(args.cardId) : null

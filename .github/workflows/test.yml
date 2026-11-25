@@ -36,6 +36,12 @@ jobs:
           cd mods/codex
           npm run build
           git diff --exit-code -- dist
+      - name: Codex type-check
+        if: runner.os == 'Linux'
+        working-directory: mods/codex
+        run: |
+          npm install --no-save --no-package-lock typescript@5.9.3 @types/node@24.19.4
+          node_modules/.bin/tsc -p tsconfig.json
       - name: Claude Code plugin
         run: |
           npm install -g @anthropic-ai/claude-code

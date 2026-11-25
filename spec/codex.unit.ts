@@ -22,7 +22,8 @@ process.env['MARGINCUE_ENTRY'] = noReader
 const { parseKeys } = await import('../mods/codex/src/terminal')
 const { Draft } = await import('../mods/codex/src/editor')
 const { decisionsOf, promptHook, stopHook, receiptLine, READING_FIRST } = await import('../mods/codex/src/hooks')
-const { PATHS, sessionSource, turnMessages } = await import('../mods/codex/src/store')
+const { PATHS, saveSettings, sessionSource, turnMessages, writeJson } = await import('../mods/codex/src/store')
+const { cardConfig } = await import('../mods/codex/src/card-config')
 const { CodexModel } = await import('../mods/codex/src/model')
 const { composeFollowUp } = await import('../mods/codex/src/widget-message')
 const { emptyCard, readRecord, writeRecord } = await import('../mods/codex/src/card-store')
@@ -242,8 +243,7 @@ test('an app-server that stops reading fails the reading instead of crashing the
   }
 })
 
-test('the desktop hook gates new tasks on the widget and skips its follow-ups; the CLI keeps the text card', async () => {
-  const { writeJson } = await import('../mods/codex/src/store')
+test('the desktop hook gates new tasks on the widget and skips its follow-ups; the CLI keeps the text card', () => {
   const transcript = rollout('t-9', [], 'Codex Desktop')
   const prompt = 'Build a weekly activity report for team owners from the Audit Log, as a new Reports page with a CSV download.'
   const context = (out: unknown) => (out as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext
@@ -284,8 +284,70 @@ test('the desktop hook gates new tasks on the widget and skips its follow-ups; t
   assert.equal(stopped.systemMessage, 'MarginCue · you set 1 · the agent chose 1 — table layout: compact')
 })
 
+test('Codex defaults to send all and automatic reading; the IDE skips its text card in key mode', () => {
+  assert.deepEqual([cardConfig({}).send, cardConfig({}).read], ['all', 'auto'])
+  const input = { session_id: 'ide', turn_id: 'ide-1', transcript_path: rollout('ide-1', [], 'codex_vscode'), cwd: home,
+    prompt: 'Build a weekly activity report for team owners with a CSV download.' }
+  const context = (out: unknown) => (out as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext
+  assert.equal(sessionSource(input.transcript_path), 'ide')
+  const automatic = context(promptHook(input))
+  assert.ok(automatic.includes(READING_FIRST))
+  assert.match(automatic, /"Which file:".*List the candidate paths.*mark the file choice/)
+
+  saveSettings({ read: 'key', send: 'open' })
+  try {
+    const output = context(promptHook({ ...input, session_id: 'ide-key', turn_id: 'ide-2' }))
+    assert.ok(!output.includes(READING_FIRST))
+    assert.doesNotMatch(output, /margincue_card|Open choices|Decisions:/)
+    assert.match(output, /Choices you make for the user/)
+    const receipt = stopHook({ ...input, turn_id: 'ide-2', last_assistant_message: `I used ${OPEN}layout: compact | full width${CLOSE}.` })
+    assert.deepEqual(receipt, { systemMessage: 'MarginCue · you set 0 · the agent chose 1 — layout: compact' })
+  } finally {
+    saveSettings({})
+  }
+})
+
+test('the full-screen composer reads on tab then c and sends the file picked on its card', { timeout: 15000 }, async () => {
+  const project = mkdtempSync(join(tmpdir(), 'margincue-project-'))
+  const draft = join(project, 'draft.txt')
+  const prompt = 'Build a footer with a copyright year in `layout.tsx`.'
+  writeFileSync(draft, prompt)
+  mkdirSync(join(project, 'app', 'dashboard'), { recursive: true })
+  writeFileSync(join(project, 'app', 'layout.tsx'), 'export default function Layout() {}\n')
+  writeFileSync(join(project, 'app', 'dashboard', 'layout.tsx'), 'export default function Layout() {}\n')
+  writeFileSync(join(project, 'app-server'), `void import(${JSON.stringify(pathToFileURL(join(here, 'fixtures', 'fake-codex.mjs')).href)})\n`)
+  saveSettings({ read: 'key', send: 'picked', sketch: false })
+  const child = spawn(process.execPath, ['--import', tsResolve, launcher, 'compose', draft], {
+    cwd: project, env: { ...process.env, MARGINCUE_CODEX: process.execPath },
+  })
+  const closed = once(child, 'close')
+  let output = ''
+  child.stdout.setEncoding('utf8').on('data', (text: string) => { output += text })
+  child.stderr.setEncoding('utf8').on('data', (text: string) => { output += text })
+  async function waitFor(pattern: RegExp): Promise<void> {
+    for (const until = Date.now() + 5000; !pattern.test(output) && child.exitCode === null && Date.now() < until;) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    assert.match(output, pattern)
+  }
+  try {
+    await waitFor(/tab, c to read/)
+    assert.doesNotMatch(output, /You want Draft/)
+    child.stdin.write('\tc')
+    await waitFor(/You want Draft/)
+    await waitFor(/dashboard\/layout\.tsx/)
+    child.stdin.end('2\r')
+    assert.equal((await closed)[0], 0)
+    assert.equal(readFileSync(draft, 'utf8'), `${prompt}\n\nDecisions:\n- "layout.tsx" is the one in app/dashboard/layout.tsx.`)
+  } finally {
+    child.kill()
+    await closed
+    saveSettings({})
+  }
+})
+
 test('Go ahead from the desktop card reaches the hook as an app message: no second card, and the decisions count', () => {
-  const sent = 'Go ahead with my prompt above.\n\nDecisions:\n- Report team-wide activity totals.\n\nAlso: Keep the first version small.'
+  const sent = 'Go ahead with my prompt above.\n\nDecisions:\n- Report team-wide activity totals.\n\nOpen choices\n- Use … (daily / weekly)?\n\nAlso: Keep the first version small.'
   const transcript = rollout('t-app', [], 'Codex Desktop')
   // As Codex Desktop records it: the app's words as an untrusted_input output, then a fixed user line.
   appendFileSync(transcript, [
@@ -299,6 +361,7 @@ test('Go ahead from the desktop card reaches the hook as an app message: no seco
   const context = out.hookSpecificOutput.additionalContext
   assert.doesNotMatch(context, /mcp__margincue__margincue_card` with/)
   assert.match(context, /untrusted_input above is MarginCue's card/)
+  assert.match(context, /"Open choices", decide each one yourself and say what you chose/)
   assert.match(context, /Do not call margincue_card again/)
   assert.deepEqual(JSON.parse(readFileSync(PATHS.turn, 'utf8')).decisions, ['Report team-wide activity totals.'])
   assert.equal((stopHook({ session_id: 'app-go', turn_id: 't-app', transcript_path: transcript }) as { systemMessage: string }).systemMessage, receiptLine(1, [], 'app'))
@@ -332,6 +395,32 @@ test('Go ahead sends the whole plan the card showed: every choice, the note, and
   })
   assert.equal(composeFollowUp([], {}, '  ').text, 'Go ahead with my prompt as written.')
   assert.equal(composeFollowUp([], {}, 'Use local time.').text, 'Go ahead with my prompt above.\n\nAlso: Use local time.')
+})
+
+test('desktop picked and open modes keep explicit picks, saved choices, and written step order', () => {
+  const rows: WidgetRow[] = [
+    { id: 'a', label: 'week start', type: 'one', statement: 'Weeks start on {}', options: ['Monday', 'Sunday'], assumed: [0] },
+    { id: 'b', label: 'columns', type: 'many', statement: 'Include {}', options: ['sign-ins', 'invites'], assumed: [0] },
+    { id: 'c', label: 'history', type: 'range', statement: 'Show {} of history', options: ['1 wk', '4 wk'], assumed: [1], learned: true },
+    { id: 'd', label: 'step order', type: 'one', statement: 'Do the steps {}', options: ['in written order', 'in whatever order works'], assumed: [0], key: 'step_order' },
+    { id: 'e', label: 'Audit Log', type: 'one', statement: '"Audit Log" is {}', options: ['activityLogs', 'new, to be added'], assumed: [], files: ['activity.ts'] },
+  ]
+  const choices = ['Weeks start on Monday.', 'Show 4 wk of history.', 'Do the steps in written order.']
+  const picked = composeFollowUp(rows, { a: [0] }, 'Use local time.', false, null, 'picked')
+  assert.deepEqual(picked.decisions, choices)
+  assert.match(picked.text, /Also: Use local time\./)
+  assert.doesNotMatch(picked.text, /Include|Audit Log|Open choices/)
+
+  const opened = composeFollowUp(rows, { a: [0] }, '', false, null, 'open')
+  assert.deepEqual(decisionsOf(opened.text), choices)
+  assert.deepEqual(opened.openChoices, ['Include … (any of: invites / sign-ins)?'])
+  assert.match(opened.text, /Open choices.*Settle each one yourself[^\n]+\n- Include … \(any of: invites \/ sign-ins\)\?/)
+  assert.doesNotMatch(opened.text, /Audit Log|\*/)
+
+  const openOnly = composeFollowUp(rows.slice(0, 1), {}, '', false, null, 'open')
+  assert.ok(openOnly.text.startsWith('Go ahead with my prompt above.\n\nOpen choices'))
+  assert.deepEqual(decisionsOf(openOnly.text), [])
+  assert.equal(composeFollowUp(rows, { a: [0] }, '', true, null, 'open').text, 'Go ahead with my prompt as written.')
 })
 
 test('the bundled MCP command resolves from the plugin directory and initializes', async () => {
@@ -435,21 +524,64 @@ test('the bundled MCP server uses the Desktop runtime to read a grounded card an
     assert.ok(updated.structuredContent.sketch.lines.includes('- Weeks start on Sunday.'))
     assert.equal((await sketch({ [week.id]: [10] })).isError, true)
 
+    const purgeQuestion = 'After …, the agent will permanently delete the team in a scheduled job (7 days / 30 days)?'
+    const purgeDecision = 'After 30 days, the agent will permanently delete the team in a scheduled job.'
+    const weekDecision = 'Weeks start on Monday.'
+    for (const send of ['all', 'picked', 'open'] as const) {
+      saveSettings({ send })
+      const retentionResult = await call('tools/call', { name: 'margincue_card', arguments: { prompt: 'Build a retention report for inactive teams.', cwd: project } })
+      const retention = await follow(retentionResult.structuredContent.id)
+      const purge = retention.rows.find((row) => row.label === 'retention')!
+      assert.equal(retention.send, send)
+      assert.equal(purge.openOnSend, send === 'all' ? true : undefined, send)
+      const defaults = send === 'all' ? [weekDecision] : []
+      assert.deepEqual(retention.sketch?.lines, ['Weekly activity', ...defaults.map((line) => `- ${line}`)], send)
+
+      const untouched = composeFollowUp(retention.rows, {}, '', false, null, retention.send)
+      const questions = send === 'all' ? [purgeQuestion] : send === 'open' ? [purgeQuestion, 'Weeks start on … (Monday / Sunday)?'] : []
+      assert.deepEqual(decisionsOf(untouched.text), defaults, send)
+      assert.deepEqual(untouched.openChoices ?? [], questions, send)
+      if (questions.length) assert.ok(untouched.text.endsWith(questions.map((line) => `- ${line}`).join('\n')), send)
+      else assert.equal(untouched.text, 'Go ahead with my prompt as written.')
+
+      const confirmed = composeFollowUp(retention.rows, { [purge.id]: [0] }, '', false, null, retention.send)
+      assert.deepEqual(decisionsOf(confirmed.text), [purgeDecision, ...defaults], send)
+      assert.deepEqual(confirmed.openChoices ?? [], questions.slice(1), send)
+
+      if (send === 'all') {
+        const openOnly = composeFollowUp([purge], {}, '')
+        assert.deepEqual(openOnly.decisions, [])
+        assert.deepEqual(openOnly.openChoices, [purgeQuestion])
+        assert.match(openOnly.text, /^Go ahead with my prompt above\.\n\nOpen choices \(/)
+      }
+    }
+    saveSettings({})
+
     const brief = await call('tools/call', { name: 'margincue_card', arguments: { prompt: 'Build an app', cwd: project } })
     assert.ok((await follow(brief.structuredContent.id)).reading)
 
-    const layoutResult = await call('tools/call', { name: 'margincue_card', arguments: { prompt: 'Build a footer in `layout.tsx`.', cwd: project } })
-    const layoutCard = await follow(layoutResult.structuredContent.id)
-    const layout = layoutCard.rows.find((row) => row.label === 'layout.tsx')!
-    assert.deepEqual([layout.options, layout.assumed], [layouts, []])
-    assert.deepEqual(layoutCard.fileReferences, [{ phrase: 'layout.tsx', files: layouts, rowId: layout.id }])
-    assert.ok(layoutCard.sketch)
-    assert.ok(layoutCard.sketch.lines.every((line) => !line.includes('layout.tsx')))
-    const open = composeFollowUp(layoutCard.rows, {}, '', false, null, layoutCard.fileReferences)
-    assert.ok(open.decisions.includes('Where things are: layout.tsx (app/layout.tsx or app/dashboard/layout.tsx).'))
-    assert.ok(decisionsOf(open.text).every((line) => !line.startsWith('Where things are:')))
-    const picked = composeFollowUp(layoutCard.rows, { [layout.id]: [1] }, '', false, null, layoutCard.fileReferences)
-    assert.deepEqual(picked.decisions.filter((line) => line.includes('layout.tsx')), ['"layout.tsx" is the one in app/dashboard/layout.tsx.'])
+    for (const send of ['all', 'picked', 'open'] as const) {
+      saveSettings({ send })
+      const layoutResult = await call('tools/call', { name: 'margincue_card', arguments: { prompt: 'Build a footer in `layout.tsx`.', cwd: project } })
+      const layoutCard = await follow(layoutResult.structuredContent.id)
+      const layout = layoutCard.rows.find((row) => row.key === 'file_layouttsx')!
+      assert.deepEqual([layoutCard.send, layout.origin, layout.options, layout.assumed], [send, 'repo', layouts, []])
+      assert.deepEqual(layoutCard.fileReferences, [{ phrase: 'layout.tsx', files: layouts, rowId: layout.id }])
+      assert.ok(layoutCard.sketch)
+      assert.ok(layoutCard.sketch.lines.every((line) => !line.includes('layout.tsx')))
+
+      const unanswered = composeFollowUp(layoutCard.rows, {}, '', false, null, layoutCard.send, layoutCard.fileReferences)
+      assert.ok(unanswered.decisions.includes('Where things are: layout.tsx (app/layout.tsx or app/dashboard/layout.tsx).'))
+      assert.ok(decisionsOf(unanswered.text).every((line) => !line.includes('layout.tsx')))
+      assert.deepEqual(unanswered.openChoices?.filter((line) => line.includes('layout.tsx')) ?? [], send === 'open'
+        ? ['"layout.tsx" is the one in … (app/dashboard/layout.tsx / app/layout.tsx)?'] : [])
+
+      const picks = { [layout.id]: [1] }
+      const chosen = composeFollowUp(layoutCard.rows, picks, '', false, null, layoutCard.send, layoutCard.fileReferences)
+      assert.deepEqual(chosen.decisions.filter((line) => line.includes('layout.tsx')), ['"layout.tsx" is the one in app/dashboard/layout.tsx.'])
+      assert.ok(!chosen.openChoices?.some((line) => line.includes('layout.tsx')))
+      assert.equal(composeFollowUp(layoutCard.rows, picks, '', true, null, layoutCard.send, layoutCard.fileReferences).text, 'Go ahead with my prompt as written.')
+    }
 
     // A card the hook started is opened by its id alone.
     writeRecord({
@@ -461,14 +593,45 @@ test('the bundled MCP server uses the Desktop runtime to read a grounded card an
     assert.equal((await call('tools/call', { name: 'margincue_card', arguments: { card: 'no-such-card' } })).isError, true)
     assert.equal((await call('tools/call', { name: 'margincue_read', arguments: { card: 'no-such-card' } })).isError, true)
 
+    saveSettings({ read: 'key', send: 'open' })
+    try {
+      writeJson(PATHS.learned, { [project]: { week_start: { label: 'Sunday', count: 2 } } })
+      const gate = promptHook({ session_id: 'app-key', turn_id: 't-key', transcript_path: rollout('t-key', [], 'Codex Desktop'), cwd: project, prompt }) as
+        { hookSpecificOutput: { additionalContext: string } }
+      const context = gate.hookSpecificOutput.additionalContext
+      const id = /"card": "([\w-]+)"/.exec(context)?.[1]
+      assert.ok(id)
+      assert.ok(!context.includes(READING_FIRST))
+      assert.deepEqual([readRecord(id)?.state, readRecord(id)?.pid], ['waiting', undefined])
+
+      const waiting = (await call('tools/call', { name: 'margincue_card', arguments: { card: id } })).structuredContent as CardOutput
+      assert.deepEqual([waiting.send, waiting.state, waiting.reading, waiting.rows], ['open', 'waiting', null, []])
+      const read = (args: object) => call('tools/call', { name: 'margincue_read', arguments: { card: id, ...args } })
+      assert.deepEqual((await read({ after: waiting.version })).structuredContent, waiting)
+      const started = (await read({ start: true })).structuredContent as CardOutput
+      assert.equal(started.state, 'reading')
+
+      const finished = await follow(id, started.version)
+      assert.equal(finished.state, 'done')
+      assert.equal(finished.send, 'open')
+      assert.deepEqual(finished.rows.find((row) => row.key === 'week_start')?.learned, true)
+      assert.ok(finished.sketch!.lines.includes('- Weeks start on Sunday.'))
+      assert.ok(finished.sketch!.lines.every((line) => !line.startsWith('- Include') && !line.startsWith('- Show')))
+      assert.deepEqual((await read({ start: true })).structuredContent, finished)
+    } finally {
+      saveSettings({})
+    }
+
     assert.equal((await call('resources/list')).resources[0].uri, uri)
     const [resource] = (await call('resources/read', { uri })).contents
     assert.equal(resource.uri, uri)
     assert.equal(resource.mimeType, 'text/html;profile=mcp-app')
     assert.match(resource.text, /<script>[\s\S]*ui\/initialize[\s\S]*<\/script>/)
     assert.match(resource.text, /Go ahead with my prompt as written/)
+    assert.match(resource.text, /<button id="read"[^>]*>Read prompt<\/button>/)
     assert.doesNotMatch(resource.text, /<script[^>]+src=|<link[^>]+href=/)
   } finally {
+    saveSettings({})
     child.stdin.end()
     const [code] = await closed
     assert.equal(code, 0, errors)
@@ -482,7 +645,7 @@ test('a desktop card streams in: its reading first, then each choice, then its f
   const reader = new CardReader([process.execPath, join(here, 'fixtures', 'fake-codex.mjs')])
   try {
     const seen: CardOutput[] = []
-    const source = await reader.read('card-a', 'Build a weekly report with a CSV download.', project, (card) => seen.push(card))
+    const source = await reader.read(emptyCard('card-a', 'Build a weekly report with a CSV download.'), project, (card) => seen.push(card))
     assert.deepEqual(seen.map((card) => [Boolean(card.reading), card.rows.length]), [[true, 0], [true, 0], [true, 1], [true, 2], [true, 3]])
     assert.equal(source!.card.rows.length, 3)
 
@@ -554,7 +717,7 @@ test('setup stops on a Codex older than it needs, and a shell profile it cannot 
   const setup = (name: string, env: Record<string, string>) => {
     const home = join(sandbox, name)
     mkdirSync(join(home, '.margincue', 'bin'), { recursive: true })
-    writeFileSync(join(home, '.margincue', 'bin', 'margincue-relay'), '#!/bin/sh\necho "margincue-relay 0.1.2 protocol 1"\n', { mode: 0o755 })
+    writeFileSync(join(home, '.margincue', 'bin', 'margincue-relay'), '#!/bin/sh\necho "margincue-relay 0.1.3 protocol 1"\n', { mode: 0o755 })
     const run = spawnSync(process.execPath, ['--import', tsResolve, launcher, 'setup'], {
       input: '\ny\n', encoding: 'utf8',
       env: { PATH: `${bin}:${process.env['PATH']}`, HOME: home, USERPROFILE: home, MARGINCUE_HOME: join(home, '.margincue'), SHELL: '/bin/bash', ...env },

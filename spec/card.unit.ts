@@ -354,6 +354,64 @@ test('picked mode sends only set rows, while all sends the completed card', () =
   assert.deepEqual(submit('all').decisions, ['Export the filtered orders.', 'Cap one export at 100000 rows.'])
 })
 
+test('all asks about an untouched purge, while an explicit pick of that default binds', () => {
+  const text = 'Build a settings page for team retention, including a paginated audit chart and an export button.'
+  const reading = [
+    'read | You want a team retention settings page.', 'kind | build',
+    'row | purge | retention | one | After {}, the agent will permanently delete the team in a scheduled job | 30 days | 7 days',
+    'row | rate | limit | range | Allow {} requests per minute | 60* | 100',
+    'row | page | page size | one | Show {} per page | 50 rows | 100 rows',
+    'row | history | chart window | one | Chart the last {} | 90 days | 30 days',
+    'row | button | placement | one | Place the export button {} | beside the filters | in the menu',
+    'row | invites | invites | one | Handle expired invitations with {} | a recoverable archive | a nightly purge job',
+  ].join('\n')
+  const read = (send: 'all' | 'open' | 'picked') => {
+    const core = createCore(ASSETS)
+    core.handle(config({ send }))
+    const [req] = requests(core.handle({ type: 'draft', now: 100, text, origin: 'paste' }))
+    core.handle({ type: 'reply', now: 200, req: req!.req, text: reading, done: true })
+    return core
+  }
+  const submit = (core: ReturnType<typeof createCore>) => core.handle({ type: 'submit', now: 400, text }).find((e) => e.type === 'submit')!
+  const ordinary = ['Allow 60 requests per minute.', 'Show 50 rows per page.', 'Chart the last 90 days.',
+    'Place the export button beside the filters.', 'Handle expired invitations with a recoverable archive.']
+  const question = 'After …, the agent will permanently delete the team in a scheduled job (7 days / 30 days)?'
+  const decision = 'After 30 days, the agent will permanently delete the team in a scheduled job.'
+
+  const untouched = read('all')
+  assert.deepEqual(untouched.currentView().card!.rows.filter((row) => row.openOnSend).map((row) => row.key), ['purge'])
+  const [sketch] = requests(untouched.handle({ type: 'timer', now: 200 }))
+  assert.equal(sketch?.kind, 'sketch')
+  assert.match(sketch!.prompt, /- Chart the last 90 days\./)
+  assert.doesNotMatch(sketch!.prompt, /permanently delete/)
+  const sent = submit(untouched)
+  assert.deepEqual(sent.decisions, ordinary)
+  assert.match(sent.text, /\n\nOpen choices \(.+say what you chose/)
+  assert.ok(sent.text.endsWith(`\n- ${question}`))
+  assert.ok(!sent.text.includes(decision))
+  untouched.handle({ type: 'blank', now: 500, label: 'team retention', choice: 'keep a recoverable archive', alternatives: ['purge after 30 days'] })
+  untouched.handle({ type: 'endAmendment', now: 600 })
+  assert.deepEqual(untouched.currentView().receipt?.yours, ordinary)
+  assert.equal(untouched.currentView().receipt?.agent[0]?.value, 'keep a recoverable archive')
+
+  const picked = read('all')
+  picked.handle({ type: 'cardSet', row: picked.currentView().card!.rows[0]!.id, option: 0 })
+  assert.equal(picked.currentView().card!.rows[0]!.openOnSend, undefined)
+  const confirmed = submit(picked)
+  assert.deepEqual(confirmed.decisions, [decision, ...ordinary])
+  assert.doesNotMatch(confirmed.text, /Open choices/)
+
+  const open = read('open')
+  assert.equal(open.currentView().card!.rows[0]!.openOnSend, undefined)
+  const delegated = submit(open)
+  assert.deepEqual(delegated.decisions, [])
+  assert.ok(delegated.text.includes(question) && delegated.text.includes('Chart the last …'))
+
+  const picksOnly = read('picked')
+  assert.equal(picksOnly.currentView().card!.rows[0]!.openOnSend, undefined)
+  assert.equal(submit(picksOnly).text, text)
+})
+
 test('picked mode keeps learned picks and applicable project decisions', () => {
   const core = createCore(ASSETS)
   core.handle(config({ send: 'picked' }))
@@ -438,7 +496,7 @@ test('open mode sends set rows as decisions and asks the agent about the rest', 
 
   // A reading that has not finished asks nothing: Enter never waits, and the prompt goes as typed.
   assert.equal(submit('open', DRAFT, undefined, false).sent.text, DRAFT)
-  // `all` is unchanged: the whole card travels as decisions.
+  // Ordinary defaults in `all` travel as decisions.
   assert.equal(submit('all', DRAFT).sent.text, `${DRAFT}\n\nDecisions:\n- Export the filtered orders.\n- Cap one export at 100000 rows.`)
 })
 

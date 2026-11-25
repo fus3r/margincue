@@ -14,7 +14,7 @@ While you type:
 
 - **The reading.** One line above the prompt says what the agent will deliver and how it takes your request, including whether the cases you list are the whole job or just examples.
 - **Your names, checked against your code.** Names in the prompt are looked up in the project as you type. A name the code doesn't have ("Audit Log", when the code says `activityLogs`) is flagged before you send, with the closest names it does have, one key each.
-- **The open choices, each with a control.** Chips, sliders and pick-any rows for what the prompt leaves open. The plan you saw goes with the prompt, in a visible Decisions block: every choice, the ones you switched and the ones you kept, so the agent builds what the card showed.
+- **The open choices, each with a control.** Chips, sliders and pick-any rows for what the prompt leaves open. By default, your picks and the card's ordinary defaults go with the prompt in a visible Decisions block. A hard-to-undo default you leave untouched goes as an open question for the agent to settle.
 - **A sketch of the result.** For something new: a wireframe, a sample of the report, a results table. Change a choice and it redraws.
 
 While Claude works:
@@ -51,6 +51,7 @@ Accept the `codex` alias during setup. Open a **new terminal** (including a new 
 | `alt+↑` / `alt+↓` (or `ctrl+↑` / `ctrl+↓`) | Next row / change its value, without leaving the prompt |
 | `ctrl+x tab`, then `1`–`9`, `x`, `s`, `p` | Pick an option, drop a row, open the sketch, attach it to the prompt |
 | A number in the empty prompt during a turn | Switch Claude's focused choice right away |
+| `ctrl+]` then `c` (Codex) | Read the draft in `key` mode with relay 0.1.3 or later |
 | `ctrl+]` then `t` (Codex) | MarginCue off or on for this session |
 
 Everything on the card also takes clicks.
@@ -73,7 +74,9 @@ Your draft goes to Claude the same way your prompt does, through your own sessio
 
 ## Commands
 
-`/margincue status` shows what MarginCue knows about you and the project. `/margincue setup` asks the first-run questions again. `/margincue card|sketch|refs|blanks on|off` switches each part. The [Claude Code guide](mods/claude-code/README.md) has the rest.
+In Claude Code, `/margincue status` shows your settings, `/margincue setup` asks the first-run questions again, and `/margincue card|sketch|refs|blanks on|off` switches each part. Use `/margincue send all|picked|open` to choose what the card sends and `/margincue read auto|key` to choose when it reads. [Claude Code guide](mods/claude-code/README.md)
+
+In Codex, set `send` and `read` in `~/.margincue/settings.json`. [Codex settings and shortcuts](mods/codex/README.md#settings-and-removal)
 
 ## Development
 

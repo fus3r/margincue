@@ -35,14 +35,15 @@ Write the prompt in Codex as usual. The card sits under Codex's prompt box and f
 | Key | What it does |
 | --- | --- |
 | `alt+↑` / `alt+↓` | Next row / change its value (or click an option) |
-| `enter` | Sends the prompt with the Decisions you set |
+| `enter` | Send with the configured card choices |
 | `ctrl+g` | The full-screen card (below) |
+| `ctrl+]` then `c` | Read the draft in `key` mode (relay 0.1.3 or later) |
 | `ctrl+]` then `d` | Hide the card for this prompt |
 | `ctrl+]` then `t` | MarginCue off or on for this session |
 
 While the card has rows, `alt+↑` and `alt+↓` are the card's; otherwise they stay Codex's (edit a queued message, step back through prompts).
 
-**How it works.** `margincue codex` starts Codex in a terminal of its own, a few rows shorter than your window, and draws the card in the rows below it. It reads the prompt box from what Codex draws. It writes into Codex in two cases only: the Decisions block, pasted just before your Enter goes through, and a change you asked for while Codex works. When a popup (`@` files, `/` commands) or a dialog is open, Enter and every other key go to Codex untouched. If the relay cannot run (Windows, no binary, `MARGINCUE_RELAY=off`), Codex starts as usual and ctrl+g opens the card.
+**How it works.** `margincue codex` starts Codex in a terminal of its own, a few rows shorter than your window, and draws the card in the rows below it. It reads the prompt box from what Codex draws. It adds the card's decisions and open questions when you press Enter, and can write a change you ask for while Codex works. When a popup (`@` files, `/` commands) or a dialog is open, Enter and every other key go to Codex untouched. If the relay cannot run (Windows, no binary, `MARGINCUE_RELAY=off`), Codex starts as usual and ctrl+g opens the card.
 
 ### The full-screen card (ctrl+g)
 
@@ -51,8 +52,8 @@ Press **ctrl+g** in the prompt. Codex hands the draft to MarginCue, which shows 
 | Key | What it does |
 | --- | --- |
 | `alt+↑` / `alt+↓` (or `ctrl+↑` / `ctrl+↓`) | Next row / change its value |
-| `tab`, then `1`–`9`, `x`, `s`, `p` | Pick an option, drop a row, show the sketch, attach it to the prompt |
-| `enter` | Back to Codex with the prompt and the Decisions you set; `enter` there sends it |
+| `tab`, then `1`–`9`, `x`, `s`, `p`, `c` | Pick an option, drop a row, show the sketch, attach it, read the draft |
+| `enter` | Return to Codex with the configured card choices. Press `enter` there to send |
 | `shift+enter` (or `alt+enter`) | New line |
 | `ctrl+e` | Your own editor on the draft |
 | `esc` | Back to Codex, draft unchanged |
@@ -63,9 +64,9 @@ The card's readings use your own Codex login: each is a one-off thread on the li
 
 ## Codex in the ChatGPT desktop app
 
-When you send a prompt that starts a new task, MarginCue starts reading it at once, and Codex opens the card with a single call, then waits. The card appears straight away and fills in as the reading streams: how Codex takes your request first, then each choice it would make, as a sentence with that choice underlined. Click an underlined choice to change it. A name your project lacks gets an amber squiggle, and its menu lists the closest names in the code. The preview draws with Codex's choices and redraws when you change one.
+On a new task, Codex opens the card at Enter and waits. In `auto` mode the card fills in as MarginCue reads. In `key` mode click **Read prompt** to start. Click an underlined choice to change it. A missing name's menu lists the closest names in the code. If a name matches several files, pick the file from its menu. The preview redraws when you change a choice.
 
-**Go ahead** starts the task with the plan on the card: every choice in a `Decisions:` block (the ones you switched and the ones you kept), your note if you wrote one, and the preview as the target output once it is drawn for those choices. **Use as written** starts the task with your original prompt alone, and Codex makes those choices itself. The card then shows what was sent, and the receipt follows the work. When the tool is unavailable, Codex opens with the text card and continues.
+**Go ahead** sends the choices according to your `send` setting, along with your note and the preview if it is ready for those choices. **Use as written** sends the original prompt alone. The card shows what was sent, and the receipt follows the work. If the card tool is unavailable, `auto` falls back to a text card and `key` continues with the original prompt.
 
 ### Test from this checkout
 
@@ -85,16 +86,23 @@ Open a new Codex thread in a project and send a creation prompt such as `Build a
 
 ## The IDE extension, and the CLI without the relay
 
-In the IDE extension, or when you press Enter in the CLI without the card (Codex started without the relay, and no ctrl+g), the agent opens its reply with a text card:
-- the reading;
-- any name the code does not have;
-- the choices it settles, marked like this: ⟦label: choice | alternative⟧.
-
-The receipt follows the turn.
+The IDE extension and the CLI without either card show a text card at the start of the reply in `auto` mode. `key` skips that automatic card. The IDE extension exposes neither a pre-send card for `send` nor a shortcut to read on demand. In the CLI, use `ctrl+g`, then `tab`, then `c` for a reading without the relay. Marked choices and receipts still work in the IDE.
 
 ## Settings and removal
 
-`margincue status` shows what MarginCue knows about you. Settings live in `~/.margincue/settings.json` (`"mode": "off" | "quiet" | "auto"`, `"sketch": false`, `"blanks": false`, `"relay": false` to start Codex without the card under the prompt). `MARGINCUE_RELAY=off` does the same for one launch.
+Edit `~/.margincue/settings.json`. Start a new CLI to pick up relay settings. `margincue status` shows the current values.
+
+| Setting | What it does |
+| --- | --- |
+| `"send": "all"` (default) | Send your picks and the card's ordinary defaults as Decisions. Untouched hard-to-undo defaults go as open questions. |
+| `"send": "picked"` | Send your picks, saved choices, and the written step order. |
+| `"send": "open"` | Send the same Decisions as `picked` and pass the remaining choices as questions with unmarked options. Codex settles each one and says what it chose. |
+| `"read": "auto"` (default) | Read automatically. |
+| `"read": "key"` | Wait for `ctrl+]`, then `c` in the relay, `tab`, then `c` in the full-screen card, or **Read prompt** in the desktop card. |
+
+An unanswered file choice can travel with its candidate paths under `Where things are`. In `open` mode it also travels as a question.
+
+Other settings include `"mode": "off" | "quiet" | "auto"`, `"sketch": false`, `"blanks": false`, and `"relay": false`. `MARGINCUE_RELAY=off` skips the relay for one launch.
 
 To remove MarginCue:
 1. Run `codex plugin remove margincue@margincue`.

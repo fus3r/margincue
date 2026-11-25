@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process'
 import { closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import type { ReadingMode, SendSetting } from '../../claude-code/core/types'
 import type { UserProfile } from '../../claude-code/hooks/onboarding'
 
 export const HOME = process.env['MARGINCUE_HOME'] ?? join(homedir(), '.margincue')
@@ -21,6 +22,8 @@ export const PATHS = {
 
 export type Settings = {
   mode?: 'auto' | 'on' | 'quiet' | 'off'
+  read?: ReadingMode
+  send?: SendSetting
   sketch?: boolean
   refs?: boolean
   blanks?: boolean
@@ -60,6 +63,10 @@ export function writeJson(file: string, value: unknown): void {
 
 export const readSettings = () => readJson<Settings>(PATHS.settings, {})
 export const saveSettings = (settings: Settings) => writeJson(PATHS.settings, settings)
+
+export function sendSetting(settings: Settings): SendSetting {
+  return settings.send === 'picked' || settings.send === 'open' ? settings.send : 'all'
+}
 
 export type Learned = Record<string, { label: string; count: number }>
 
@@ -185,6 +192,7 @@ type Run = { exitCode: number; stdout: string; stderr: string }
 
 /** `$.process.run` as hooks/repo-index.ts uses it, on Node. */
 export const processEngine = {
+  env: { get: async (name: string) => process.env[name] },
   process: {
     run: (argv: string[], options: { cwd: string; timeoutMs?: number }): Promise<Run> => new Promise((resolve, reject) => {
       const child = spawn(argv[0]!, argv.slice(1), { cwd: options.cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })

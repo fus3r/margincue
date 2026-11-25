@@ -8,7 +8,8 @@ import { mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync,
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ParsedSketch } from '../../claude-code/core/card'
-import { HOME } from './store'
+import { HOME, sendSetting } from './store'
+import type { Settings } from './store'
 import type { CardState, SketchState, WidgetCard } from './widget-message'
 
 export const CARDS = join(HOME, 'codex', 'cards')
@@ -38,6 +39,14 @@ const fileOf = (id: string) => join(CARDS, `${id}.json`)
 
 export function emptyCard(id: string, prompt: string): WidgetCard {
   return { id, prompt, reading: null, rows: [], missing: [], preview: false, sketch: null }
+}
+
+export function newCardRecord(prompt: string, cwd: string, settings: Settings): CardRecord {
+  const id = randomBytes(6).toString('base64url')
+  return {
+    id, prompt, cwd, at: Date.now(), version: 1, state: settings.read === 'key' ? 'waiting' : 'reading',
+    card: { ...emptyCard(id, prompt), send: sendSetting(settings) }, sketchState: 'none', sketch: null, names: [],
+  }
 }
 
 export function readRecord(id: string): CardRecord | null {
@@ -95,24 +104,21 @@ function alive(pid: number): boolean {
 }
 
 /**
- * Creates the card and starts reading it in a detached process, so the reading runs while the agent is
- * still deciding to call the tool. Returns the card's id, or null when the reader could not start.
+ * Creates the card at Enter. An automatic reading starts in a detached process while the card opens.
  */
-export function startCard(prompt: string, cwd: string, extra: Partial<CardRecord> = {}): string | null {
-  const id = randomBytes(6).toString('base64url')
-  const record: CardRecord = {
-    id, prompt, cwd, at: Date.now(), version: 1, state: 'reading', card: emptyCard(id, prompt),
-    sketchState: 'none', sketch: null, names: [], ...extra,
-  }
+export function startCard(prompt: string, cwd: string, settings: Settings): string | null {
+  const record = newCardRecord(prompt, cwd, settings)
+  const { id } = record
   try {
     writeRecord(record)
+    pruneCards()
+    if (record.state === 'waiting') return id
     const entry = process.env['MARGINCUE_ENTRY'] ?? fileURLToPath(import.meta.url)
     const child = spawn(process.execPath, [entry, 'prefetch', id], { detached: true, stdio: 'ignore', windowsHide: true })
     child.on('error', () => updateRecord(id, (card) => { card.state = 'failed' }))
     child.unref()
     // The reader also records itself; this covers a reader that dies before it can.
     if (child.pid !== undefined) updateRecord(id, (card) => { card.pid ??= child.pid })
-    pruneCards()
     return id
   } catch {
     return null

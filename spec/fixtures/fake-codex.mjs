@@ -43,7 +43,13 @@ lines.on('line', (line) => {
     let text = `read | You want ${prompt.slice(0, 20)}.\nkind | build\n`
     if (process.env.FAKE_CODEX_PROJECT) {
       text = instructions.get(threadId).includes('Draw what the finished result will look like')
-        ? ['title | Activity report', ...prompt.split('\n').filter((line) => line.startsWith('- ')), ''].join('\n')
+        ? ['title | Activity report', 'Weekly activity', ...prompt.split('\n').filter((line) => line.startsWith('- ')), ''].join('\n')
+        : prompt.includes('Build a retention report for inactive teams') ? [
+            'read | A report on inactive teams.', 'kind | build',
+            'row | purge | retention | one | After {}, the agent will permanently delete the team in a scheduled job | 30 days | 7 days',
+            'row | week_start | week starts | one | Weeks start on {} | Monday | Sunday',
+            '',
+          ].join('\n')
         : [
             'read | A weekly activity report with CSV export.', 'kind | build',
             'row | week_start | week starts | one | Weeks start on {} | Monday* | Sunday',
