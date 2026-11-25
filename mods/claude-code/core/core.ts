@@ -32,6 +32,7 @@ import type {
   Origin,
   ParsedCue,
   Profile,
+  ReadingMode,
   ReceiptView,
   Splice,
   Timing,
@@ -202,8 +203,10 @@ export class Core {
   private amendment: { cue: CueView; submittedAt: number; expires: number } | null = null
   /** Undefined under the original conformance protocol; otherwise whether the card runs. */
   private sheetEnabled: boolean | undefined
+  private readMode: ReadingMode = 'auto'
   private sketchEnabled = true
   private refsEnabled = true
+  private pickedOnly = false
   /** The card on screen: the draft's, or the running turn's while the prompt box is empty. */
   private card: Card | null = null
   /** The running turn's card (the agent's own choices), kept while a follow-up is being written over it. */
@@ -352,6 +355,9 @@ export class Core {
       case 'learned':
         this.learned = { ...event.picks }
         break
+      case 'cardRead':
+        this.fireCard(true)
+        break
       case 'cardFocus':
         this.onCardFocus(event.dir, event.row)
         break
@@ -393,7 +399,8 @@ export class Core {
   /** The view as it stands at the last event's time, without emitting anything. */
   currentView(): View {
     const state = this.mode === undefined ? undefined : this.decisionView()
-    const card = this.cardView()
+    const canReadCard = this.cardAllowed()
+    const card = this.cardView(canReadCard)
     const cues: CueView[] = state && (state.first || this.mode === 'quiet' || this.stateDraft?.directive === 'delegate')
       ? [] : this.cues.map((cue) => viewCue(cue, this.isHeld(cue)))
     const shown = (id: string | null) => cues.some((c) => c.id === id && !c.held)
@@ -415,6 +422,7 @@ export class Core {
       ...(state && { state }),
       ...(this.expert && { expert: this.expert }),
       ...(this.amendment && { amendment: this.amendment.cue }),
+      ...(canReadCard && { canReadCard }),
       ...(card && { card }),
       ...(this.receipt && this.sheetEnabled === true && { receipt: this.receipt }),
     }
@@ -431,8 +439,14 @@ export class Core {
     const sheetEnabled = this.mode === undefined ? undefined : e.sheet
     const sheetChanged = sheetEnabled !== this.sheetEnabled
     this.sheetEnabled = sheetEnabled
+    const readMode = e.read ?? 'auto'
+    const readModeChanged = this.readMode !== readMode
+    this.readMode = readMode
     this.sketchEnabled = e.sketch !== false
     this.refsEnabled = e.refs !== false
+    const pickedOnly = e.send === 'picked'
+    if (pickedOnly !== this.pickedOnly && this.card?.sketch) this.card.sketchDue = this.now
+    this.pickedOnly = pickedOnly
     this.userLine = e.user?.trim() || undefined
     this.today = e.today
     this.depths = { ...(e.depths ?? {}) }
@@ -504,7 +518,7 @@ export class Core {
       this.focus = null
       return
     }
-    if (!wasEnabled || profileChanged || modeChanged || sheetChanged || languageChanged || sheetEnabled && depthChanged) {
+    if (!wasEnabled || profileChanged || modeChanged || sheetChanged || languageChanged || sheetEnabled && (depthChanged || readModeChanged)) {
       this.actionAt = this.now
       this.schedule('open', null)
     }
@@ -726,13 +740,12 @@ export class Core {
     const isPrompt = this.enabled && prompt
     if (this.mode !== undefined && text !== this.text) this.refreshState(text)
     const exact = text === this.text
-    const card = this.card
     // The card is the plan the person saw only if its reading is for this very prompt and finished.
-    const whole = plan && exact && card?.stage === 'draft' && card.req === null && card.readFor === text
+    const whole = plan && exact && this.hasReadingFor(text)
     const decisions = isPrompt ? this.decisions(exact, whole) : []
     const attached = attachDecisions(text, decisions)
     const added = attached.added
-    const target = isPrompt && exact ? this.targetSketch(plan) : null
+    const target = isPrompt && exact ? this.targetSketch(plan, added) : null
     const sent = target ? `${attached.text.replace(/\s+$/, '')}\n\n${target}` : attached.text
     if (this.sheetEnabled !== undefined) this.onCardSubmit(prompt, exact, amendable, added)
     if (this.mode !== undefined) {
@@ -1119,15 +1132,20 @@ export class Core {
     else this.reviewAt = at
   }
 
-  private fireCard(): void {
+  private fireCard(onDemand = false): void {
     this.reviewAt = null
     const card = this.card
     if (!card || !this.cardAllowed()) return
-    if (card.req !== null) {
+    if (card.req !== null && (!onDemand || card.reqText === this.text)) {
       card.dirty = card.reqText !== this.text
       return
     }
     if (card.readFor === this.text) return
+    if (card.req !== null) {
+      this.out.push({ type: 'cancel', req: card.req })
+      card.req = null
+      card.dirty = false
+    }
     const { system, prompt } = this.cardRequest(card)
     const key = `${this.profileName}\n${this.language}\n${this.userLine ?? ''}\n${system.length}\n${prompt}`
     const cached = this.cardCache.get(key)
@@ -1247,8 +1265,9 @@ export class Core {
       this.metric('card-reply', { req, card: card.id, ok, ms: this.now - card.reqAt })
     }
     card.buffer = ''
-    if (card.dirty || ok && card.readFor !== this.text) {
-      card.dirty = false
+    const dirty = card.dirty
+    card.dirty = false
+    if (this.readMode === 'auto' && (dirty || ok && card.readFor !== this.text)) {
       if (this.now - this.textAt >= CARD_IDLE_MS) this.fireCard()
       else this.reviewAt = this.textAt + CARD_IDLE_MS
     }
@@ -1299,7 +1318,7 @@ export class Core {
     const habit = this.learned[row.key]
     if (!habit || habit.count < LEARNED_AFTER || row.type === 'many') return row
     const at = row.options.findIndex((option) => normalize(option) === normalize(habit.label))
-    return at === -1 || sameSelection([at], row.defaults) ? row : { ...row, learned: [at] }
+    return at === -1 ? row : { ...row, learned: [at] }
   }
 
   private rowText(row: CardRow, selected: number[]): string {
@@ -1373,15 +1392,17 @@ export class Core {
     if (card.stage === 'after') this.fillFollowUp()
   }
 
-  /**
-   * The card's choices that travel with the prompt. What the person switched always does. With `whole`, the
-   * choices they saw and left as they were travel too: the card showed them as the plan, so the agent must not
-   * decide them again. A name the code lacks has no default, so only a pick of it travels.
-   */
+  private hasReadingFor(text: string): boolean {
+    const card = this.card
+    return card?.stage === 'draft' && card.req === null && card.readFor === text
+  }
+
+  /** A finished reading adds learned picks, and adds suggested defaults in `all` mode. */
   private cardDecisions(whole = false): Decision[] {
     const card = this.card!
     const out: Decision[] = card.rows
-      .filter((row) => row.picked !== null || whole && row.origin !== 'repo' && (row.learned ?? row.defaults).length > 0)
+      .filter((row) => row.picked !== null || whole && row.origin !== 'repo' &&
+        (row.learned !== undefined || !this.pickedOnly && row.defaults.length > 0))
       .map((row) => ({ statement: row.statement, option: row.said ?? this.rowText(row, row.picked ?? row.learned ?? row.defaults) }))
     if (this.refsEnabled) {
       // Only what the draft wrote as code (a path, a file, an identifier, backticks): a product name or a
@@ -1392,29 +1413,33 @@ export class Core {
     return out
   }
 
-  private cardView(): CardView | undefined {
+  private cardView(canReadCard: boolean): CardView | undefined {
     const card = this.card
     if (!card || !this.enabled || this.sheetEnabled !== true) return
     const draft = card.stage === 'draft'
     const rows = card.rows.map((row) => this.rowView(row, draft))
     const reading = card.req !== null
-    if (draft ? !rows.length && !card.read && !reading && !this.mentions.length && !card.error : !rows.length) return
+    const awaitingRead = canReadCard && this.readMode === 'key' && card.readFor !== this.text && (!reading || card.reqText !== this.text)
+    if (draft ? !rows.length && !card.read && !reading && !this.mentions.length && !card.error && !awaitingRead : !rows.length) return
     const sketch = card.sketch && (card.sketch.lines.length || card.sketch.req !== null) ? card.sketch : null
     return {
       id: card.id, stage: card.stage, reading, error: card.error, read: card.read, kind: card.kind, rows,
+      ...(awaitingRead && { awaitingRead }),
       focus: card.focus, mentions: draft ? this.resolvedMentions(card) : [], lenses: draft ? this.lensProfiles() : [],
       ...(sketch && { sketch: { title: sketch.title, lines: sketch.lines, drawing: sketch.req !== null, pinned: sketch.pinned, open: sketch.open } }),
       language: this.wordingLanguage(), collapsed: this.mode === 'quiet',
+      ...(draft && this.pickedOnly && { pickedOnly: true as const }),
     }
   }
 
   private rowView(row: CardRow, draft: boolean): CardRowView {
     const span = draft && row.anchor ? resolveAnchor(this.text, row.anchor) : null
+    const learned = row.learned && (this.pickedOnly || !sameSelection(row.learned, row.defaults))
     return {
       id: row.id, key: row.key, label: row.label, type: row.type, statement: row.statement, options: [...row.options],
       defaults: [...row.defaults], selected: [...(row.picked ?? row.learned ?? row.defaults)], chosen: row.picked !== null,
       origin: row.origin, ...(row.unit && { unit: row.unit }), ...(row.lens && { lens: row.lens }),
-      ...(row.learned && row.picked === null && { learned: true as const }),
+      ...(learned && row.picked === null && { learned: true as const }),
       ...(span && { start: span.start, end: span.end }),
     }
   }
@@ -1462,9 +1487,11 @@ export class Core {
     this.metric('sketch-requested', { req, card: card.id })
   }
 
-  private sketchPrompt(card: Card): string {
-    const choices = card.rows.filter((row) => row.origin !== 'repo' || row.picked !== null).map((row) =>
-      decisionLine({ statement: row.statement, option: this.rowText(row, row.picked ?? row.learned ?? row.defaults) }))
+  private sketchPrompt(card: Card, added?: string[]): string {
+    const choices = this.pickedOnly
+      ? added ?? attachDecisions(this.text, this.decisions(true, this.hasReadingFor(this.text))).added
+      : card.rows.filter((row) => row.origin !== 'repo' || row.picked !== null).map((row) =>
+        decisionLine({ statement: row.statement, option: this.rowText(row, row.picked ?? row.learned ?? row.defaults) }))
     const found = this.mentions.filter((m) => m.status === 'found').slice(0, 8)
     return buildSketchPrompt({ draft: this.text, read: card.read, choices, names: found.map((m) => m.match ?? m.phrase), today: this.today })
   }
@@ -1489,11 +1516,11 @@ export class Core {
    * did not leave it out, and it was drawn for the very choices being sent: a preview of other choices would
    * contradict them.
    */
-  private targetSketch(plan = true): string | null {
+  private targetSketch(plan: boolean, added: string[]): string | null {
     const card = this.card?.stage === 'draft' ? this.card : null
     const sketch = card?.sketch
     if (!plan || !card || !sketch?.lines.length || !sketch.pinned) return null
-    if (sketch.req !== null || sketch.key !== `${this.language}\n${this.sketchPrompt(card)}`) return null
+    if (sketch.req !== null || sketch.key !== `${this.language}\n${this.sketchPrompt(card, added)}`) return null
     // The box as the card drew it: straight, though the model drew it unevenly.
     return `Target output, as sketched (${sketch.title}):\n\`\`\`text\n${tidySketch(sketch.lines).join('\n')}\n\`\`\``
   }
@@ -1682,7 +1709,7 @@ export class Core {
   private schedule(origin: Origin, splice: Splice | null): void {
     if (!this.enabled) return
     if (this.sheetEnabled !== undefined) {
-      if (this.cardAllowed()) this.scheduleCard(origin, splice)
+      if (this.readMode === 'auto' && this.cardAllowed()) this.scheduleCard(origin, splice)
       else this.reviewAt = null
       return
     }

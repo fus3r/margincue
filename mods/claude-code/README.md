@@ -22,7 +22,7 @@ The first time MarginCue starts in an interactive session, with the prompt still
 
 ## What you see
 
-**The reading.** Above the prompt, one line starting "You want…" says how the agent will take your request: what it will deliver and its scope, including whether the cases you list are the whole job or examples. It appears on any prompt of six words or more, is refreshed at sentence ends while you type, and shows ⟳ while a newer reading is on its way.
+**The reading.** Above the prompt, one line starting "You want…" says how the agent will take your request: what it will deliver and its scope, including whether the cases you list are the whole job or examples. It appears on prompts of six words or more, refreshes at sentence ends and pauses by default, and shows ⟳ while a newer reading is on its way.
 
 **Names in the code.** As you type, names in your prompt are looked up in the project (git or ripgrep, collected once in the background). Found names are underlined in blue; a name the code does not have is underlined in yellow and, when the code has close names, becomes a row asking which one you mean. On Enter, the files behind what you wrote as code (a path, a file name, an identifier, something in backticks) go with the prompt (`Where things are: …`) so the agent skips its search; product names and plain words are never sent as places.
 
@@ -43,6 +43,7 @@ The first time MarginCue starts in an interactive session, with the prompt still
 | `ctrl+x tab`, then `1`–`9` | Pick an option of the focused row (a pick-any row toggles it) |
 | `ctrl+x tab`, then `x` | Drop the focused row; a newer reading will not bring it back |
 | `ctrl+x tab`, then `s` / `p` | Open or close the sketch / attach it to the prompt |
+| `ctrl+x tab`, then `c` | Read the current draft |
 | `ctrl+x tab`, then `r` / `d` | Expert review of the draft / change the depth |
 | A number in the empty composer during a turn | Switch the focused agent choice at once |
 
@@ -50,7 +51,7 @@ Buttons also take clicks: a chip, a step of a slider, `+N` to open a row, the sk
 
 ## Settings
 
-`/margincue mode auto|on|quiet|off`: quiet keeps the card to one line with its open count; off stops everything. `/margincue card on|off` switches the card (the reading, rows and sketch). `/margincue sketch on|off`, `/margincue refs on|off` and `/margincue blanks on|off` switch the sketch, the `Where things are` line, and the agent's marked choices (from the next session). `/margincue language en|auto` (English by default, or the draft's language). `/margincue profile <name>`, `/margincue depth essentials|standard|research`, `/margincue review [profile]` for the on-demand expert review.
+`/margincue mode auto|on|quiet|off`: quiet keeps the card to one line with its open count; off stops everything. `/margincue card on|off` switches the card (the reading, rows and sketch). `/margincue send all|picked` sends the whole card by default or just your picks and saved decisions in `picked` mode. `/margincue read auto|key` reads as you type (default) or waits for `ctrl+x tab`, then `c` in the terminal. `/margincue sketch on|off`, `/margincue refs on|off` and `/margincue blanks on|off` switch the sketch, the `Where things are` line, and the agent's marked choices (from the next session). `/margincue language en|auto` (English by default, or the draft's language). `/margincue profile <name>`, `/margincue depth essentials|standard|research`, `/margincue review [profile]` for the on-demand expert review.
 
 Standing decisions are unchanged: `/margincue state`, `/margincue why <slot>` and `/margincue forget <slot> [scope]`. Project decisions live in `.margincue/decisions.json`; learned picks stay in the mod's own store, never in your repository. `/margincue log <path>` writes a local event log without draft text, and `/margincue ab on|off|status` runs the card and control arms.
 

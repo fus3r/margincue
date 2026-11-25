@@ -2156,8 +2156,10 @@ var Core = class {
   amendment = null;
   /** Undefined under the original conformance protocol; otherwise whether the card runs. */
   sheetEnabled;
+  readMode = "auto";
   sketchEnabled = true;
   refsEnabled = true;
+  pickedOnly = false;
   /** The card on screen: the draft's, or the running turn's while the prompt box is empty. */
   card = null;
   /** The running turn's card (the agent's own choices), kept while a follow-up is being written over it. */
@@ -2301,6 +2303,9 @@ var Core = class {
       case "learned":
         this.learned = { ...event.picks };
         break;
+      case "cardRead":
+        this.fireCard(true);
+        break;
       case "cardFocus":
         this.onCardFocus(event.dir, event.row);
         break;
@@ -2342,7 +2347,8 @@ var Core = class {
   /** The view as it stands at the last event's time, without emitting anything. */
   currentView() {
     const state = this.mode === void 0 ? void 0 : this.decisionView();
-    const card = this.cardView();
+    const canReadCard = this.cardAllowed();
+    const card = this.cardView(canReadCard);
     const cues = state && (state.first || this.mode === "quiet" || this.stateDraft?.directive === "delegate") ? [] : this.cues.map((cue) => viewCue(cue, this.isHeld(cue)));
     const shown = (id) => cues.some((c) => c.id === id && !c.held);
     let focus = this.focus;
@@ -2363,6 +2369,7 @@ var Core = class {
       ...state && { state },
       ...this.expert && { expert: this.expert },
       ...this.amendment && { amendment: this.amendment.cue },
+      ...canReadCard && { canReadCard },
       ...card && { card },
       ...this.receipt && this.sheetEnabled === true && { receipt: this.receipt }
     };
@@ -2377,8 +2384,14 @@ var Core = class {
     const sheetEnabled = this.mode === void 0 ? void 0 : e.sheet;
     const sheetChanged = sheetEnabled !== this.sheetEnabled;
     this.sheetEnabled = sheetEnabled;
+    const readMode = e.read ?? "auto";
+    const readModeChanged = this.readMode !== readMode;
+    this.readMode = readMode;
     this.sketchEnabled = e.sketch !== false;
     this.refsEnabled = e.refs !== false;
+    const pickedOnly = e.send === "picked";
+    if (pickedOnly !== this.pickedOnly && this.card?.sketch) this.card.sketchDue = this.now;
+    this.pickedOnly = pickedOnly;
     this.userLine = e.user?.trim() || void 0;
     this.today = e.today;
     this.depths = { ...e.depths ?? {} };
@@ -2446,7 +2459,7 @@ var Core = class {
       this.focus = null;
       return;
     }
-    if (!wasEnabled || profileChanged || modeChanged || sheetChanged || languageChanged || sheetEnabled && depthChanged) {
+    if (!wasEnabled || profileChanged || modeChanged || sheetChanged || languageChanged || sheetEnabled && (depthChanged || readModeChanged)) {
       this.actionAt = this.now;
       this.schedule("open", null);
     }
@@ -2651,12 +2664,11 @@ var Core = class {
     const isPrompt = this.enabled && prompt;
     if (this.mode !== void 0 && text2 !== this.text) this.refreshState(text2);
     const exact = text2 === this.text;
-    const card = this.card;
-    const whole = plan && exact && card?.stage === "draft" && card.req === null && card.readFor === text2;
+    const whole = plan && exact && this.hasReadingFor(text2);
     const decisions = isPrompt ? this.decisions(exact, whole) : [];
     const attached = attachDecisions(text2, decisions);
     const added = attached.added;
-    const target = isPrompt && exact ? this.targetSketch(plan) : null;
+    const target = isPrompt && exact ? this.targetSketch(plan, added) : null;
     const sent = target ? `${attached.text.replace(/\s+$/, "")}
 
 ${target}` : attached.text;
@@ -3062,15 +3074,20 @@ ${expertPrompt(this.expertCatalog, slots)}`,
     if (at <= this.now) this.fireCard();
     else this.reviewAt = at;
   }
-  fireCard() {
+  fireCard(onDemand = false) {
     this.reviewAt = null;
     const card = this.card;
     if (!card || !this.cardAllowed()) return;
-    if (card.req !== null) {
+    if (card.req !== null && (!onDemand || card.reqText === this.text)) {
       card.dirty = card.reqText !== this.text;
       return;
     }
     if (card.readFor === this.text) return;
+    if (card.req !== null) {
+      this.out.push({ type: "cancel", req: card.req });
+      card.req = null;
+      card.dirty = false;
+    }
     const { system, prompt } = this.cardRequest(card);
     const key = `${this.profileName}
 ${this.language}
@@ -3187,8 +3204,9 @@ ${lines.join("\n")}` : "";
       this.metric("card-reply", { req, card: card.id, ok, ms: this.now - card.reqAt });
     }
     card.buffer = "";
-    if (card.dirty || ok && card.readFor !== this.text) {
-      card.dirty = false;
+    const dirty = card.dirty;
+    card.dirty = false;
+    if (this.readMode === "auto" && (dirty || ok && card.readFor !== this.text)) {
       if (this.now - this.textAt >= CARD_IDLE_MS) this.fireCard();
       else this.reviewAt = this.textAt + CARD_IDLE_MS;
     }
@@ -3239,7 +3257,7 @@ ${lines.join("\n")}` : "";
     const habit = this.learned[row.key];
     if (!habit || habit.count < LEARNED_AFTER || row.type === "many") return row;
     const at = row.options.findIndex((option) => normalize(option) === normalize(habit.label));
-    return at === -1 || sameSelection([at], row.defaults) ? row : { ...row, learned: [at] };
+    return at === -1 ? row : { ...row, learned: [at] };
   }
   rowText(row, selected) {
     if (row.hints) {
@@ -3317,27 +3335,28 @@ ${lines.join("\n")}` : "";
     this.metric("card-dismissed", { card: card.id, row: row.key, origin: row.origin, stage: card.stage });
     if (card.stage === "after") this.fillFollowUp();
   }
-  /**
-   * The card's choices that travel with the prompt. What the person switched always does. With `whole`, the
-   * choices they saw and left as they were travel too: the card showed them as the plan, so the agent must not
-   * decide them again. A name the code lacks has no default, so only a pick of it travels.
-   */
+  hasReadingFor(text2) {
+    const card = this.card;
+    return card?.stage === "draft" && card.req === null && card.readFor === text2;
+  }
+  /** A finished reading adds learned picks, and adds suggested defaults in `all` mode. */
   cardDecisions(whole = false) {
     const card = this.card;
-    const out = card.rows.filter((row) => row.picked !== null || whole && row.origin !== "repo" && (row.learned ?? row.defaults).length > 0).map((row) => ({ statement: row.statement, option: row.said ?? this.rowText(row, row.picked ?? row.learned ?? row.defaults) }));
+    const out = card.rows.filter((row) => row.picked !== null || whole && row.origin !== "repo" && (row.learned !== void 0 || !this.pickedOnly && row.defaults.length > 0)).map((row) => ({ statement: row.statement, option: row.said ?? this.rowText(row, row.picked ?? row.learned ?? row.defaults) }));
     if (this.refsEnabled) {
       const refs = this.mentions.filter((m) => m.status === "found" && m.files.length > 0 && m.as === "code").slice(0, REFS_MAX);
       if (refs.length) out.push({ statement: "Where things are: {}", option: refs.map((m) => `${m.phrase} (${m.files[0]})`).join(", ") });
     }
     return out;
   }
-  cardView() {
+  cardView(canReadCard) {
     const card = this.card;
     if (!card || !this.enabled || this.sheetEnabled !== true) return;
     const draft = card.stage === "draft";
     const rows = card.rows.map((row) => this.rowView(row, draft));
     const reading = card.req !== null;
-    if (draft ? !rows.length && !card.read && !reading && !this.mentions.length && !card.error : !rows.length) return;
+    const awaitingRead = canReadCard && this.readMode === "key" && card.readFor !== this.text && (!reading || card.reqText !== this.text);
+    if (draft ? !rows.length && !card.read && !reading && !this.mentions.length && !card.error && !awaitingRead : !rows.length) return;
     const sketch = card.sketch && (card.sketch.lines.length || card.sketch.req !== null) ? card.sketch : null;
     return {
       id: card.id,
@@ -3347,16 +3366,19 @@ ${lines.join("\n")}` : "";
       read: card.read,
       kind: card.kind,
       rows,
+      ...awaitingRead && { awaitingRead },
       focus: card.focus,
       mentions: draft ? this.resolvedMentions(card) : [],
       lenses: draft ? this.lensProfiles() : [],
       ...sketch && { sketch: { title: sketch.title, lines: sketch.lines, drawing: sketch.req !== null, pinned: sketch.pinned, open: sketch.open } },
       language: this.wordingLanguage(),
-      collapsed: this.mode === "quiet"
+      collapsed: this.mode === "quiet",
+      ...draft && this.pickedOnly && { pickedOnly: true }
     };
   }
   rowView(row, draft) {
     const span = draft && row.anchor ? resolveAnchor(this.text, row.anchor) : null;
+    const learned = row.learned && (this.pickedOnly || !sameSelection(row.learned, row.defaults));
     return {
       id: row.id,
       key: row.key,
@@ -3370,7 +3392,7 @@ ${lines.join("\n")}` : "";
       origin: row.origin,
       ...row.unit && { unit: row.unit },
       ...row.lens && { lens: row.lens },
-      ...row.learned && row.picked === null && { learned: true },
+      ...learned && row.picked === null && { learned: true },
       ...span && { start: span.start, end: span.end }
     };
   }
@@ -3419,8 +3441,8 @@ ${prompt}`;
     });
     this.metric("sketch-requested", { req, card: card.id });
   }
-  sketchPrompt(card) {
-    const choices = card.rows.filter((row) => row.origin !== "repo" || row.picked !== null).map((row) => decisionLine({ statement: row.statement, option: this.rowText(row, row.picked ?? row.learned ?? row.defaults) }));
+  sketchPrompt(card, added) {
+    const choices = this.pickedOnly ? added ?? attachDecisions(this.text, this.decisions(true, this.hasReadingFor(this.text))).added : card.rows.filter((row) => row.origin !== "repo" || row.picked !== null).map((row) => decisionLine({ statement: row.statement, option: this.rowText(row, row.picked ?? row.learned ?? row.defaults) }));
     const found = this.mentions.filter((m) => m.status === "found").slice(0, 8);
     return buildSketchPrompt({ draft: this.text, read: card.read, choices, names: found.map((m) => m.match ?? m.phrase), today: this.today });
   }
@@ -3443,12 +3465,12 @@ ${prompt}`;
    * did not leave it out, and it was drawn for the very choices being sent: a preview of other choices would
    * contradict them.
    */
-  targetSketch(plan = true) {
+  targetSketch(plan, added) {
     const card = this.card?.stage === "draft" ? this.card : null;
     const sketch = card?.sketch;
     if (!plan || !card || !sketch?.lines.length || !sketch.pinned) return null;
     if (sketch.req !== null || sketch.key !== `${this.language}
-${this.sketchPrompt(card)}`) return null;
+${this.sketchPrompt(card, added)}`) return null;
     return `Target output, as sketched (${sketch.title}):
 \`\`\`text
 ${tidySketch(sketch.lines).join("\n")}
@@ -3643,7 +3665,7 @@ ${tidySketch(sketch.lines).join("\n")}
   schedule(origin, splice) {
     if (!this.enabled) return;
     if (this.sheetEnabled !== void 0) {
-      if (this.cardAllowed()) this.scheduleCard(origin, splice);
+      if (this.readMode === "auto" && this.cardAllowed()) this.scheduleCard(origin, splice);
       else this.reviewAt = null;
       return;
     }
@@ -9363,6 +9385,7 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
 // ../claude-code/hooks/segments.ts
 var CHORD_SWAP = "app:diffFileListDown";
 var CHORD_NEXT = "app:diffFileListUp";
+var CARD_READ_KEY = "c";
 var DARK = {
   tag: { bg: "suggestion", color: "inverseText", bold: true },
   accent: "suggestion",
@@ -9447,6 +9470,7 @@ var EN2 = {
   preview: "preview",
   reading: "reading your draft\u2026",
   noReading: "no reading this time",
+  readHint: `ctrl+x tab, ${CARD_READ_KEY} to read`,
   drawing: "drawing\u2026",
   attach: "attach to prompt",
   attached: "\u2713 goes with the prompt",
@@ -9454,6 +9478,7 @@ var EN2 = {
   nextRow: "next row",
   set: "set",
   open: "open",
+  toAgent: "left to agent",
   was: "was",
   more: (n) => `+${n} more row${n === 1 ? "" : "s"} \xB7 alt\u2191`,
   turn: (n) => [`The agent made ${n} choice${n === 1 ? "" : "s"} for you.`, "Switch one: it adapts at its next step."],
@@ -9466,6 +9491,7 @@ var FR2 = {
   preview: "aper\xE7u",
   reading: "lecture du brouillon\u2026",
   noReading: "pas de lecture cette fois",
+  readHint: `ctrl+x tab, ${CARD_READ_KEY} pour lire`,
   drawing: "dessin\u2026",
   attach: "joindre au prompt",
   attached: "\u2713 joint au prompt",
@@ -9473,6 +9499,7 @@ var FR2 = {
   nextRow: "ligne suivante",
   set: "choisis",
   open: "en attente",
+  toAgent: "\xE0 d\xE9cider",
   was: "avant",
   more: (n) => `+${n} ligne${n === 1 ? "" : "s"} \xB7 alt\u2191`,
   turn: (n) => [`L'agent a fait ${n} choix pour vous.`, "Changez-en un : il en tient compte \xE0 son \xE9tape suivante."],
@@ -9482,9 +9509,10 @@ var FR2 = {
 };
 function layoutCard(card, columns, budget, options2) {
   const P3 = options2.palette ?? DARK;
-  const words = card.language === "fr" ? FR2 : EN2;
+  const labels = card.language === "fr" ? FR2 : EN2;
+  const words = card.pickedOnly ? { ...labels, open: labels.toAgent } : labels;
   const hidden = hiddenButtons(card, options2.chords);
-  const open = card.rows.filter((row) => !row.chosen).length;
+  const open = card.rows.filter((row) => !row.chosen && !(card.pickedOnly && row.learned)).length;
   if (card.collapsed) return [collapsed(card, columns, P3, words, open, hidden)];
   const g = grid(card, columns, words);
   const right = status(card, words, open, columns >= 110 && card.stage === "draft" ? options2.extra : [], P3);
@@ -9536,7 +9564,8 @@ function header(card, g, right, P3, words, most) {
   const lead = [text(" ".repeat(MARK + g.label - cells(TAG))), text(TAG, P3.tag), text(GAP)];
   const room = g.columns - g.content;
   const rightWidth = segmentsWidth(right);
-  const first = Math.max(12, room - (rightWidth ? rightWidth + 3 : 0));
+  const hint = card.awaitingRead ? words.readHint : "";
+  const first = Math.max(12, room - (rightWidth ? rightWidth + 3 : 0), Math.min(room, cells(hint)));
   const indent = text(" ".repeat(g.content));
   if (card.stage !== "draft") {
     const [head, tail] = card.stage === "turn" ? words.turn(card.rows.length) : words.after(card.rows.length);
@@ -9545,9 +9574,10 @@ function header(card, g, right, P3, words, most) {
     const top = withRight([...lead, text(truncate(head, first), { bold: true })], right, g.columns);
     return most > 1 ? [top, [indent, text(truncate(tail, room), { dim: true })]] : [top];
   }
-  if (card.read) {
-    const style = card.reading ? { dim: true } : void 0;
-    const lines = wrapLines(card.read, first, room, most);
+  if (card.read || hint) {
+    const style = card.reading || hint ? { dim: true } : void 0;
+    const read = card.read ?? (card.error ? words.noReading : "");
+    const lines = wrapLines([hint, read].filter(Boolean).join(" \xB7 "), first, room, most);
     const out = lines.map((line, i) => i === 0 ? [...lead, text(line, style)] : [indent, text(line, style)]);
     out[0] = withRight(out[0], right, g.columns);
     return out;
@@ -9574,8 +9604,10 @@ function withRight(left, right, columns) {
 }
 function collapsed(card, columns, P3, words, open, hidden) {
   const lead = [text(" "), text(TAG, P3.tag), text(GAP)];
-  const tail = card.reading && !card.read ? words.reading : `${open} ${words.open}${card.rows.length ? " \xB7 alt\u2191 alt\u2193" : ""}`;
-  const room = columns - segmentsWidth(lead) - cells(tail) - 3;
+  const width = columns - segmentsWidth(lead);
+  const count2 = `${open} ${words.open}`;
+  const tail = card.awaitingRead ? truncate(`${words.readHint} \xB7 ${count2}`, width) : card.reading && !card.read ? words.reading : `${count2}${card.rows.length ? " \xB7 alt\u2191 alt\u2193" : ""}`;
+  const room = width - cells(tail) - 3;
   const read = card.read && room >= 12 ? truncate(card.read, room) : "";
   return [...lead, ...read ? [text(read)] : [], text(`${read ? " \xB7 " : ""}${tail}`, { dim: true }), ...hidden];
 }
@@ -10148,7 +10180,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.18";
+var VERSION = "0.4.19";
 var MIN_CODEX = "0.171";
 function tooOld(output2) {
   const match = /codex-cli (\d+)\.(\d+)\.(\d+)/.exec(output2);

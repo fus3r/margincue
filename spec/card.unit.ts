@@ -135,6 +135,11 @@ test('references cite only what the draft wrote as code; common words and bare f
   core.handle({ type: 'draft', now: 100, text, origin: 'paste' })
   const sent = core.handle({ type: 'submit', now: 200, text }).find((e): e is Extract<Effect, { type: 'submit' }> => e.type === 'submit')!
   assert.equal(sent.text, `${text}\n\nDecisions:\n- Where things are: writeCsv (src/export/csv_writer.ts).`)
+  core.handle(config({ send: 'picked' }))
+  core.handle({ type: 'draft', now: 300, text, origin: 'paste' })
+  // Where things are comes from the repo index, not from the reading's guesses: it travels in picked mode too.
+  assert.equal(core.handle({ type: 'submit', now: 400, text }).find((e) => e.type === 'submit')?.text,
+    `${text}\n\nDecisions:\n- Where things are: writeCsv (src/export/csv_writer.ts).`)
 })
 
 test('options travel whole: a long option is kept as written, a too-long one is left out', () => {
@@ -273,6 +278,86 @@ test('the card reads a long draft at once at a sentence end and attaches only wh
     { type: 'learn', key: 'export_rows', label: 'all orders' },
     { type: 'learn', key: 'export_limit', label: '1000 rows' },
   ])
+})
+
+test('picked mode sends only set rows, while all sends the completed card', () => {
+  const submit = (send: 'all' | 'picked', option?: number) => {
+    const core = createCore(ASSETS)
+    core.handle(config({ send }))
+    const [req] = requests(core.handle({ type: 'draft', now: 100, text: DRAFT, origin: 'paste' }))
+    const view = lastView(core.handle({ type: 'reply', now: 200, req: req!.req, text: READING, done: true }))!
+    if (option !== undefined) core.handle({ type: 'cardSet', now: 300, row: view.card!.rows[0]!.id, option })
+    return core.handle({ type: 'submit', now: 400, text: DRAFT }).find((e) => e.type === 'submit')!
+  }
+  assert.equal(submit('picked').text, DRAFT)
+  // Choosing the suggested value explicitly makes it the person's pick.
+  assert.deepEqual(submit('picked', 0).decisions, ['Export the filtered orders.'])
+  assert.deepEqual(submit('all').decisions, ['Export the filtered orders.', 'Cap one export at 100000 rows.'])
+})
+
+test('picked mode keeps learned picks and applicable project decisions', () => {
+  const core = createCore(ASSETS)
+  core.handle(config({ send: 'picked' }))
+  core.handle({ type: 'learned', picks: { export_rows: { label: 'the filtered orders', count: 2 } } })
+  core.handle({ type: 'loadState', now: 0, state: {
+    model: null, values: [{ slot: 'cleanup_reach', option: 'unused_only', scope: 'project', setAt: 0 }],
+  } })
+  const text = `${DRAFT} Delete the old test databases.`
+  const [req] = requests(core.handle({ type: 'draft', now: 100, text, origin: 'paste' }))
+  core.handle({ type: 'reply', now: 200, req: req!.req, text: READING, done: true })
+  const sent = core.handle({ type: 'submit', now: 300, text }).find((e) => e.type === 'submit')!
+  assert.deepEqual(sent.decisions, ['Export the filtered orders.', 'Deletion targets unreferenced matches only.'])
+})
+
+test('key mode reads only on request and sends only set choices after an edit', () => {
+  const core = createCore(ASSETS)
+  core.handle(config({ read: 'key' }))
+  const typed = core.handle({ type: 'draft', now: 100, text: DRAFT.slice(0, -1), origin: 'type' })
+  assert.equal(lastView(typed)?.card?.awaitingRead, true)
+  assert.ok(!typed.some((e) => e.type === 'request' || e.type === 'timer'))
+  assert.deepEqual(requests(core.handle({ type: 'timer', now: 1100 })), [])
+  assert.deepEqual(requests(core.handle({ type: 'draft', now: 1200, text: DRAFT, origin: 'type' })), [])
+
+  const [req] = requests(core.handle({ type: 'cardRead', now: 1201 }))
+  assert.equal(req?.kind, 'card')
+  assert.ok(req!.prompt.includes(`<<<\n${DRAFT}\n>>>`))
+  assert.deepEqual(requests(core.handle({ type: 'cardRead', now: 1202 })), [])
+  const read = lastView(core.handle({ type: 'reply', now: 1300, req: req!.req, text: READING, done: true }))?.card
+  assert.ok(read?.read)
+  assert.equal(read.awaitingRead, undefined)
+  assert.deepEqual(requests(core.handle({ type: 'cardRead', now: 1400 })), [])
+
+  core.handle({ type: 'cardSet', now: 1500, row: read.rows[0]!.id, option: 1 })
+  const text = `${DRAFT} Include a download button.`
+  const edited = core.handle({ type: 'draft', now: 1600, text, origin: 'paste' })
+  assert.deepEqual(requests(edited), [])
+  assert.equal(lastView(edited)?.card?.read, read.read)
+  assert.equal(lastView(edited)?.card?.awaitingRead, true)
+  const sent = core.handle({ type: 'submit', now: 1700, text })
+  assert.deepEqual(requests(sent), [])
+  assert.deepEqual(sent.find((e) => e.type === 'submit')?.decisions, ['Export all orders.'])
+})
+
+test('switching to key clears the idle timer and only a key can replace an older reading', () => {
+  const core = createCore(ASSETS)
+  core.handle(config())
+  const text = DRAFT.slice(0, -1)
+  const typed = core.handle({ type: 'draft', now: 100, text, origin: 'type' })
+  assert.equal(typed.find((e) => e.type === 'timer')?.at, 1000)
+  assert.equal(core.handle(config({ read: 'key' })).find((e) => e.type === 'timer')?.at, null)
+  assert.deepEqual(requests(core.handle({ type: 'timer', now: 1000 })), [])
+
+  const [first] = requests(core.handle({ type: 'cardRead', now: 1100 }))
+  core.handle({ type: 'draft', now: 1200, text: DRAFT, origin: 'type' })
+  const effects = core.handle({ type: 'cardRead', now: 1201 })
+  assert.equal(effects.find((e) => e.type === 'cancel')?.req, first!.req)
+  const [second] = requests(effects)
+  assert.ok(second!.prompt.includes(`<<<\n${DRAFT}\n>>>`))
+
+  core.handle({ type: 'draft', now: 1300, text: `${DRAFT} Make it fast.`, origin: 'type' })
+  const completed = core.handle({ type: 'reply', now: 2300, req: second!.req, text: READING, done: true })
+  assert.ok(!completed.some((e) => e.type === 'request' || e.type === 'timer'))
+  assert.equal(lastView(completed)?.card?.awaitingRead, true)
 })
 
 test('during a turn, switching a marked choice sends one amendment after the last press', () => {

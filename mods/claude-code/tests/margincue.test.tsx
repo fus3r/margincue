@@ -197,6 +197,44 @@ test('the card reads a draft, shows typed controls, and sends its whole plan wit
   expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.\n- Run it in the browser.\n- Write 710 rows per batch.`)
 })
 
+test('the read setting persists and the band shortcut reads the draft in either mode', async ($, on) => {
+  const { clock, calls, store } = world(on, replies())
+  store.set('settings', { sketch: false })
+  const start = () => $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
+  await start()
+  expect((await command('status')).text).toContain('read auto')
+  await composer($).edit(edit('', DRAFT))
+  const auto = await $.ui.mount(WIDE)
+  expect((await auto.find({ type: 'Button', key: 'card-read' }))?.props.hotkey).toBe('c')
+  expect(calls.length).toBe(0)
+  await auto.press({ key: 'card-read' })
+  await clock.settle()
+  expect(calls.length).toBe(1)
+  await auto.unmount()
+
+  await command('read key')
+  expect(store.get('settings')).toMatchObject({ read: 'key' })
+  await start()
+  await composer($).edit(edit(DRAFT, '.'))
+  await clock.advance(1000)
+  expect(calls.length).toBe(1)
+  const ui = await $.ui.mount(WIDE)
+  expect(await ui.find({ type: 'Text', text: /ctrl\+x tab, c to read/ })).toBeDefined()
+  expect((await ui.find({ type: 'Button', key: 'card-read' }))?.props.hotkey).toBe('c')
+  await ui.press({ key: 'card-read' })
+  await clock.settle()
+  expect(calls[1]).toContain(`<<<\n${DRAFT}.\n>>>`)
+  expect(await ui.find({ type: 'Text', text: /ctrl\+x tab, c to read/ })).toBeUndefined()
+  await ui.press({ key: 'card-read' })
+  await clock.settle()
+  expect(calls.length).toBe(2)
+  await ui.unmount()
+
+  await command('read auto')
+  expect(store.get('settings')).toMatchObject({ read: 'auto' })
+})
+
 test('a click on a chip or a step sets its row; x drops a row and a newer reading leaves it out', async ($, on) => {
   const { clock, calls } = world(on, replies())
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
@@ -225,6 +263,42 @@ test('an untouched card sends the plan it showed, with its preview', async ($, o
   await clock.settle()
   const sent = await $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
   expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Export the filtered rows.\n- Run it in the browser.\n- Write 500 rows per batch.\n\n${TARGET}`)
+})
+
+test('send picked is saved, labels open rows, and sends a preview only for the outgoing picks', async ($, on) => {
+  const { clock, calls, store } = world(on, replies())
+  const start = () => $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
+  const type = async () => {
+    await composer($).edit(edit(DRAFT, '.'))
+    await clock.settle()
+  }
+  const submit = () => $.prompt.submit({ ...cli, text: `${DRAFT}.`, wait: false })
+
+  await start()
+  expect((await command('send')).text).toBe('MarginCue send is all.')
+  await type()
+  const ui = await $.ui.mount(WIDE)
+  await command('send picked')
+  expect(store.get('settings')).toMatchObject({ send: 'picked' })
+  expect(await ui.find({ type: 'Text', text: /^3 left to agent$/ })).toBeDefined()
+  await ui.press({ key: 'card-c1-1' })
+  const picked = `${DRAFT}.\n\nDecisions:\n- Export all rows.`
+  expect((await submit()).text).toBe(picked)
+  await ui.unmount()
+
+  await start()
+  expect((await command('send')).text).toBe('MarginCue send is picked.')
+  await type()
+  const restored = await $.ui.mount(WIDE)
+  await restored.press({ key: 'card-c1-1' })
+  await clock.advance(1000)
+  expect(calls.at(-1)).toContain('Choices:\n- Export all rows.')
+  expect(calls.at(-1)).not.toContain('Run it in the browser.')
+  expect((await submit()).text).toBe(`${picked}\n\n${TARGET}`)
+  await restored.unmount()
+  await command('send all')
+  expect(store.get('settings')).toMatchObject({ send: 'all' })
 })
 
 test('the clear that precedes a submit does not lose the decisions', async ($, on) => {
@@ -550,6 +624,24 @@ test('a name the code lacks reads unmatched on the card until the person picks i
   gate.answer('Go ahead with this plan')
   expect((await pending).text).not.toContain('Old Market" is')
   await ui.unmount()
+})
+
+test('in key mode an unseen desktop draft goes through without a reading or a dialog', async ($, on) => {
+  const file = 'src/city/canvas.ts'
+  const { clock, calls, store } = world(on, replies(), {
+    env: { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' },
+    git: (args) => args.includes('ls-files') ? file : args.includes('grep') ? `${file}:9:'South of Market'` : '',
+  })
+  store.set('settings', { read: 'key' })
+  const gate = heldPanel(on)
+  gate.answer('Go ahead with this plan')
+  await $.session.start({ cwd: '/project', surface: null, isInteractive: false })
+  await clock.settle()
+  const text = 'Fix the Old Market label in `src/city/canvas.ts`.'
+  const sent = await $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
+  expect(calls.length).toBe(0)
+  expect(gate.asked.length).toBe(0)
+  expect(sent.text).toBe(`${text}\n\nDecisions:\n- Where things are: src/city/canvas.ts (${file}).`)
 })
 
 test('Claude\'s own questions are drawn as Claude asked them: the card only joins MarginCue\'s', async ($, on) => {

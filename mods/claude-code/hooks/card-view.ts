@@ -23,7 +23,7 @@ import { joinList, sameSelection } from '../core/card'
 import { splitDecisions } from '../core/decisions'
 import { closesFrame, tidySketch } from '../core/frame'
 import type { MargincueCard, MargincueReceipt, MargincueRow } from '../types'
-import { CHORD_NEXT, CHORD_SWAP, DARK, cells, segmentsWidth, text, truncate, wrapLines } from './segments'
+import { CARD_READ_KEY, CHORD_NEXT, CHORD_SWAP, DARK, cells, segmentsWidth, text, truncate, wrapLines } from './segments'
 import type { Color, Palette, Segment, Style } from './segments'
 
 /** `sketchKey`: the keys that open the whole sketch on this host (Claude Code's chord by default). */
@@ -43,16 +43,17 @@ const MIN_COLUMNS_BESIDE = 140
 type Grid = { label: number; content: number; columns: number }
 
 type Words = {
-  inCode: string; preview: string; reading: string; noReading: string; drawing: string; attach: string; attached: string
-  change: string; nextRow: string; set: string; open: string; was: string; more: (n: number) => string
+  inCode: string; preview: string; reading: string; noReading: string; readHint: string; drawing: string; attach: string; attached: string
+  change: string; nextRow: string; set: string; open: string; toAgent: string; was: string; more: (n: number) => string
   turn: (n: number) => [string, string]; after: (n: number) => [string, string]; lines: (n: number) => string
   folded: (n: number) => string
 }
 
 const EN: Words = {
   inCode: 'in code', preview: 'preview', reading: 'reading your draft…', noReading: 'no reading this time',
+  readHint: `ctrl+x tab, ${CARD_READ_KEY} to read`,
   drawing: 'drawing…', attach: 'attach to prompt', attached: '✓ goes with the prompt',
-  change: 'change', nextRow: 'next row', set: 'set', open: 'open', was: 'was',
+  change: 'change', nextRow: 'next row', set: 'set', open: 'open', toAgent: 'left to agent', was: 'was',
   more: (n) => `+${n} more row${n === 1 ? '' : 's'} · alt↑`,
   turn: (n) => [`The agent made ${n} choice${n === 1 ? '' : 's'} for you.`, 'Switch one: it adapts at its next step.'],
   after: (n) => [`The agent made ${n} choice${n === 1 ? '' : 's'}.`, 'Switching one writes the follow-up prompt.'],
@@ -62,8 +63,9 @@ const EN: Words = {
 
 const FR: Words = {
   inCode: 'dans le code', preview: 'aperçu', reading: 'lecture du brouillon…', noReading: 'pas de lecture cette fois',
+  readHint: `ctrl+x tab, ${CARD_READ_KEY} pour lire`,
   drawing: 'dessin…', attach: 'joindre au prompt', attached: '✓ joint au prompt',
-  change: 'changer', nextRow: 'ligne suivante', set: 'choisis', open: 'en attente', was: 'avant',
+  change: 'changer', nextRow: 'ligne suivante', set: 'choisis', open: 'en attente', toAgent: 'à décider', was: 'avant',
   more: (n) => `+${n} ligne${n === 1 ? '' : 's'} · alt↑`,
   turn: (n) => [`L'agent a fait ${n} choix pour vous.`, 'Changez-en un : il en tient compte à son étape suivante.'],
   after: (n) => [`L'agent a fait ${n} choix.`, 'En changer un écrit la suite.'],
@@ -81,9 +83,10 @@ const FR: Words = {
  */
 export function layoutCard(card: MargincueCard, columns: number, budget: number, options: CardOptions): Line[] {
   const P = options.palette ?? DARK
-  const words = card.language === 'fr' ? FR : EN
+  const labels = card.language === 'fr' ? FR : EN
+  const words = card.pickedOnly ? { ...labels, open: labels.toAgent } : labels
   const hidden = hiddenButtons(card, options.chords)
-  const open = card.rows.filter((row) => !row.chosen).length
+  const open = card.rows.filter((row) => !row.chosen && !(card.pickedOnly && row.learned)).length
   if (card.collapsed) return [collapsed(card, columns, P, words, open, hidden)]
 
   const g = grid(card, columns, words)
@@ -147,7 +150,8 @@ function header(card: MargincueCard, g: Grid, right: Line, P: Palette, words: Wo
   const lead: Line = [text(' '.repeat(MARK + g.label - cells(TAG))), text(TAG, P.tag), text(GAP)]
   const room = g.columns - g.content
   const rightWidth = segmentsWidth(right)
-  const first = Math.max(12, room - (rightWidth ? rightWidth + 3 : 0))
+  const hint = card.awaitingRead ? words.readHint : ''
+  const first = Math.max(12, room - (rightWidth ? rightWidth + 3 : 0), Math.min(room, cells(hint)))
   const indent = text(' '.repeat(g.content))
 
   if (card.stage !== 'draft') {
@@ -157,9 +161,10 @@ function header(card: MargincueCard, g: Grid, right: Line, P: Palette, words: Wo
     const top = withRight([...lead, text(truncate(head, first), { bold: true })], right, g.columns)
     return most > 1 ? [top, [indent, text(truncate(tail, room), { dim: true })]] : [top]
   }
-  if (card.read) {
-    const style: Style | undefined = card.reading ? { dim: true } : undefined
-    const lines = wrapLines(card.read, first, room, most)
+  if (card.read || hint) {
+    const style: Style | undefined = card.reading || hint ? { dim: true } : undefined
+    const read = card.read ?? (card.error ? words.noReading : '')
+    const lines = wrapLines([hint, read].filter(Boolean).join(' · '), first, room, most)
     const out = lines.map((line, i): Line => i === 0 ? [...lead, text(line, style)] : [indent, text(line, style)])
     out[0] = withRight(out[0]!, right, g.columns)
     return out
@@ -190,8 +195,11 @@ function withRight(left: Line, right: Line, columns: number): Line {
 
 function collapsed(card: MargincueCard, columns: number, P: Palette, words: Words, open: number, hidden: Line): Line {
   const lead: Line = [text(' '), text(TAG, P.tag), text(GAP)]
-  const tail = card.reading && !card.read ? words.reading : `${open} ${words.open}${card.rows.length ? ' · alt↑ alt↓' : ''}`
-  const room = columns - segmentsWidth(lead) - cells(tail) - 3
+  const width = columns - segmentsWidth(lead)
+  const count = `${open} ${words.open}`
+  const tail = card.awaitingRead ? truncate(`${words.readHint} · ${count}`, width)
+    : card.reading && !card.read ? words.reading : `${count}${card.rows.length ? ' · alt↑ alt↓' : ''}`
+  const room = width - cells(tail) - 3
   const read = card.read && room >= 12 ? truncate(card.read, room) : ''
   return [...lead, ...(read ? [text(read)] : []), text(`${read ? ' · ' : ''}${tail}`, { dim: true }), ...hidden]
 }

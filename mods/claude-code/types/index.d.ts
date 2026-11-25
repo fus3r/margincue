@@ -68,6 +68,7 @@ export type MargincueCard = {
   id: number
   stage: 'draft' | 'turn' | 'after'
   reading: boolean
+  awaitingRead?: boolean
   error: boolean
   read: string | null
   kind: 'build' | 'change' | 'fix' | 'explore' | 'ask' | 'other' | null
@@ -77,6 +78,7 @@ export type MargincueCard = {
   sketch?: { title: string; lines: string[]; drawing: boolean; pinned: boolean; open: boolean }
   language: 'en' | 'fr'
   collapsed: boolean
+  pickedOnly?: true
 }
 
 export type MargincueReceipt = {
@@ -102,6 +104,7 @@ export type MargincueBand = {
   first?: MargincueStateCue | null
   open?: number
   amendment?: MargincueCue
+  canReadCard?: boolean
   card?: MargincueCard
   reviewPending?: boolean
   canReview?: boolean

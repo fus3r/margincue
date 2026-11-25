@@ -9,6 +9,8 @@ import type { DecisionView, StateChange, StateCue, StateLoad } from './state'
 
 export type Origin = 'type' | 'paste' | 'history' | 'fill' | 'open' | 'restore'
 export type LanguageSetting = 'en' | 'auto'
+export type SendSetting = 'all' | 'picked'
+export type ReadingMode = 'auto' | 'key'
 
 /** One edit: `text` replaced the code units `[start, end)` of the previous draft. */
 export type Splice = { start: number; end: number; text: string }
@@ -43,10 +45,14 @@ export type Event =
       language?: LanguageSetting
       /** Present for the card protocol (named `sheet` before the card replaced the kick-off sheet). False keeps the automatic tier silent. */
       sheet?: boolean
+      /** When to read a draft card (default auto). */
+      read?: ReadingMode
       /** Draw a sketch of the deliverable under the card (default true). */
       sketch?: boolean
       /** Attach where the draft's names live in the code (default true). */
       refs?: boolean
+      /** Send the full card or only decisions the person made (default all). */
+      send?: SendSetting
       /** One line about the person (their work, level per field, what they decide), from the first-run interview. */
       user?: string
       /** The local date (YYYY-MM-DD), so a sketch's sample dates look like this week's. */
@@ -84,6 +90,7 @@ export type Event =
   | { type: 'vocabulary'; vocab: Vocabulary | null }
   /** Options the person picked before, per row key, with how often. */
   | { type: 'learned'; picks: Record<string, { label: string; count: number }> }
+  | { type: 'cardRead'; now: number }
   /** alt+up: the next row; a click: that row. */
   | { type: 'cardFocus'; dir?: 1 | -1; row?: string }
   /** alt+down: the focused (or named) row's next value. */
@@ -136,6 +143,7 @@ export type View = {
   state?: DecisionView
   expert?: ExpertView
   amendment?: CueView
+  canReadCard?: boolean
   card?: CardView
   receipt?: ReceiptView
 }
@@ -170,6 +178,8 @@ export type CardView = {
   stage: CardStage
   /** A reading is on its way (the first, or a newer one for an edited draft). */
   reading: boolean
+  /** This draft is waiting for the reading shortcut. */
+  awaitingRead?: boolean
   error: boolean
   read: string | null
   kind: CardKind | null
@@ -181,6 +191,7 @@ export type CardView = {
   sketch?: { title: string; lines: string[]; drawing: boolean; pinned: boolean; open: boolean }
   language: Language
   collapsed: boolean
+  pickedOnly?: true
 }
 
 export type ReceiptView = {
