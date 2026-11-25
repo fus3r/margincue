@@ -24,7 +24,7 @@ import { finishEdits, recordToolEdit, startEdits } from './turn-edits'
 import type { EditCapture, TurnEdits } from './turn-edits'
 import { EventLog, loggedArm, trialCounts } from './event-log'
 import type { Arm, LogIO } from './event-log'
-import { depthFor, describeUser, interview, preferredProfiles, readUser } from './onboarding'
+import { describeUser, interview, preferredProfiles, readUser, userDepths } from './onboarding'
 import type { UserProfile } from './onboarding'
 import { collectVocabulary } from './repo-index'
 import { optionalText, personalAssets, readAccount, readInstructionSlots, readLearned, readProject, saveDecision, saveLearned } from './storage'
@@ -164,7 +164,8 @@ function now(): number {
 }
 
 function currentDepth(): Depth {
-  return host.settings.depths[host.settings.profile] ?? 'standard'
+  const { profile, depths, user } = host.settings
+  return depths[profile] ?? userDepths(user)[profile] ?? 'standard'
 }
 
 function enabled(): boolean { return host.settings.mode !== 'off' }
@@ -187,8 +188,7 @@ function configEvent(): Event {
     send: host.settings.send,
     today: localDate(),
     ...(host.settings.user && { user: describeUser(host.settings.user), prefer: preferredProfiles(host.settings.user) }),
-    depths: host.settings.depths,
-    depth: currentDepth(),
+    depths: { ...userDepths(host.settings.user), ...host.settings.depths },
     audit: host.eventLog.active,
     profile: host.settings.profile,
     timing: TIMING,
@@ -422,7 +422,7 @@ function publish($: $, v: View): void {
     ...(v.canReadCard && { canReadCard: true }),
     ...(v.card && (v.card.stage !== 'turn' || host.activeTurn !== null) && { card: v.card }),
     ...(v.expert?.phase === 'reviewing' && { reviewPending: true }),
-    canReview: (host.assets.bundles ?? []).some((bundle) => bundle.profile === v.profile),
+    canReview: host.core?.canReview(v.profile) ?? false,
   }
   const json = JSON.stringify(next)
   if (json !== host.sentBand) {
@@ -1277,7 +1277,7 @@ function rememberDraft($: $, text: string, origin: Origin, cursor: number, edit?
 
 async function review($: $, profile: string, fromCommand = false): Promise<string> {
   if (host.settings.mode === 'off') return 'MarginCue is off.'
-  if (!(host.assets.bundles ?? []).some((bundle) => bundle.profile === profile)) return `No decision bundle for "${profile}".`
+  if (!host.core?.canReview(profile)) return `No review profile named "${profile}".`
   let view = host.view
   if (fromCommand && (!view?.text.trim() || isHostCommand(view.text)) && host.lastDraft) {
     const text = host.lastDraft
@@ -1395,6 +1395,7 @@ ${slot.source}` : 'Use /margincue why <slot>.')
       }
       case 'setup':
         if (arg.toLowerCase() === 'reset') {
+          clearInterviewDepths(settings)
           Object.assign(settings, { user: null, onboarded: null })
           run($, configEvent())
           await saveSettings($)
@@ -1481,7 +1482,7 @@ ${slot.source}` : 'Use /margincue why <slot>.')
           `Project index: ${host.indexing ? 'reading…' : host.indexed ? 'ready' : 'none (not a git repository, or off)'}.`,
           ...profileLines(),
           host.settings.user ? `You: ${describeUser(host.settings.user)} (/margincue setup changes this.)`
-            : 'You: not set up yet (/margincue setup asks three or four questions).',
+            : 'Run /margincue setup to set your level and the kinds of choices you make.',
           'On the card, alt+↑ moves to the next row and alt+↓ changes its value, without leaving the prompt.',
           `ctrl+x tab focuses the card: ${CARD_READ_KEY} reads the draft, a number picks, x drops the row, s opens or closes the sketch, p attaches it to the prompt.`,
           'During a turn the card lists the choices the agent marked; switch one and it reaches the agent at its next step.',
@@ -1495,6 +1496,13 @@ ${slot.source}` : 'Use /margincue why <slot>.')
   }
 }
 
+/** Earlier versions copied the interview's levels into the depth override map. */
+function clearInterviewDepths(settings: Settings): void {
+  for (const [profile, depth] of Object.entries(userDepths(settings.user))) {
+    if (settings.depths[profile] === depth) delete settings.depths[profile]
+  }
+}
+
 /**
  * The first-run interview, in Claude Code's own question dialog. Closing it is an answer too: the
  * questions are not asked again unasked (/margincue setup asks them). Only counts are logged.
@@ -1504,9 +1512,10 @@ async function onboard($: $, asked: boolean): Promise<string> {
   host.onboarding = true
   try {
     const user = await interview((question, options) => $.ui.ask(question, options))
+    clearInterviewDepths(host.settings)
+    for (const profile of Object.keys(user.levels)) delete host.settings.depths[profile]
     host.settings.user = user
     host.settings.onboarded = 'done'
-    for (const [profile, level] of Object.entries(user.levels)) host.settings.depths[profile] = depthFor(level)
     run($, configEvent())
     await saveSettings($)
     log($, 'onboarded', { work: user.work.length, levels: Object.keys(user.levels).length, decide: user.decide.length })

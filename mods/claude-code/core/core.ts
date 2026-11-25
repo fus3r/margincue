@@ -1,16 +1,17 @@
 import { diffSplice, resolveAnchor, shiftSpan, spliceFits } from './anchor'
 import type { Span } from './anchor'
-import { applyDecisions, attachDecisions, decisionLine, FILE_REFERENCES_HEADING, fileReferenceDecision } from './decisions'
+import { applyDecisions, attachDecisions, decisionLine, FILE_REFERENCES_HEADING, fileReferenceDecision, splitDecisions } from './decisions'
 import { DecisionDraft, DecisionState, decisionFor, eligibleSlot, stateCue } from './state'
 import type { SlotResult, StateChange } from './state'
-import type { Depth, Language, Mode, Rigor, Scope } from './bundle'
+import type { Depth, Language, Mode, Rigor, Scope, Slot } from './bundle'
+import { chapterContext } from './chapters'
 import { expertPrompt, MAX_EXPERT_CUES, parseExpert } from './expert'
 import { tidySketch } from './frame'
 import { Lru } from './lru'
 import { normalize, parseReply } from './parse'
 import { parseProfile } from './profile'
 import { buildPrompt, buildSystem, isTerminated, lastSentenceStart } from './request'
-import { buildSketchPrompt, canSketch, CARD_MAX_TOKENS, cycleSelection, deriveCardKind, listsSteps, openChoiceLine, openChoicesBlock, parseCard, parseSketch, rowValue, sameSelection, SKETCH_MAX_TOKENS, STEP_ORDER_KEY, toggleSelection } from './card'
+import { buildSketchPrompt, canSketch, CARD_MAX_TOKENS, CARD_OPTION_TARGET, cycleSelection, deriveCardKind, insertsPinnedArtifact, listsSteps, openChoiceLine, openChoicesBlock, parseCard, parseSketch, rowValue, sameSelection, SKETCH_MAX_TOKENS, STEP_ORDER_KEY, toggleSelection } from './card'
 import type { CardKind, ParsedCard, ParsedRow, ParsedSketch, RowType } from './card'
 import { isHardToUndo } from './hard-to-undo'
 import { ground, indexVocabulary, nameKey, relatedFolders } from './grounding'
@@ -399,6 +400,11 @@ export class Core {
 
   storedDecisions() { return this.state.list() }
 
+  canReview(profile: string): boolean {
+    return Boolean(this.assets.expertSystem &&
+      (this.state.forProfile(profile).length || this.assets.chapters?.some((chapter) => chapter.profile === profile)))
+  }
+
   /** The profiles the project calls for and why (for /margincue status). */
   projectProfiles(): ProjectLens[] { return this.projectLenses.filter((lens) => this.state.forProfile(lens.profile).length > 0) }
 
@@ -455,11 +461,19 @@ export class Core {
     if (pickedOnly !== this.pickedOnly && this.card?.sketch) this.card.sketchDue = this.now
     this.pickedOnly = pickedOnly
     this.openRows = e.send === 'open'
-    this.userLine = e.user?.trim() || undefined
+    const userLine = e.user?.trim() || undefined
+    const userChanged = this.userLine !== userLine
+    this.userLine = userLine
     this.today = e.today
-    this.depths = { ...(e.depths ?? {}) }
+    const depths = e.depths ?? {}
+    const depthChanged = this.depth !== (e.depth ?? 'standard') ||
+      Object.keys(this.depths).length !== Object.keys(depths).length ||
+      Object.entries(depths).some(([profile, depth]) => this.depths[profile] !== depth)
+    this.depths = { ...depths }
+    this.depth = e.depth ?? 'standard'
     const prefer = [...(e.prefer ?? [])].sort()
-    if (prefer.join() !== this.prefer.join()) {
+    const preferChanged = prefer.join() !== this.prefer.join()
+    if (preferChanged) {
       this.prefer = prefer
       this.projectLenses = this.index ? detectLenses(this.index.vocab, this.prefer) : []
     }
@@ -467,8 +481,6 @@ export class Core {
       if (this.card.sketch.req !== null) this.out.push({ type: 'cancel', req: this.card.sketch.req })
       this.card.sketch = null
     }
-    const depthChanged = this.depth !== (e.depth ?? 'standard')
-    this.depth = e.depth ?? 'standard'
     const language = e.language ?? 'en'
     const languageChanged = this.language !== language
     this.language = language
@@ -516,8 +528,18 @@ export class Core {
       this.reviewAt = null
     }
     if (languageChanged) this.expertPicks.clear()
-    if (!enabled || sheetEnabled !== true || languageChanged || (profileChanged || depthChanged) && this.card?.stage === 'draft') {
+    const contextChanged = depthChanged || userChanged || preferChanged
+    if (contextChanged) this.clearExpert()
+    if (!enabled || sheetEnabled !== true || languageChanged || profileChanged && this.card?.stage === 'draft') {
       this.clearCard()
+    } else if (contextChanged && this.card?.stage === 'draft') {
+      // Refresh suggestions at the new level and keep the person's choices.
+      const card = this.card
+      if (card.req !== null) this.out.push({ type: 'cancel', req: card.req })
+      if (card.sketch?.req != null) this.out.push({ type: 'cancel', req: card.sketch.req })
+      Object.assign(card, { req: null, readFor: null, read: null, kind: null, error: false, sketch: null, sketchDue: null })
+      card.rows = card.rows.filter((row) => row.origin === 'repo' || row.picked !== null)
+      this.fixCardFocus()
     }
     if (!this.enabled) {
       this.cancelAll()
@@ -526,8 +548,9 @@ export class Core {
       this.focus = null
       return
     }
-    if (!wasEnabled || profileChanged || modeChanged || sheetChanged || languageChanged || sheetEnabled && (depthChanged || readModeChanged)) {
+    if (!wasEnabled || profileChanged || modeChanged || sheetChanged || languageChanged || sheetEnabled && (contextChanged || readModeChanged)) {
       this.actionAt = this.now
+      if (sheetEnabled && !this.card && this.cardText()) this.onCardDraft(this.text)
       this.schedule('open', null)
     }
   }
@@ -831,7 +854,7 @@ export class Core {
     if (result.status !== 'open') return result.reason
     if (this.stateDismissed.has(result.slot.id)) return 'dismissed'
     if (draft.directive === 'delegate' && !result.slot.guard) return 'prompt-delegates'
-    if (!eligibleSlot(result.slot, this.depth, draft.rigor)) return 'depth-or-rigor'
+    if (!eligibleSlot(result.slot, this.slotDepth(result.slot), draft.rigor)) return 'depth-or-rigor'
     return null
   }
 
@@ -840,7 +863,7 @@ export class Core {
     const language = this.wordingLanguage(draft)
     const marks = draft?.results.flatMap((result) => {
       if (result.status !== 'filled' || !result.span) return []
-      const option = result.value && decisionFor(result.slot, result.value, language, this.depth)?.option
+      const option = result.value && decisionFor(result.slot, result.value, language, this.slotDepth(result.slot))?.option
       const evidence = result.evidence && this.language === 'en' ? 'set in the draft' : result.evidence
       const value = option ?? evidence ?? (language === 'en' ? 'in project instructions' : 'dans les consignes du projet')
       return [{ slot: result.slot.id, label: result.slot.label[language], value, span: result.span }]
@@ -848,8 +871,8 @@ export class Core {
     const open = draft?.results.filter((result) => this.stateReason(result) === null) ?? []
     const first = [...open].sort((a, b) => Number(b.slot.guard) - Number(a.slot.guard) || b.slot.cost - a.slot.cost)[0]
     return {
-      mode: this.mode!, depth: this.depth, language, model: this.state.model, marks, open: open.length,
-      first: first && this.mode !== 'quiet' ? stateCue(first, language, this.depth) : null,
+      mode: this.mode!, depth: this.depthOf(this.profileName), language, model: this.state.model, marks, open: open.length,
+      first: first && this.mode !== 'quiet' ? stateCue(first, language, this.slotDepth(first.slot)) : null,
     }
   }
 
@@ -947,9 +970,10 @@ export class Core {
 
   private onExpert(profile: string): void {
     const system = this.assets.expertSystem
-    const slots = this.state.forProfile(profile)
-    if (!this.enabled || this.mode === undefined || !system || !slots.length ||
+    if (!this.enabled || this.mode === undefined || !system || !this.canReview(profile) ||
       !this.text.trim() || isHostCommand(this.text)) return
+    const depth = this.depthOf(profile)
+    const slots = this.state.forProfile(profile).filter((slot) => eligibleSlot(slot, depth, 'study'))
     this.clearExpert()
     this.cancelAll()
     if (this.sheetEnabled === undefined) this.reviewAt = null
@@ -971,17 +995,19 @@ export class Core {
         })
         return []
       }
-      return [{ ...stateCue({ slot, options }, language, this.depth), key: slot.id, persistent: true }]
+      return [{ ...stateCue({ slot, options }, language, depth), key: slot.id, persistent: true }]
     })
     const prompt = buildPrompt({
       draft: applyDecisions(this.text, this.decisions()),
       dismissed: [...this.dismissed.map((d) => d.statement), ...this.stateDismissed],
     })
+    const chapters = chapterContext(this.assets.chapters?.filter((chapter) => chapter.profile === profile) ?? [],
+      splitDecisions(this.text).body, () => depth)
     this.out.push({
       type: 'request', req: id, kind: 'expert', tier: 'cloud',
       system: [(this.language === 'en' ? system.replace("in the draft's language", 'in English') : system)
         .replace(/\{\{\s*max_cues\s*\}\}/g, String(MAX_EXPERT_CUES)).trim()],
-      prompt: `${prompt}\n\n${expertPrompt(this.expertCatalog, slots)}`, maxTokens: 512,
+      prompt: [prompt, expertPrompt(this.expertCatalog, slots), chapters].filter(Boolean).join('\n\n'), maxTokens: 512,
     })
   }
 
@@ -1164,7 +1190,7 @@ export class Core {
       card.dirty = false
     }
     const { system, prompt } = this.cardRequest(card)
-    const key = `${this.profileName}\n${this.language}\n${this.userLine ?? ''}\n${system.length}\n${prompt}`
+    const key = JSON.stringify([this.profileName, system, prompt])
     const cached = this.cardCache.get(key)
     if (cached) {
       this.applyCard(card, cached, this.text)
@@ -1179,7 +1205,9 @@ export class Core {
 
   private cardRequest(card: Card): { system: string[]; prompt: string } {
     const english = this.wordingLanguage() === 'en'
-    const system = [this.assets.cardSystem!.replace('{language}', english ? 'in English, even when the draft is not' : "in the draft's language")]
+    const system = [this.assets.cardSystem!
+      .replace('{language}', english ? 'in English, even when the draft is not' : "in the draft's language")
+      .replace('{max_option_chars}', String(CARD_OPTION_TARGET))]
     if (this.userLine) system.push(`About the developer: ${this.userLine}`)
     if (this.index?.vocab.map) system.push(`Repository outline (folders with code, most files first):\n${this.index.vocab.map}`)
     const lenses = this.lensBlocks()
@@ -1214,6 +1242,10 @@ export class Core {
     return this.depths[profile] ?? this.depth
   }
 
+  private slotDepth(slot: Slot): Depth {
+    return this.depthOf(this.state.profileFor(slot) ?? this.profileName)
+  }
+
   /** Profiles for this reading: the project's, the one the person picked, and any the draft's own words call for. */
   private lensProfiles(): string[] {
     const profiles = new Set<string>()
@@ -1238,11 +1270,15 @@ export class Core {
       const depth = this.depthOf(profile)
       const slots = this.state.forProfile(profile)
         .filter((slot) => !this.state.resolve(slot.id) && eligibleSlot(slot, depth, rigor))
-        .sort((a, b) => tiers.indexOf(a.tier) - tiers.indexOf(b.tier) || b.cost - a.cost).slice(0, 10)
-      const lines = slots.map((slot) => {
-        const cue = stateCue({ slot, options: slot.options }, language, depth)
+        .sort((a, b) => tiers.indexOf(a.tier) - tiers.indexOf(b.tier) || b.cost - a.cost)
+      const checked = this.state.evaluate(this.text, slots.map((slot) => slot.id))
+      const lines = slots.flatMap((slot) => {
+        const options = checked.available(slot)
+        if (checked.suppresses(slot) || this.state.instructionSlots.has(slot.id) ||
+          slot.requires?.some((fact) => checked.facts.get(fact) !== true) || options.length < 2) return []
+        const cue = stateCue({ slot, options }, language, depth)
         return `${slot.id} | when: ${slot.when} | ${cue.statement} | ${cue.options.map((option) => option.label).join(' | ')}`
-      })
+      }).slice(0, 10)
       return lines.length
         ? `Expert decisions (${profile}${stakes}). When the draft touches one and leaves it open, add it as a row with this exact key, type one and these options:\n${lines.join('\n')}`
         : ''
@@ -1305,13 +1341,15 @@ export class Core {
     // The step-order row pins steps the draft wrote; on a draft with none it would send an order nobody asked for.
     // A row offering the files a name's own row already asks about is that question again.
     const steps = listsSteps(text)
-    const fresh = this.stateDraft?.directive === 'delegate' || card.kind === 'ask' ? [] : parsed.rows.filter((row) =>
+    const quiet = this.stateDraft?.directive === 'delegate' || card.kind === 'ask' || insertsPinnedArtifact(splitDecisions(text).body)
+    const fresh = quiet ? [] : parsed.rows.filter((row) =>
       !card.dismissed.has(row.key) && (row.key !== STEP_ORDER_KEY || steps) && !asksPlaces(card.rows, row))
     const old = card.rows.filter((row) => row.origin === 'model' || row.origin === 'lens')
     const used = new Set<string>()
     const next: CardRow[] = []
     for (const parsedRow of fresh) {
-      const row = this.lensRow(parsedRow) ?? { ...parsedRow, origin: 'model' as const }
+      const row = this.lensRow(parsedRow, text)
+      if (!row) continue
       const match = old.find((entry) => !used.has(entry.id) && (entry.key === row.key || normalize(entry.statement) === normalize(row.statement)))
       if (match) used.add(match.id)
       if (match && match.picked !== null) next.push(row.anchor ? { ...match, anchor: row.anchor } : match)
@@ -1332,12 +1370,20 @@ export class Core {
     }
   }
 
-  /** A row whose key names a decision of an active expert profile takes the catalog's wording. */
-  private lensRow(row: ParsedRow): Omit<CardRow, 'id' | 'picked'> | null {
+  /** Keep catalog choices subject to the local decision state as well as the model's reading. */
+  private lensRow(row: ParsedRow, text: string): Omit<CardRow, 'id' | 'picked'> | null {
     const slot = this.state.slot(row.key)
-    const profile = slot && this.lensProfiles().find((name) => this.state.forProfile(name).includes(slot))
-    if (!slot || !profile) return null
-    const cue = stateCue({ slot, options: slot.options }, this.wordingLanguage(), this.depthOf(profile))
+    const profile = slot && this.state.profileFor(slot)
+    if (!slot || !profile || !this.lensProfiles().includes(profile)) return { ...row, origin: 'model' }
+    const draft = this.stateDraft?.text === text && this.stateDraft.byId.has(slot.id)
+      ? this.stateDraft : this.state.evaluate(text, [slot.id])
+    const depth = this.depthOf(profile)
+    const rigor = this.projectLenses.find((lens) => lens.profile === profile)?.rigor ?? draft.rigor
+    const options = draft.available(slot)
+    if (!eligibleSlot(slot, depth, rigor) || draft.suppresses(slot) ||
+      slot.requires?.some((fact) => draft.facts.get(fact) !== true) || options.length < 2 ||
+      this.state.resolve(slot.id) || this.state.instructionSlots.has(slot.id)) return null
+    const cue = stateCue({ slot, options }, this.wordingLanguage(draft), depth)
     return {
       key: slot.id, label: cutLabel(cue.label.toLowerCase()), type: 'one', statement: cue.statement,
       options: cue.options.map((option) => option.label), defaults: [0], origin: 'lens', lens: profile,
@@ -2017,7 +2063,7 @@ ${prompt}` }
           if (!value || this.state.instructionSlots.has(result.slot.id)) continue
           if (result.slot.requires?.some((fact) => draft.facts.get(fact) !== true)) continue
           if (value.option !== 'other' && !draft.available(result.slot).some((option) => option.id === value.option)) continue
-          const decision = decisionFor(result.slot, value, language, this.depth)
+          const decision = decisionFor(result.slot, value, language, this.slotDepth(result.slot))
           if (decision) standing.push(decision)
         }
       }

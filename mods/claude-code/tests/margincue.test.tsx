@@ -1424,8 +1424,10 @@ test('Enter on each first-run question takes its first option and finishes the i
   store.set('settings', { onboarded: null })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await clock.advance(2000)
-  expect(asked.map((question) => question.header)).toEqual(['Your work', 'You decide'])
-  expect(store.get('settings')).toMatchObject({ onboarded: 'done', user: { work: ['apps'], decide: ['scope'] } })
+  expect(asked.map((question) => question.header)).toEqual(['Your work', 'Agent use', 'Product', 'You decide'])
+  expect(store.get('settings')).toMatchObject({
+    onboarded: 'done', user: { work: ['apps'], levels: { general: 'learning', product: 'learning' }, decide: ['scope'] },
+  })
 })
 
 const TWIN_LAYOUTS = ['app/layout.tsx', 'app/(dashboard)/layout.tsx', 'lib/utils.ts']

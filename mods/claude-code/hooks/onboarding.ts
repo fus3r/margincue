@@ -1,16 +1,16 @@
 // The first-run interview: what the person uses coding agents for, how deep they
-// are in each field MarginCue has a catalog for, and which choices they want to
-// make themselves. Three or four questions in Claude Code's own dialog, one key
-// each. The answers stay in the mod's store; nothing is sent anywhere but the
-// line that tells each card reading who it is for.
+// are in each field MarginCue has chapters for, and which choices they want to
+// make themselves. The answers stay in the host's store and set the depth and
+// audience of each card reading.
 
 import type { Depth } from '../core/bundle'
 
-export type Level = 'learning' | 'practitioner' | 'expert'
+export const USER_LEVELS = ['learning', 'practitioner', 'expert'] as const
+export type Level = typeof USER_LEVELS[number]
 export type UserProfile = {
   /** What they work on: keys of WORK, plus their own words from "Other". */
   work: string[]
-  /** Their level per expert profile they work in. */
+  /** The level they stated for each field. */
   levels: Record<string, Level>
   /** The kinds of choices they make themselves (keys of DECIDE); the agent takes the rest. */
   decide: string[]
@@ -19,13 +19,23 @@ export type UserProfile = {
 export type Ask = (question: string, options: { options: string[]; header: string; multiSelect?: true }) => Promise<string>
 
 const WORK = [
-  { label: 'Apps and products', key: 'apps', words: 'apps and products' },
+  { label: 'Apps and products', key: 'apps', words: 'apps and products', profile: 'product' },
   { label: 'Data science and ML', key: 'ml', words: 'data science and machine learning', profile: 'ml-research' },
   { label: 'Systems and infrastructure', key: 'systems', words: 'systems and infrastructure', profile: 'system-design' },
   { label: 'Scripts and tooling', key: 'tooling', words: 'scripts and tooling' },
 ] as const
 
 const LEVELS: Record<string, { field: string; question: string; header: string; options: [string, Level][] }> = {
+  general: {
+    field: 'general coding-agent use', question: 'How experienced are you with coding agents?', header: 'Agent use',
+    options: [['Learning (my first tasks)', 'learning'], ['Practitioner (I use them regularly)', 'practitioner'],
+      ['Expert (I direct and review complex work)', 'expert']],
+  },
+  product: {
+    field: 'product development', question: 'How experienced are you in product development?', header: 'Product',
+    options: [['Learning (first product or feature)', 'learning'], ['Practitioner (I ship and measure features)', 'practitioner'],
+      ['Expert (I lead product decisions)', 'expert']],
+  },
   'ml-research': {
     field: 'statistics and ML', question: 'How deep are you in statistics and machine learning?', header: 'ML level',
     options: [['Learning (courses or first projects)', 'learning'], ['Practitioner (I train and ship models)', 'practitioner'],
@@ -37,6 +47,8 @@ const LEVELS: Record<string, { field: string; question: string; header: string; 
       ['Architect (I design for scale)', 'expert']],
   },
 }
+
+export const LEVEL_PROFILES = Object.keys(LEVELS)
 
 const DECIDE = [
   { label: 'What gets built', key: 'scope', words: 'what gets built' },
@@ -61,12 +73,13 @@ function picks<T extends { label: string; key: string }>(answer: string, choices
   return { keys, other: other.join(', ') }
 }
 
-function levelOf(answer: string, options: [string, Level][]): Level {
-  const exact = options.find(([label]) => label.toLowerCase() === answer.trim().toLowerCase())
+function levelOf(answer: string, options: [string, Level][]): Level | undefined {
+  const stated = answer.trim().toLowerCase()
+  const exact = options.find(([label, level]) => label.toLowerCase() === stated || level === stated)
   if (exact) return exact[1]
-  if (/\b(phd|research|professor|publish|review|architect|staff|principal|lead)\b/i.test(answer)) return 'expert'
-  if (/\b(student|learning|beginner|course|new|first)\b/i.test(answer)) return 'learning'
-  return 'practitioner'
+  if (/\b(learning|student|beginner)\b/.test(stated)) return 'learning'
+  if (/\b(practitioner|intermediate)\b/.test(stated)) return 'practitioner'
+  if (/\b(expert|advanced|phd|researcher|architect)\b/.test(stated)) return 'expert'
 }
 
 /** The interview itself. A rejection (the dialog closed) ends it and propagates. */
@@ -75,10 +88,11 @@ export async function interview(ask: Ask): Promise<UserProfile> {
     options: WORK.map((w) => w.label), header: 'Your work', multiSelect: true,
   }), WORK)
   const levels: Record<string, Level> = {}
-  for (const choice of WORK) {
-    if (!('profile' in choice) || !work.keys.includes(choice.key)) continue
-    const level = LEVELS[choice.profile]!
-    levels[choice.profile] = levelOf(await ask(level.question, { options: level.options.map(([label]) => label), header: level.header }), level.options)
+  const profiles = ['general', ...preferredProfiles({ work: work.keys })]
+  for (const profile of profiles) {
+    const field = LEVELS[profile]!
+    const level = levelOf(await ask(field.question, { options: field.options.map(([label]) => label), header: field.header }), field.options)
+    if (level) levels[profile] = level
   }
   const decide = picks(await ask('Which choices do you want to make yourself? The agent takes the rest.', {
     options: DECIDE.map((d) => d.label), header: 'You decide', multiSelect: true,
@@ -92,8 +106,12 @@ export function depthFor(level: Level): Depth {
   return level === 'learning' ? 'essentials' : level === 'expert' ? 'research' : 'standard'
 }
 
+export function userDepths(user: UserProfile | null | undefined): Record<string, Depth> {
+  return Object.fromEntries(Object.entries(user?.levels ?? {}).map(([profile, level]) => [profile, depthFor(level)]))
+}
+
 /** Profiles the person works in: a project needs less evidence to call for one of these. */
-export function preferredProfiles(user: UserProfile): string[] {
+export function preferredProfiles(user: Pick<UserProfile, 'work'>): string[] {
   return WORK.flatMap((w) => 'profile' in w && user.work.includes(w.key) ? [w.profile] : [])
 }
 
@@ -116,15 +134,21 @@ const list = (items: string[]) => items.length <= 1 ? items[0] ?? '' : `${items.
 
 /** One line about the person, for each card reading (in the cached system text) and for /margincue status. */
 export function describeUser(user: UserProfile): string {
+  const covered = new Set<string>()
   const work = WORK.filter((w) => user.work.includes(w.key)).map((w) => {
     const profile = 'profile' in w ? w.profile : undefined
     const level = profile ? user.levels[profile] : undefined
-    return profile && level ? `${w.words} (${LEVELS[profile]!.field}: ${levelWord(profile, level)})` : w.words
+    if (!profile || !level) return w.words
+    covered.add(profile)
+    return `${w.words} (${LEVELS[profile]!.field}: ${levelWord(profile, level)})`
   })
+  const otherLevels = Object.entries(user.levels).flatMap(([profile, level]) =>
+    LEVELS[profile] && !covered.has(profile) ? [`${LEVELS[profile].field} (${levelWord(profile, level)})`] : [])
   const decides = DECIDE.filter((d) => user.decide.includes(d.key)).map((d) => d.words)
   const leaves = DECIDE.filter((d) => !user.decide.includes(d.key)).map((d) => d.words)
   const parts = [
     work.length ? `Works on ${list(work)}.` : '',
+    otherLevels.length ? `States their level in ${list(otherLevels)}.` : '',
     user.note ? `In their words: ${user.note}.` : '',
     decides.length ? `Makes these choices themselves: ${list(decides)}${leaves.length ? `; leaves ${list(leaves)} to the agent` : ''}.` : '',
   ]

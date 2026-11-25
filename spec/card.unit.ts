@@ -5,6 +5,7 @@ import type { Effect, Event, View } from '../mods/claude-code/core/index'
 
 const { createCore, fillStatement } = await import('../mods/claude-code/core/index')
 const card = await import('../mods/claude-code/core/card')
+const { chapterContext } = await import('../mods/claude-code/core/chapters')
 const grounding = await import('../mods/claude-code/core/grounding')
 const { ASSETS } = await import('../mods/claude-code/hooks/assets')
 
@@ -62,6 +63,12 @@ test('an anchor written into the last option is taken out of it', () => {
   const row = card.parseCard('row | source | source | one | Use {} | existing play logs | new event logging | both @play logs').rows[0]!
   assert.deepEqual(row.options, ['existing play logs', 'new event logging', 'both'])
   assert.equal(row.anchor, 'play logs')
+})
+
+test('a quoted anchor is metadata instead of an option', () => {
+  const row = card.parseCard('row | interval | scope | one | Cover uncertainty in {} | new suppliers | refitting | "@one bootstrap confidence interval"').rows[0]!
+  assert.deepEqual(row.options, ['new suppliers', 'refitting'])
+  assert.equal(row.anchor, 'one bootstrap confidence interval')
 })
 
 test('words joined by a slash link when the code has the path but are never called missing', () => {
@@ -202,8 +209,9 @@ test('references cite only what the draft wrote as code; common words and bare f
 })
 
 test('options travel whole: a long option is kept as written, a too-long one is left out', () => {
-  const long = 'running live in Claude Code and checking the frames'
-  const row = card.parseCard(`row | verify | verify | one | Verify it by {} | ${long} | running the tests | ${'x'.repeat(90)}`).rows[0]!
+  const long = 'running live in Claude Code and checking the frames before releasing the new version'
+  assert.ok(long.length > card.CARD_OPTION_TARGET)
+  const row = card.parseCard(`row | verify | verify | one | Verify it by {} | ${long} | running the tests | ${'x'.repeat(card.MAX_OPTION + 1)}`).rows[0]!
   assert.deepEqual(row.options, [long, 'running the tests'])
 })
 
@@ -261,6 +269,8 @@ const onboarding = await import('../mods/claude-code/hooks/onboarding')
 test('the first-run questions follow the answers, and the answers become one line about the person', async () => {
   const answers: Record<string, string> = {
     'Your work': 'Data science and ML, Apps and products, quant research',
+    'Agent use': 'Practitioner (I use them regularly)',
+    'Product': 'Learning (first product or feature)',
     'ML level': 'Researcher (I publish or review)',
     'You decide': 'What gets built, Data and results',
   }
@@ -269,17 +279,174 @@ test('the first-run questions follow the answers, and the answers become one lin
     asked.push(options.header)
     return answers[options.header]!
   })
-  assert.deepEqual(asked, ['Your work', 'ML level', 'You decide'])
-  assert.deepEqual(user, { work: ['ml', 'apps'], levels: { 'ml-research': 'expert' }, decide: ['scope', 'data'], note: 'quant research' })
-  assert.equal(onboarding.describeUser(user), 'Works on apps and products and data science and machine learning (statistics and ML: researcher). ' +
+  assert.deepEqual(asked, ['Your work', 'Agent use', 'Product', 'ML level', 'You decide'])
+  assert.deepEqual(user, {
+    work: ['ml', 'apps'], levels: { general: 'practitioner', product: 'learning', 'ml-research': 'expert' },
+    decide: ['scope', 'data'], note: 'quant research',
+  })
+  assert.equal(onboarding.describeUser(user), 'Works on apps and products (product development: learning) and data science and machine learning (statistics and ML: researcher). ' +
+    'States their level in general coding-agent use (practitioner). ' +
     'In their words: quant research. Makes these choices themselves: what gets built and how data and results are handled; ' +
     'leaves architecture and code-level details to the agent.')
-  assert.deepEqual(onboarding.preferredProfiles(user), ['ml-research'])
+  assert.deepEqual(onboarding.preferredProfiles(user), ['product', 'ml-research'])
   assert.equal(onboarding.depthFor('learning'), 'essentials')
   assert.equal(onboarding.depthFor('expert'), 'research')
   assert.deepEqual(onboarding.readUser({ work: ['ml'], levels: { 'ml-research': 'guru' }, decide: [] }), { work: ['ml'], levels: {}, decide: [] })
   assert.equal(onboarding.readUser('nope'), null)
   await assert.rejects(onboarding.interview(async () => { throw new Error('dismissed') }))
+})
+
+test('expert review gets different theory and workflows at each stated level across all shipped profiles', () => {
+  const cases = [
+    ['general', 'Please verify live after merging the patch.', 'Evidence, reproducibility, and verification',
+      ['A check can only show', 'reproducible claim', 'Evidence transfers only']],
+    ['ml-research', 'Compare ridge regression and lasso for the study.', 'Linear models, shrinkage, and selection',
+      ['pulls weights toward zero', 'column span', 'Gauss–Markov']],
+    ['product', 'Plan the A/B test for this feature and set guardrails.', 'Experiments, rollout, and decisions',
+      ['Concurrent random assignment', 'detectable effect', 'Intent-to-treat']],
+    ['system-design', 'Set an error budget for the inbound API.', 'Service objectives and error budgets',
+      ['slow minority', 'good eligible events', 'observed bad-event fraction']],
+  ] as const
+  for (const [profile, text, title, markers] of cases) {
+    for (const [i, level] of onboarding.USER_LEVELS.entries()) {
+      const core = createCore(ASSETS)
+      core.handle(config({ profile, read: 'key', depths: onboarding.userDepths({ levels: { [profile]: level }, work: [], decide: [] }) }))
+      core.handle({ type: 'draft', text, now: 100, origin: 'paste' })
+      const [req] = requests(core.handle({ type: 'review', now: 200 }))
+      assert.equal(req?.kind, 'expert', profile)
+      const notes = req!.prompt.split('Profile chapters matched to the draft.')[1]!
+      assert.ok(notes, text)
+      assert.ok(notes.includes(`[${profile}] ${title}`), text)
+      assert.match(notes, /\nTheory\..+\nWorkflow\..+\nChoice\./)
+      assert.ok(notes.includes(markers[i]!), level)
+      for (const marker of markers.filter((_, j) => j !== i)) assert.ok(!notes.includes(marker), marker)
+    }
+  }
+})
+
+test('expert chapter selection is bounded, recognizes French topic phrases, and ignores settled decisions', () => {
+  const text = 'Précise la validation croisée, le jeu de test et la fuite de données. Compare la régression linéaire aux moindres carrés et mesure les faux positifs. Vérifie aussi le budget d’erreur et le taux de conversion.'
+  const core = createCore(ASSETS)
+  core.handle(config({ read: 'key', depths: { 'ml-research': 'essentials', 'system-design': 'research' } }))
+  core.handle({ type: 'draft', text, now: 100, origin: 'paste' })
+  const headings = /^\[[a-z-]+\] .+$/gm
+  const [ml] = requests(core.handle({ type: 'review', profile: 'ml-research', now: 200 }))
+  assert.equal(ml?.kind, 'expert')
+  assert.deepEqual(ml!.prompt.match(headings), [
+    '[ml-research] Resampling, leakage, and final assessment',
+    '[ml-research] Linear models, shrinkage, and selection',
+  ])
+  assert.match(ml!.prompt, /Rows from the same person/)
+  assert.ok(ml!.prompt.includes(`Draft:\n<<<\n${text}\n>>>`))
+  const [design] = requests(core.handle({ type: 'review', profile: 'system-design', now: 300 }))
+  assert.equal(design?.kind, 'expert')
+  assert.deepEqual(design!.prompt.match(headings), ['[system-design] Service objectives and error budgets'])
+  assert.match(design!.prompt, /Burn rate is the observed bad-event fraction/)
+
+  const unrelated = 'Fix the spacing on this dialog.\n\nDecisions:\n- Use lasso and measure the burn rate.'
+  core.handle({ type: 'draft', text: unrelated, now: 400, origin: 'paste' })
+  for (const [i, profile] of ['ml-research', 'system-design'].entries()) {
+    const [req] = requests(core.handle({ type: 'review', profile, now: 500 + i }))
+    assert.equal(req?.kind, 'expert')
+    assert.ok(req!.prompt.includes(`Draft:\n<<<\n${unrelated}\n>>>`))
+    assert.doesNotMatch(req!.prompt, /Profile chapters/)
+    assert.equal(req!.prompt.match(headings), null)
+  }
+})
+
+test('the general card request starts with the draft and contains no chapter notes', () => {
+  const core = createCore(ASSETS)
+  core.handle(config({ profile: 'product', depths: { product: 'essentials', 'ml-research': 'essentials' } }))
+  core.handle({ type: 'vocabulary', vocab: vocabOf('finalchallengedata', ['train.csv', 'test.csv', 'submission.csv', 'eda.ipynb'], { lightgbm: 3 }) })
+  assert.deepEqual(core.projectProfiles().map((lens) => lens.profile), ['ml-research'])
+  const text = 'Design an A/B test for the feature. Hold out a test set for the classifier.'
+  const [req] = requests(core.handle({ type: 'draft', text, now: 100, origin: 'paste' }))
+  assert.equal(req?.kind, 'card')
+  assert.ok(req!.prompt.startsWith(`Draft:\n<<<\n${text}\n>>>`))
+  assert.doesNotMatch([req!.prompt, ...req!.system].join('\n'),
+    /Profile chapters|\[ml-research\] Resampling|\[product\] Experiments|Rows from the same person|Concurrent random assignment/)
+})
+
+for (const [heading, unrelated, relevant] of [
+  ['[ml-research] Margins and kernels', ['Support vector search in the existing API.'],
+    'Tune a support vector classifier for this dataset.'],
+  ['[ml-research] Nonlinearity, splines, and additive models', ['Fix the SVG spline in the diagram.'],
+    'Fit a smoothing spline to the response across ages.'],
+  ['[ml-research] Uncertainty for performance and comparisons', ['Bootstrap the service.'],
+    'Compute paired bootstrap intervals for the performance gap.'],
+  ['[product] Policy, permissions, and user trust', ['Fix keyboard accessibility.', 'Fix the keyboard accessibility requirement for the dialog.'],
+    'Define account permissions for workspace owners and staff.'],
+] as const) {
+  test(`chapter routing for ${heading} requires a relevant topic`, () => {
+    for (const draft of unrelated) {
+      assert.ok(!chapterContext(ASSETS.chapters!, draft, () => 'standard').includes(heading), draft)
+    }
+    assert.ok(chapterContext(ASSETS.chapters!, relevant, () => 'standard').includes(heading), relevant)
+  })
+}
+
+test('chapter routing recognizes FWER and FDR as multiple testing', () => {
+  for (const criterion of ['FWER', 'FDR']) {
+    const notes = chapterContext(ASSETS.chapters!, `We need to control ${criterion}.`, () => 'standard')
+    assert.match(notes, /\[ml-research\] Multiple testing and selective claims/, criterion)
+  }
+})
+
+test('chapter routing sends the one-standard-error rule to shrinkage', () => {
+  for (const rule of ['one standard error rule', 'one-SE rule']) {
+    const notes = chapterContext(ASSETS.chapters!, `Use the ${rule}.`, () => 'standard')
+    assert.match(notes, /\[ml-research\] Linear models, shrinkage, and selection/, rule)
+    assert.doesNotMatch(notes, /\[ml-research\] Uncertainty for performance and comparisons/, rule)
+  }
+})
+
+test('changing a field level rereads the draft and keeps a confirmed row', () => {
+  const core = createCore(ASSETS)
+  const settings = { profile: 'ml-research', sketch: false }
+  core.handle(config({ ...settings, depths: { 'ml-research': 'essentials' } }))
+  const text = 'Use lasso to build the report, which can go in two places.'
+  const [first] = requests(core.handle({ type: 'draft', text, now: 100, origin: 'paste' }))
+  const reply = 'read | You want a report.\nkind | build\nrow | place | place | one | Put the report in {} | output | reports'
+  core.handle({ type: 'reply', now: 200, req: first!.req, text: reply, done: true })
+  const row = core.currentView().card!.rows[0]!
+  core.handle({ type: 'cardSet', now: 300, row: row.id, option: 1 })
+  const edited = `${text} Keep it short.`
+  const [pending] = requests(core.handle({ type: 'draft', text: edited, now: 400, origin: 'paste' }))
+  assert.equal(pending?.kind, 'card')
+  const [before] = requests(core.handle({ type: 'review', now: 410 }))
+  assert.equal(before?.kind, 'expert')
+  assert.match(before!.prompt, /pulls weights toward zero/)
+  const effects = core.handle(config({ ...settings, depths: { 'ml-research': 'research' } }))
+  for (const req of [pending!.req, before!.req]) {
+    assert.ok(effects.some((effect) => effect.type === 'cancel' && effect.req === req))
+  }
+  const [updated] = requests(effects)
+  assert.equal(updated?.kind, 'card')
+  assert.ok(updated!.prompt.startsWith(`Draft:\n<<<\n${edited}\n>>>`))
+  assert.match(updated!.prompt, /Already decided \(no row for these\):\n- Put the report in reports\./)
+  core.handle({ type: 'reply', now: 500, req: pending!.req, text: reply, done: true })
+  assert.equal(core.currentView().card?.read, null)
+  core.handle({ type: 'reply', now: 510, req: updated!.req, text: 'read | You want a short report.\nkind | build', done: true })
+  assert.equal(core.currentView().card?.read, 'You want a short report.')
+  const confirmed = core.currentView().card?.rows.find((entry) => entry.id === row.id)
+  assert.deepEqual(confirmed?.selected, [1])
+  assert.equal(confirmed?.chosen, true)
+  const [after] = requests(core.handle({ type: 'review', now: 520 }))
+  assert.equal(after?.kind, 'expert')
+  assert.match(after!.prompt, /Gauss–Markov/)
+  assert.doesNotMatch(after!.prompt, /pulls weights toward zero/)
+  assert.ok(after!.prompt.includes(`Draft:\n<<<\n${edited}\n\nDecisions:\n- Put the report in reports.\n>>>`))
+})
+
+test('on-demand Product review uses its chapters and level without requiring a decision catalog', () => {
+  const core = createCore(ASSETS)
+  core.handle(config({ read: 'key', depths: { product: 'research' } }))
+  const text = 'Design the A/B test for the feature. Hold out a test set for the classifier separately.'
+  core.handle({ type: 'draft', text, now: 100, origin: 'paste' })
+  const [req] = requests(core.handle({ type: 'review', profile: 'product', now: 200 }))
+  assert.equal(req?.kind, 'expert')
+  assert.match(req!.prompt, /Intent-to-treat/)
+  assert.doesNotMatch(req!.prompt, /\[ml-research\] Resampling/)
 })
 
 test('who the person is reaches the reading, their level sets each field\'s depth, and their fields need less evidence', () => {
@@ -590,6 +757,62 @@ test('expert words bring a profile catalog into the reading, and its decisions k
   assert.notEqual(row.statement, 'Hold out {}')
   assert.equal(row.options.length, slot.options.length)
   assert.equal(row.start, text.indexOf('test accuracy'))
+})
+
+test('the reader cannot reopen a catalog decision that the draft explicitly settled', () => {
+  const core = createCore(ASSETS)
+  core.handle(config())
+  const text = 'Compare the classifier with the baseline. Use the existing test set and report test accuracy.'
+  const [req] = requests(core.handle({ type: 'draft', now: 100, text, origin: 'paste' }))
+  const reply = 'read | You want a classifier comparison on the existing test set.\nkind | explore\n' +
+    'row | split_strategy | split | one | Hold out {} | new customers | later records'
+  core.handle({ type: 'reply', now: 200, req: req!.req, text: reply, done: true })
+  assert.deepEqual(core.currentView().card?.rows, [])
+})
+
+test('an explicitly pinned chart is inserted as requested, while an open asset choice still shows', () => {
+  const action = 'Insert the existing reliability chart into the incident note.'
+  for (const [source, open] of [
+    ['Use the saved SVG, its current caption, and the current data window.', false],
+    ['Use the saved SVG or regenerate it from the current data, whichever reads better.', true],
+  ] as const) {
+    const core = createCore(ASSETS)
+    core.handle(config())
+    const [req] = requests(core.handle({ type: 'draft', now: 100, text: `${action} ${source}`, origin: 'paste' }))
+    const reply = 'read | You want the reliability chart in the incident note.\nkind | change\n' +
+      'row | source | source | one | Use the chart {} | as saved | regenerated from the current data'
+    core.handle({ type: 'reply', req: req!.req, text: reply, now: 200, done: true })
+    assert.equal(core.currentView().card?.rows.length, Number(open))
+  }
+})
+
+test('catalog prompts and rendered rows use the same snapshot prerequisites', () => {
+  const text = 'Plan how database reads work during a network partition. Editors can accept unavailable reads or browse a clearly tagged snapshot.'
+  for (const ready of [true, false]) {
+    const core = createCore(ASSETS)
+    core.handle(config({ profile: 'system-design' }))
+    const input = ready ? text : 'Plan how database reads work during a network partition. Editors need a useful failure response.'
+    const [req] = requests(core.handle({ type: 'draft', now: 100, text: input, origin: 'paste' }))
+    assert.equal(req!.prompt.includes('live_degradation | when:'), ready)
+    const reply = 'read | You want a partition policy for reads.\nkind | explore\n' +
+      'row | live_degradation | outage | one | Users see {} | a labeled snapshot | an unavailable response'
+    core.handle({ type: 'reply', req: req!.req, text: reply, now: 200, done: true })
+    assert.equal(core.currentView().card?.rows.length, ready ? 1 : 0)
+  }
+})
+
+test('a proposed merge that deploys waits as an open choice on submit', () => {
+  const text = 'Finish the billing fix. We can open it for review or merge it to deploy.'
+  const core = createCore(ASSETS)
+  core.handle(config())
+  const [req] = requests(core.handle({ type: 'draft', now: 100, text, origin: 'paste' }))
+  const reply = 'read | You want the billing fix finished.\nkind | change\n' +
+    'row | release | release | one | Merge the PR to deploy {} | now, while you can watch the service | after review'
+  core.handle({ type: 'reply', req: req!.req, text: reply, now: 200, done: true })
+  assert.equal(core.currentView().card?.rows[0]?.openOnSend, true)
+  const sent = core.handle({ type: 'submit', now: 300, text }).find((effect) => effect.type === 'submit')!
+  assert.deepEqual(sent.decisions, [])
+  assert.match(sent.text, /Open choices/)
 })
 
 test('a follow-up written while the agent works gets its own card, its decisions travel, and the agent\'s choices come back', () => {

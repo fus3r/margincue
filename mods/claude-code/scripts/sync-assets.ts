@@ -5,6 +5,10 @@
 import { readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DEPTHS } from '../core/bundle.ts'
+import type { Depth } from '../core/bundle.ts'
+import { MAX_CHAPTER_NOTE, normalizeTopic } from '../core/chapters.ts'
+import type { ProfileChapter } from '../core/chapters.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const mod = resolve(here, '..')
@@ -18,6 +22,11 @@ for (const name of readdirSync(join(repo, 'profiles')).sort()) {
 
 const systemDesign = join(repo, 'profiles', 'system-design', 'profile.md')
 profiles['system-design'] = readFileSync(systemDesign, 'utf8')
+const chapters = Object.keys(profiles).flatMap((profile) => {
+  const file = join(repo, 'profiles', profile, 'chapters.md')
+  if (!existsSync(file)) return []
+  return readChapters(profile, readFileSync(file, 'utf8'))
+})
 const bundles = ['general', 'ml-research', 'system-design'].map((profile) =>
   JSON.parse(readFileSync(join(repo, 'profiles', profile, 'bundle.json'), 'utf8')))
 const expertSystem = readFileSync(join(repo, 'prompts', 'system.v2.md'), 'utf8')
@@ -32,7 +41,7 @@ const body = [
   '// Do not edit: change the sources and run `node mods/claude-code/scripts/sync-assets.ts`.',
   "import type { Assets } from '../core/types'",
   '',
-  `export const ASSETS: Assets = ${JSON.stringify({ system, profiles, expertSystem, sheetSystem, cardSystem, sketchSystem, blanksProtocol, bundles }, null, 2)}`,
+  `export const ASSETS: Assets = ${JSON.stringify({ system, profiles, expertSystem, sheetSystem, cardSystem, sketchSystem, blanksProtocol, chapters, bundles }, null, 2)}`,
   '',
 ].join('\n')
 
@@ -47,4 +56,36 @@ if (process.argv.includes('--check')) {
 } else {
   writeFileSync(target, body)
   console.log(`wrote ${target} (system + ${Object.keys(profiles).length} profiles: ${Object.keys(profiles).join(', ')})`)
+}
+
+function readChapters(profile: string, markdown: string): ProfileChapter[] {
+  const titles = new Set<string>()
+  const blocks = markdown.replace(/\r\n?/g, '\n').split(/^## /m).slice(1)
+  if (!blocks.length) throw new Error(`No chapters for ${profile}`)
+  return blocks.map((block) => {
+    const [title = '', ...sections] = block.split(/^### /m)
+    const name = title.trim()
+    const contents = new Map(sections.map((section) => {
+      const newline = section.indexOf('\n')
+      return [section.slice(0, newline).toLowerCase(), section.slice(newline + 1).trim()] as const
+    }))
+    const where = `${profile}/chapters.md — ${name}`
+    if (!name || titles.has(name)) throw new Error(`Missing or duplicate chapter title in ${where}`)
+    titles.add(name)
+    const signals = [...new Set((contents.get('signals') ?? '').split('|').map(normalizeTopic).filter(Boolean))]
+    if (!signals.length || !contents.get('sources')?.includes('https://')) {
+      throw new Error(`Add signals and a source link to ${where}`)
+    }
+    const notes = Object.fromEntries(DEPTHS.map((depth) => {
+      const lines = contents.get(depth)?.split('\n').map((line) => line.trim()).filter(Boolean) ?? []
+      const labels = ['Theory', 'Workflow', 'Choice']
+      if (lines.length !== labels.length || labels.some((label, i) => !lines[i]?.startsWith(`**${label}.** `))) {
+        throw new Error(`Add Theory, Workflow and Choice to the ${depth} section in ${where}`)
+      }
+      const note = lines.join('\n').replace(/\*\*/g, '')
+      if (note.length > MAX_CHAPTER_NOTE) throw new Error(`The ${depth} note in ${where} exceeds ${MAX_CHAPTER_NOTE} characters`)
+      return [depth, note] as const
+    })) as Record<Depth, string>
+    return { profile, title: name, signals, notes }
+  })
 }

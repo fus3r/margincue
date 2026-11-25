@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "version": "ca4366fbe886",
+  "version": "2ad8601a537b",
   "profile": "ml-research",
   "slots": [
     {
@@ -154,7 +154,8 @@
             "hold out whole",
             "split by group",
             "split by time",
-            "use the existing splits"
+            "use the existing splits",
+            "use the existing test set"
           ]
         },
         "fr": {

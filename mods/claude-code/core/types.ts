@@ -4,6 +4,7 @@
 
 import type { Depth, Language, Mode, ProfileBundle, Scope } from './bundle'
 import type { CardKind, RowType } from './card'
+import type { ProfileChapter } from './chapters'
 import type { Mention, Vocabulary } from './grounding'
 import type { DecisionView, StateChange, StateCue, StateLoad } from './state'
 
@@ -239,6 +240,7 @@ export type Assets = {
   system: string
   /** Profile Markdown keyed by name. */
   profiles: Record<string, string>
+  chapters?: ProfileChapter[]
   bundles?: ProfileBundle[]
   personalProfiles?: string[]
   expertSystem?: string

@@ -15,7 +15,7 @@ npx -y github:fus3r/margincue setup
 
 Setup does three things:
 1. It installs the Codex plugin (`codex plugin marketplace add fus3r/margincue`, then `codex plugin add margincue@margincue`).
-2. It asks three or four questions about your work, so the card fits it.
+2. It asks about your work, your level in the relevant fields, and which decisions you keep.
 3. It installs the card's terminal relay (`~/.margincue/bin/margincue-relay`, macOS and Linux) and offers a `codex` alias, so Codex starts with the card under its prompt.
 
 After accepting the alias, open a **new terminal** and run `codex`. The new terminal loads the alias from your shell profile. In VS Code, create a new terminal tab.
@@ -103,6 +103,14 @@ Edit `~/.margincue/settings.json`. Start a new CLI to pick up relay settings. `m
 An unanswered file choice can travel with its candidate paths under `Where things are`. In `open` mode it also travels as a question.
 
 Other settings include `"mode": "off" | "quiet" | "auto"`, `"sketch": false`, `"blanks": false`, and `"relay": false`. `MARGINCUE_RELAY=off` skips the relay for one launch.
+
+To update a stated level, run `margincue level <profile> <learning|practitioner|expert>`. The profiles are `general`, `ml-research`, `product`, and `system-design`. The copy installed by setup also works directly.
+
+```sh
+node "$HOME/.margincue/bin/margincue.mjs" level ml-research expert
+```
+
+Relaunch Codex to apply the change in a running terminal session. The desktop reader checks settings on each reading.
 
 To remove MarginCue:
 1. Run `codex plugin remove margincue@margincue`.

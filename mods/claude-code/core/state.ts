@@ -265,6 +265,7 @@ export const storageKey = (value: { slot: string; scope: Scope; model?: string }
 
 export class DecisionState {
   private readonly index = new Map<string, Slot>()
+  private readonly owners = new Map<Slot, string>()
   private readonly rules = new Map<Slot, Locale<CompiledRules>>()
   private readonly values = new Map<string, StoredDecision>()
   private active = new Map<Slot, Locale<CompiledRules>>()
@@ -281,6 +282,7 @@ export class DecisionState {
       for (const slot of bundle.slots) {
         if (this.index.has(slot.id)) continue
         this.index.set(slot.id, slot)
+        this.owners.set(slot, bundle.profile)
         this.rules.set(slot, { en: compile(slot.touch.en), fr: compile(slot.touch.fr) })
       }
     }
@@ -291,6 +293,8 @@ export class DecisionState {
   }
 
   slot(id: string): Slot | undefined { return this.index.get(id) }
+
+  profileFor(slot: Slot): string | undefined { return this.owners.get(slot) }
 
   forProfile(profile: string): Slot[] { return [...this.select([profile]).keys()] }
 

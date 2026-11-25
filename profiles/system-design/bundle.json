@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "version": "ecde66f57ce3",
+  "version": "ba4623fee817",
   "profile": "system-design",
   "slots": [
     {
@@ -413,7 +413,9 @@
             "saved_snapshot": [
               "last labeled snapshot",
               "saved snapshot",
-              "last saved view"
+              "last saved view",
+              "tagged snapshot",
+              "dated mirror"
             ]
           }
         },

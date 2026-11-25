@@ -31,6 +31,8 @@ const open = [
   ['At the end of onboarding, {}', 'send an email to the team owners'],
   ['At invoice time, {}', 'charge the customer’s card'],
   ['After the smoke tests, {}', 'deploy the API to production'],
+  ['Ship the billing fix by {}', 'merging to main'],
+  ['Publish the refreshed reports by {}', 'overwriting the existing published PDFs'],
   ['When the build is green, {}', 'publish the package to npm'],
 ] as const
 
@@ -66,6 +68,7 @@ const bind = [
   ['For the rollout review, {}', 'write a production deploy plan'],
   ['Use Docker Compose to deploy {}', 'a local demo'],
   ['Publish the docs {}', 'as a local preview'],
+  ['Prepare the fix by {}', 'opening an unmerged PR for review'],
 ] as const
 
 test('explicit hard-to-undo defaults open the row', () => {

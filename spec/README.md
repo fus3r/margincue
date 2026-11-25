@@ -169,7 +169,7 @@ replaced the kick-off sheet). When it is present the automatic tier is the card:
 is one line about the person (from the host's first-run interview), sent as a system
 block of every reading; `config.prefer` lists the profiles they work in, which halves the
 evidence `detectLenses` needs; `config.depths` gives a depth per profile, used for that
-profile's catalog in place of `depth`.
+profile's chapter notes and catalog in place of `depth`.
 
 **Before Enter.** Any draft of six words or more that is not a host command has
 a card. On each edit the core matches the draft against the vocabulary the host
@@ -187,6 +187,10 @@ the rows on screen, dismissed keys, and the catalogs of expert profiles whose
 words the draft uses (two or more) or that the user selected. Profiles the project calls
 for (`core/project.ts`, from the vocabulary's folder name, files and `libs`) go in the
 system blocks instead, filtered by the project's rigor and the depth.
+Chapter notes stay out of this prompt. The on-demand expert review carries up
+to two chapter notes selected locally from `assets.chapters`, in the requested
+profile. Matches use the draft body and case- and accent-folded topic phrases,
+and the note comes from that profile's configured depth.
 
 The reply is line-based (`core/card.ts`): `read | …`, `kind | …`, then
 `row | key | label | one|many|range|num | statement with {} | options… [| @anchor]`.

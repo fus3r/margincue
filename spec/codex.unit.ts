@@ -2,7 +2,7 @@
 // model client against a fake app-server. Runs on every platform in CI.
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { once } from 'node:events'
+import { EventEmitter, once } from 'node:events'
 import { test } from 'node:test'
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -40,6 +40,20 @@ const launcher = join(here, '..', 'mods', 'codex', 'src', 'cli.ts')
 const tsResolve = pathToFileURL(join(here, 'ts-resolve.ts')).href
 const OPEN = '⟦'
 const CLOSE = '⟧'
+
+test('margincue level updates one field on an existing Codex install', () => {
+  const location = mkdtempSync(join(home, 'levels-'))
+  const file = join(location, 'settings.json')
+  const before = { onboarded: 'done', sketch: false, user: { work: ['ml', 'apps'], levels: { 'ml-research': 'expert' }, decide: ['data'] } }
+  writeFileSync(file, JSON.stringify(before))
+  const update = spawnSync(process.execPath, ['--import', tsResolve, launcher, 'level', 'product', 'learning'], {
+    encoding: 'utf8', timeout: 10000, env: { ...process.env, MARGINCUE_HOME: location },
+  })
+  assert.equal(update.status, 0, update.stderr)
+  const saved = JSON.parse(readFileSync(file, 'utf8'))
+  assert.deepEqual(saved, { ...before, user: { ...before.user, levels: { 'ml-research': 'expert', product: 'learning' } } })
+  assert.deepEqual(cardConfig(saved).depths, { 'ml-research': 'research', product: 'essentials' })
+})
 
 const windowsArgCases = [
   ['explain this repo', '^^^"explain^^^ this^^^ repo^^^"'],
@@ -308,7 +322,7 @@ test('Codex defaults to send all and automatic reading; the IDE skips its text c
   }
 })
 
-test('the full-screen composer reads on tab then c and sends the file picked on its card', { timeout: 15000 }, async () => {
+test('the full-screen composer reads on tab then c and sends the file picked on its card', { timeout: 60000 }, async (t) => {
   const project = layoutProject()
   const draft = join(project, 'draft.txt')
   const prompt = 'Build a footer with a copyright year in `layout.tsx`.'
@@ -318,30 +332,40 @@ test('the full-screen composer reads on tab then c and sends the file picked on 
   const child = spawn(process.execPath, ['--import', tsResolve, launcher, 'compose', draft], {
     cwd: project, env: { ...process.env, MARGINCUE_CODEX: process.execPath },
   })
-  const closed = once(child, 'close')
+  const updates = new EventEmitter()
   let output = ''
-  child.stdout.setEncoding('utf8').on('data', (text: string) => { output += text })
-  child.stderr.setEncoding('utf8').on('data', (text: string) => { output += text })
-  async function waitFor(pattern: RegExp): Promise<void> {
-    for (const until = Date.now() + 5000; !pattern.test(output) && child.exitCode === null && Date.now() < until;) {
-      await new Promise((resolve) => setTimeout(resolve, 20))
-    }
-    assert.match(output, pattern)
+  let finished = false
+  const capture = (text: string) => {
+    output += text
+    updates.emit('change')
   }
-  try {
-    await waitFor(/tab, c to read/)
-    assert.doesNotMatch(output, /You want Draft/)
-    child.stdin.write('\tc')
-    await waitFor(/You want Draft/)
-    await waitFor(/dashboard\/layout\.tsx/)
-    child.stdin.end('2\r')
-    assert.equal((await closed)[0], 0)
-    assert.equal(readFileSync(draft, 'utf8'), `${prompt}\n\nDecisions:\n- "layout.tsx" is the one in app/dashboard/layout.tsx.`)
-  } finally {
+  child.stdout.setEncoding('utf8').on('data', capture)
+  child.stderr.setEncoding('utf8').on('data', capture)
+  const closed = once(child, 'close').then(([code]) => {
+    finished = true
+    updates.emit('change')
+    return code
+  })
+  t.after(async () => {
     child.kill()
     await closed
     saveSettings({})
+  })
+
+  async function waitFor(pattern: RegExp): Promise<void> {
+    while (!pattern.test(output) && !finished) {
+      await once(updates, 'change', { signal: t.signal })
+    }
+    assert.match(output, pattern)
   }
+  await waitFor(/tab, c to read/)
+  assert.doesNotMatch(output, /You want Draft/)
+  child.stdin.write('\tc')
+  await waitFor(/You want Draft/)
+  await waitFor(/dashboard\/layout\.tsx/)
+  child.stdin.end('2\r')
+  assert.equal(await closed, 0)
+  assert.equal(readFileSync(draft, 'utf8'), `${prompt}\n\nDecisions:\n- "layout.tsx" is the one in app/dashboard/layout.tsx.`)
 })
 
 test('Go ahead from the desktop card reaches the hook as an app message: no second card, and the decisions count', () => {

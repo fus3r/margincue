@@ -17,7 +17,7 @@ MarginCue is open source under the MIT license, and contributions are welcome: b
 | `mods/codex/src/` | Codex: the hooks, the composer, and the card for the ChatGPT app with its MCP server. |
 | `crates/margincue-relay/` | The Rust relay that draws the card under Codex's prompt. |
 | `prompts/` | The prompts for the reading, the sketch and the agent's marked choices. |
-| `profiles/` | Expert profiles: the choices that matter in a field, with examples. |
+| `profiles/` | Chapter notes, source references, and recurring decision catalogs for each field. |
 | `spec/` | Unit tests and traces of the core's behaviour. |
 
 ## Build and test
@@ -30,7 +30,7 @@ claude plugin test mods/claude-code    # the Claude Code plugin's tests
 cargo test --release --manifest-path crates/margincue-relay/Cargo.toml
 ```
 
-After editing `prompts/*.md` or `profiles/*.md`, run `node mods/claude-code/scripts/sync-assets.ts` to regenerate the plugin's assets. Commit `mods/codex/dist/` with any change to the code it bundles: CI checks that the bundle matches its sources.
+After editing a prompt or profile chapter, run `node mods/claude-code/scripts/sync-assets.ts` to regenerate the plugin's assets. See the [profile format](spec/profile-bundle.md) for chapter authoring and catalog compilation. Commit `mods/codex/dist/` with any change to its bundled sources. CI checks that the bundle matches those sources.
 
 ## Pull requests
 

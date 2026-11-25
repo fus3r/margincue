@@ -7,7 +7,7 @@ const EFFECTS = [
   /(?:^|: |\b(?:add|create|enable|run|schedule|with|using) )(?:(?:a|the|new|scheduled|automatic|nightly|daily|background) )*(?:purge|clean[- ]?up) (?:job|task|cron)\b(?! (?:will|should|runs?|is|are) )/,
   /\b(?:delet(?:e|es|ed|ing)|purg(?:e|es|ed|ing))(?! (?:jobs?|tasks?|cron|buttons?)\b)(?: [\w-]+){0,4} (?:data|records?|rows?|accounts?|teams?|users?|logs?|files?|backups?|databases?)\b/,
   /\b(?:drop|truncate)(?: [\w-]+){0,4} (?:tables?|columns?|databases?)\b/,
-  /\boverwrit(?:e|es|ing|ten)(?: [\w-]+){0,4} (?:files?|backups?|[\w./-]+\.[a-z0-9]+)\b/,
+  /\boverwrit(?:e|es|ing|ten)(?: [\w-]+){0,4} (?:files?|backups?|pdfs?|[\w./-]+\.[a-z0-9]+)\b/,
   /\b(?:force[- ]push(?:es|ed|ing)?|rewrit(?:e|es|ing)(?: [\w-]+){0,3} (?:git|commit|branch) history)\b/,
 
   // Database migrations and dependency changes.
@@ -33,6 +33,7 @@ const EFFECTS = [
   /\b(?:charge|bill|refund|debit)(?: [\w$.-]+){0,4} (?:cards?|customers?|payments?|invoices?)\b/,
   /\b(?:capture|issue|make|process)(?: [\w$.-]+){0,4} (?:payments?|refunds?)\b/,
   /\b(?:deploy|publish|release)(?: [\w./@-]+){0,5} (?:to|on) (?:the )?(?:prod(?:uction)?|staging|npm|pypi|crates\.io|github|(?:app|play) store)\b/,
+  /\bmerg(?:e|es|ing)(?: [\w/-]+){0,5} (?:to deploy|(?:to|into) (?:main|master))\b/,
   /\b(?:publish|release)(?: [\w-]+){0,3} (?:packages?|(?:new|public) versions?|public (?:site|docs)|repository)\b/,
 ]
 

@@ -46,6 +46,8 @@ While Claude works:
 
 It adapts to you and to the project. The first run asks what you work on and your level in each field. A data challenge or a research repository brings in the matching expert decisions (statistics and machine learning, system design), at the depth you asked for.
 
+The on-demand expert review (`ctrl+x tab`, then `r`, or `/margincue review`) draws on chapters for [general coding-agent work](profiles/general/chapters.md), [ML research](profiles/ml-research/chapters.md), [product](profiles/product/chapters.md), and [system design](profiles/system-design/chapters.md). It picks up to two chapters that match the draft and uses the theory and workflow for your stated level in each field. For example, a learner working on model evaluation gets help choosing what data to hold out. An expert gets guidance on what the evaluation design lets them claim.
+
 ## Keys
 
 | Key | What it does |
@@ -77,9 +79,9 @@ Your draft goes to Claude the same way your prompt does, through your own sessio
 
 ## Commands
 
-In Claude Code, `/margincue status` shows your settings, `/margincue setup` asks the first-run questions again, and `/margincue card|sketch|refs|blanks on|off` switches each part. Use `/margincue send all|picked|open` to choose what the card sends and `/margincue read auto|key` to choose when it reads. [Claude Code guide](mods/claude-code/README.md)
+In Claude Code, `/margincue status` shows what MarginCue knows about you and the project, `/margincue setup` asks the first-run questions again, and `/margincue card|sketch|refs|blanks on|off` switches each part. Use `/margincue send all|picked|open` to choose what the card sends and `/margincue read auto|key` to choose when it reads. [Claude Code guide](mods/claude-code/README.md)
 
-In Codex, set `send` and `read` in `~/.margincue/settings.json`. [Codex settings and shortcuts](mods/codex/README.md#settings-and-removal)
+In Codex, set `send` and `read` in `~/.margincue/settings.json`, and update a field with `margincue level <profile> <learning|practitioner|expert>`. [Codex settings and shortcuts](mods/codex/README.md#settings-and-removal)
 
 ## Development
 

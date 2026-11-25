@@ -1,5 +1,22 @@
 # Profile bundle format
 
+## Chapters
+
+Built-in profiles also have a `profiles/<profile>/chapters.md` file. Each
+chapter uses an H2 title and the H3 sections `Signals`, `Essentials`,
+`Standard`, `Research`, and `Sources`. Use a pipe-separated list of whole
+words or phrases for signals. In each depth section, put three lines
+starting with `**Theory.**`, `**Workflow.**`, and `**Choice.**`.
+
+Write each depth as an independent note of up to 700 characters. State
+the relevant result and its assumptions, a practical workflow, and a
+consequential choice that the result helps someone make. Include source
+links and any longer derivation in the chapter. `scripts/sync-assets.ts`
+compiles the signals and notes for both hosts. The reader selects up to
+two notes per request from draft topic matches.
+
+## Decision catalog
+
 The bundle is the runtime interface for a decision catalog. It is UTF-8 JSON.
 The authoring files can change independently. Compile and check the built-ins
 with these commands.

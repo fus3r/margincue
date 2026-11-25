@@ -28,8 +28,9 @@ export const CARD_MAX_ROWS = 6
 export const CARD_MAX_TOKENS = 560
 export const SKETCH_MAX_TOKENS = 420
 export const MAX_LABEL = 16
-/** Longest option kept: options travel with the prompt as written, so they are never cut, only left out. */
-export const MAX_OPTION = 80
+/** Ask for compact chips and keep a longer option whole when the reader overruns. */
+export const CARD_OPTION_TARGET = 80
+export const MAX_OPTION = 120
 export const MAX_STATEMENT = 120
 export const MAX_READ = 400
 /** Lines kept of a sketch. The prompt asks for ten; models often draw a few more, and the band folds what it has no room for. */
@@ -79,8 +80,8 @@ export function parseCard(reply: string): ParsedCard {
 function parseRow(fields: string[]): ParsedRow | null {
   let rest = [...fields]
   let anchor: string | undefined
-  const last = rest.at(-1)
-  if (last?.startsWith('@')) {
+  const last = clean(rest.at(-1) ?? '')
+  if (last.startsWith('@')) {
     anchor = clean(last.slice(1)) || undefined
     rest = rest.slice(0, -1)
   } else if (last && rest.length > 5) {
@@ -122,8 +123,8 @@ function parseRow(fields: string[]): ParsedRow | null {
   for (const value of values) {
     // The default mark comes after the option as asked, or before it as models sometimes write it.
     // Models also star items inside one option ("sign-ins*, invites*, changes"): every such mark goes.
-    const star = /(?:^|[\s,;(])\*|\*(?:$|[\s,;)])/.test(value)
-    const option = clean(value.replace(/\s*\*(?=$|[\s,;)])/g, '').replace(/(^|[\s,;(])\*\s*/g, '$1'))
+    const star = /(?:^|[\s,;:(])\*|\*(?:$|[\s,;:)])/.test(value)
+    const option = clean(value.replace(/\s*\*(?=$|[\s,;:)])/g, '').replace(/(^|[\s,;:(])\*\s*/g, '$1'))
     // Cutting is the layout's job: text that travels with the prompt is whole or left out,
     // and an option the model cut short itself ("running live in Claude Code and…") is left out too.
     if (!option || option.length > MAX_OPTION || /(?:…|\.\.\.)$/.test(option)) continue
@@ -317,6 +318,15 @@ export function deriveCardKind(draft: string): CardKind | null {
   if (text.endsWith('?') || /^(?:how|what|why|where|when|who|which)\s/i.test(text)) return 'ask'
   if (/^(?:(?:i|we)\s+(?:want|need)\s+)?(?:a\s+)?new(?:\s+[\w-]+){0,4}\s+page\b/i.test(text)) return 'build'
   return null
+}
+
+/** A direct insertion with an explicitly pinned source leaves the artifact choice closed. */
+export function insertsPinnedArtifact(draft: string): boolean {
+  const [insert, source, ...rest] = draft.trim().split(/(?<=[.!?])\s+/)
+  if (!insert || !source || rest.length) return false
+  return /^(?:add|attach|copy|insert) the (?:existing|saved|approved) [^,;]+ (?:to|into|in) [^,;]+[.!]$/i.test(insert) &&
+    /^use the (?:saved|existing|approved) (?:png|svg|jpe?g|pdf|image|file)\b/i.test(source) &&
+    !/\b(?:and (?:add|change|create|generate|replace)|or|either|whether|choose|decide)\b|\?/i.test(draft)
 }
 
 /** A sketch draws what it can know: something new, or an analysis. A change to existing code or screens it has not seen is not drawn. */

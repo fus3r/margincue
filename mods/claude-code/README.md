@@ -18,7 +18,7 @@ Run `/margincue status` in Claude Code to check that the mod loaded. The status 
 
 ## First run
 
-The first time MarginCue starts in an interactive session, with the prompt still empty, it asks three or four questions in Claude Code's own dialog: what you use coding agents for, your level in each field it has an expert catalog for (statistics and machine learning, system design) among those you picked, and which choices you want to make yourself. Your level sets how deep each field's catalog goes and how it is worded (plain words and the reasons for a learner, the full catalog for a researcher or an architect). Your fields need less evidence before a project calls for them. Every card reading gets one line about you, so it skips basics you settle alone and leaves the choices you hand to the agent alone. Closing the dialog skips it; `/margincue setup` asks again, `/margincue setup reset` forgets the answers, and `/margincue status` shows what MarginCue knows. The answers stay in the mod's own store on this machine.
+The first time MarginCue starts in an interactive session with an empty prompt, it asks what you use coding agents for, how experienced you are in the fields you picked, and which choices you want to make yourself. It can adapt chapters for general coding-agent work, statistics and machine learning, product, and system design. Your level sets the theory, practical workflow, and wording the draft reader uses in that field. Fields without a stated level use standard depth. Use `/margincue setup` to update your answers, `/margincue setup reset` to forget them, and `/margincue status` to see what MarginCue knows. The answers stay in the mod's store on this machine.
 
 ## What you see
 

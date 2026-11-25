@@ -9,13 +9,34 @@ import { createInterface as createInterface4 } from "node:readline";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // ../claude-code/hooks/onboarding.ts
+var USER_LEVELS = ["learning", "practitioner", "expert"];
 var WORK = [
-  { label: "Apps and products", key: "apps", words: "apps and products" },
+  { label: "Apps and products", key: "apps", words: "apps and products", profile: "product" },
   { label: "Data science and ML", key: "ml", words: "data science and machine learning", profile: "ml-research" },
   { label: "Systems and infrastructure", key: "systems", words: "systems and infrastructure", profile: "system-design" },
   { label: "Scripts and tooling", key: "tooling", words: "scripts and tooling" }
 ];
 var LEVELS = {
+  general: {
+    field: "general coding-agent use",
+    question: "How experienced are you with coding agents?",
+    header: "Agent use",
+    options: [
+      ["Learning (my first tasks)", "learning"],
+      ["Practitioner (I use them regularly)", "practitioner"],
+      ["Expert (I direct and review complex work)", "expert"]
+    ]
+  },
+  product: {
+    field: "product development",
+    question: "How experienced are you in product development?",
+    header: "Product",
+    options: [
+      ["Learning (first product or feature)", "learning"],
+      ["Practitioner (I ship and measure features)", "practitioner"],
+      ["Expert (I lead product decisions)", "expert"]
+    ]
+  },
   "ml-research": {
     field: "statistics and ML",
     question: "How deep are you in statistics and machine learning?",
@@ -37,6 +58,7 @@ var LEVELS = {
     ]
   }
 };
+var LEVEL_PROFILES = Object.keys(LEVELS);
 var DECIDE = [
   { label: "What gets built", key: "scope", words: "what gets built" },
   { label: "Data and results", key: "data", words: "how data and results are handled" },
@@ -55,11 +77,12 @@ function picks(answer, choices) {
   return { keys, other: other.join(", ") };
 }
 function levelOf(answer, options2) {
-  const exact = options2.find(([label]) => label.toLowerCase() === answer.trim().toLowerCase());
+  const stated = answer.trim().toLowerCase();
+  const exact = options2.find(([label, level]) => label.toLowerCase() === stated || level === stated);
   if (exact) return exact[1];
-  if (/\b(phd|research|professor|publish|review|architect|staff|principal|lead)\b/i.test(answer)) return "expert";
-  if (/\b(student|learning|beginner|course|new|first)\b/i.test(answer)) return "learning";
-  return "practitioner";
+  if (/\b(learning|student|beginner)\b/.test(stated)) return "learning";
+  if (/\b(practitioner|intermediate)\b/.test(stated)) return "practitioner";
+  if (/\b(expert|advanced|phd|researcher|architect)\b/.test(stated)) return "expert";
 }
 async function interview(ask) {
   const work = picks(await ask("What do you mostly use coding agents for? Pick any.", {
@@ -68,10 +91,11 @@ async function interview(ask) {
     multiSelect: true
   }), WORK);
   const levels = {};
-  for (const choice of WORK) {
-    if (!("profile" in choice) || !work.keys.includes(choice.key)) continue;
-    const level = LEVELS[choice.profile];
-    levels[choice.profile] = levelOf(await ask(level.question, { options: level.options.map(([label]) => label), header: level.header }), level.options);
+  const profiles = ["general", ...preferredProfiles({ work: work.keys })];
+  for (const profile of profiles) {
+    const field = LEVELS[profile];
+    const level = levelOf(await ask(field.question, { options: field.options.map(([label]) => label), header: field.header }), field.options);
+    if (level) levels[profile] = level;
   }
   const decide = picks(await ask("Which choices do you want to make yourself? The agent takes the rest.", {
     options: DECIDE.map((d) => d.label),
@@ -84,20 +108,42 @@ async function interview(ask) {
 function depthFor(level) {
   return level === "learning" ? "essentials" : level === "expert" ? "research" : "standard";
 }
+function userDepths(user) {
+  return Object.fromEntries(Object.entries(user?.levels ?? {}).map(([profile, level]) => [profile, depthFor(level)]));
+}
 function preferredProfiles(user) {
   return WORK.flatMap((w) => "profile" in w && user.work.includes(w.key) ? [w.profile] : []);
 }
+function readUser(value) {
+  const v = value;
+  if (!v || typeof v !== "object" || !Array.isArray(v.work) || !Array.isArray(v.decide) || !v.levels || typeof v.levels !== "object") return null;
+  const levels = {};
+  for (const [profile, level] of Object.entries(v.levels)) {
+    if (level === "learning" || level === "practitioner" || level === "expert") levels[profile] = level;
+  }
+  return {
+    work: v.work.filter((w) => typeof w === "string"),
+    levels,
+    decide: v.decide.filter((d) => typeof d === "string"),
+    ...typeof v.note === "string" && v.note && { note: v.note }
+  };
+}
 var list = (items) => items.length <= 1 ? items[0] ?? "" : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 function describeUser(user) {
+  const covered = /* @__PURE__ */ new Set();
   const work = WORK.filter((w) => user.work.includes(w.key)).map((w) => {
     const profile = "profile" in w ? w.profile : void 0;
     const level = profile ? user.levels[profile] : void 0;
-    return profile && level ? `${w.words} (${LEVELS[profile].field}: ${levelWord(profile, level)})` : w.words;
+    if (!profile || !level) return w.words;
+    covered.add(profile);
+    return `${w.words} (${LEVELS[profile].field}: ${levelWord(profile, level)})`;
   });
+  const otherLevels = Object.entries(user.levels).flatMap(([profile, level]) => LEVELS[profile] && !covered.has(profile) ? [`${LEVELS[profile].field} (${levelWord(profile, level)})`] : []);
   const decides = DECIDE.filter((d) => user.decide.includes(d.key)).map((d) => d.words);
   const leaves = DECIDE.filter((d) => !user.decide.includes(d.key)).map((d) => d.words);
   const parts = [
     work.length ? `Works on ${list(work)}.` : "",
+    otherLevels.length ? `States their level in ${list(otherLevels)}.` : "",
     user.note ? `In their words: ${user.note}.` : "",
     decides.length ? `Makes these choices themselves: ${list(decides)}${leaves.length ? `; leaves ${list(leaves)} to the agent` : ""}.` : ""
   ];
@@ -635,6 +681,7 @@ function readStored(value) {
 var storageKey = (value) => JSON.stringify([value.scope, value.model ?? "", value.slot]);
 var DecisionState = class {
   index = /* @__PURE__ */ new Map();
+  owners = /* @__PURE__ */ new Map();
   rules = /* @__PURE__ */ new Map();
   values = /* @__PURE__ */ new Map();
   active = /* @__PURE__ */ new Map();
@@ -650,6 +697,7 @@ var DecisionState = class {
       for (const slot of bundle.slots) {
         if (this.index.has(slot.id)) continue;
         this.index.set(slot.id, slot);
+        this.owners.set(slot, bundle.profile);
         this.rules.set(slot, { en: compile(slot.touch.en), fr: compile(slot.touch.fr) });
       }
     }
@@ -659,6 +707,9 @@ var DecisionState = class {
   }
   slot(id) {
     return this.index.get(id);
+  }
+  profileFor(slot) {
+    return this.owners.get(slot);
   }
   forProfile(profile) {
     return [...this.select([profile]).keys()];
@@ -751,6 +802,34 @@ function decisionFor(slot, value, lang, depth) {
   const style = preference(depth);
   const option = value.option === "other" ? value.text : slot.options.find((choice) => choice.id === value.option)?.wording[lang][style];
   return option ? { statement: slot.statement[lang][style], option } : void 0;
+}
+
+// ../claude-code/core/chapters.ts
+var MAX_CHAPTERS = 2;
+function normalizeTopic(text2) {
+  return text2.normalize("NFD").replace(new RegExp("\\p{M}", "gu"), "").toLowerCase().match(/[\p{L}\p{N}]+/gu)?.join(" ") ?? "";
+}
+function chapterContext(chapters, draft, depthOf, preferred = []) {
+  if (!chapters.length) return "";
+  const text2 = ` ${normalizeTopic(draft)} `;
+  const ranked = chapters.flatMap((chapter) => {
+    const hits = chapter.signals.filter((signal) => text2.includes(` ${signal} `));
+    if (!hits.length) return [];
+    return [{
+      chapter,
+      hits: hits.length,
+      specificity: Math.max(...hits.map((signal) => signal.split(" ").length)),
+      preferred: Number(preferred.includes(chapter.profile))
+    }];
+  }).sort((a, b) => b.specificity - a.specificity || b.hits - a.hits || b.preferred - a.preferred);
+  if (!ranked.length) return "";
+  const notes = ranked.slice(0, MAX_CHAPTERS).map(({ chapter }) => `[${chapter.profile}] ${chapter.title}
+${chapter.notes[depthOf(chapter.profile)]}`);
+  return [
+    "Profile chapters matched to the draft. These notes explain trade-offs. Use them only for a choice the final request still leaves open. Check each option against the available data, permissions and assumptions. Use routine workflow steps as context.",
+    ...notes,
+    "Check the end of the draft again. A later instruction may have picked one of the options listed earlier. Report that decision in the reading and leave it out of the rows. A chapter can match a topic with no open choice."
+  ].join("\n\n");
 }
 
 // ../claude-code/core/expert.ts
@@ -1008,7 +1087,8 @@ var CARD_MAX_ROWS = 6;
 var CARD_MAX_TOKENS = 560;
 var SKETCH_MAX_TOKENS = 420;
 var MAX_LABEL = 16;
-var MAX_OPTION = 80;
+var CARD_OPTION_TARGET = 80;
+var MAX_OPTION = 120;
 var MAX_STATEMENT = 120;
 var MAX_READ = 400;
 var SKETCH_MAX_LINES = 14;
@@ -1058,8 +1138,8 @@ function parseCard(reply) {
 function parseRow(fields) {
   let rest = [...fields];
   let anchor;
-  const last = rest.at(-1);
-  if (last?.startsWith("@")) {
+  const last = clean(rest.at(-1) ?? "");
+  if (last.startsWith("@")) {
     anchor = clean(last.slice(1)) || void 0;
     rest = rest.slice(0, -1);
   } else if (last && rest.length > 5) {
@@ -1099,8 +1179,8 @@ function parseRow(fields) {
   const starred = [];
   const options2 = [];
   for (const value of values) {
-    const star = /(?:^|[\s,;(])\*|\*(?:$|[\s,;)])/.test(value);
-    const option = clean(value.replace(/\s*\*(?=$|[\s,;)])/g, "").replace(/(^|[\s,;(])\*\s*/g, "$1"));
+    const star = /(?:^|[\s,;:(])\*|\*(?:$|[\s,;:)])/.test(value);
+    const option = clean(value.replace(/\s*\*(?=$|[\s,;:)])/g, "").replace(/(^|[\s,;:(])\*\s*/g, "$1"));
     if (!option || option.length > MAX_OPTION || /(?:…|\.\.\.)$/.test(option)) continue;
     if (options2.some((other) => normalize(other) === normalize(option))) continue;
     if (star) starred.push(options2.length);
@@ -1240,6 +1320,11 @@ function deriveCardKind(draft) {
   if (/^(?:(?:i|we)\s+(?:want|need)\s+)?(?:a\s+)?new(?:\s+[\w-]+){0,4}\s+page\b/i.test(text2)) return "build";
   return null;
 }
+function insertsPinnedArtifact(draft) {
+  const [insert, source, ...rest] = draft.trim().split(/(?<=[.!?])\s+/);
+  if (!insert || !source || rest.length) return false;
+  return /^(?:add|attach|copy|insert) the (?:existing|saved|approved) [^,;]+ (?:to|into|in) [^,;]+[.!]$/i.test(insert) && /^use the (?:saved|existing|approved) (?:png|svg|jpe?g|pdf|image|file)\b/i.test(source) && !/\b(?:and (?:add|change|create|generate|replace)|or|either|whether|choose|decide)\b|\?/i.test(draft);
+}
 function canSketch(kind) {
   return kind === "build" || kind === "explore";
 }
@@ -1315,7 +1400,7 @@ var EFFECTS = [
   /(?:^|: |\b(?:add|create|enable|run|schedule|with|using) )(?:(?:a|the|new|scheduled|automatic|nightly|daily|background) )*(?:purge|clean[- ]?up) (?:job|task|cron)\b(?! (?:will|should|runs?|is|are) )/,
   /\b(?:delet(?:e|es|ed|ing)|purg(?:e|es|ed|ing))(?! (?:jobs?|tasks?|cron|buttons?)\b)(?: [\w-]+){0,4} (?:data|records?|rows?|accounts?|teams?|users?|logs?|files?|backups?|databases?)\b/,
   /\b(?:drop|truncate)(?: [\w-]+){0,4} (?:tables?|columns?|databases?)\b/,
-  /\boverwrit(?:e|es|ing|ten)(?: [\w-]+){0,4} (?:files?|backups?|[\w./-]+\.[a-z0-9]+)\b/,
+  /\boverwrit(?:e|es|ing|ten)(?: [\w-]+){0,4} (?:files?|backups?|pdfs?|[\w./-]+\.[a-z0-9]+)\b/,
   /\b(?:force[- ]push(?:es|ed|ing)?|rewrit(?:e|es|ing)(?: [\w-]+){0,3} (?:git|commit|branch) history)\b/,
   // Database migrations and dependency changes.
   /(?:^|: |\b(?:with|using|via) )(?:(?:a|the|new|background|one-time) )*(?:schema|data|database) migrations?\b(?! (?:will|should|is|are) )/,
@@ -1337,6 +1422,7 @@ var EFFECTS = [
   /\b(?:charge|bill|refund|debit)(?: [\w$.-]+){0,4} (?:cards?|customers?|payments?|invoices?)\b/,
   /\b(?:capture|issue|make|process)(?: [\w$.-]+){0,4} (?:payments?|refunds?)\b/,
   /\b(?:deploy|publish|release)(?: [\w./@-]+){0,5} (?:to|on) (?:the )?(?:prod(?:uction)?|staging|npm|pypi|crates\.io|github|(?:app|play) store)\b/,
+  /\bmerg(?:e|es|ing)(?: [\w/-]+){0,5} (?:to deploy|(?:to|into) (?:main|master))\b/,
   /\b(?:publish|release)(?: [\w-]+){0,3} (?:packages?|(?:new|public) versions?|public (?:site|docs)|repository)\b/
 ];
 var NOT_DOING = /\b(?:soft-|(?:soft|no|not|never|don't|avoid|skip|prevent|without|instead of|rather than|dry[- ]run|mock|simulate|document(?:ing)?|describe|explain|plan|preview|review|check|show(?:ing)?)(?: [\w-]+){0,4} )$/;
@@ -2497,6 +2583,9 @@ var Core = class {
   storedDecisions() {
     return this.state.list();
   }
+  canReview(profile) {
+    return Boolean(this.assets.expertSystem && (this.state.forProfile(profile).length || this.assets.chapters?.some((chapter) => chapter.profile === profile)));
+  }
   /** The profiles the project calls for and why (for /margincue status). */
   projectProfiles() {
     return this.projectLenses.filter((lens) => this.state.forProfile(lens.profile).length > 0);
@@ -2550,11 +2639,17 @@ var Core = class {
     if (pickedOnly !== this.pickedOnly && this.card?.sketch) this.card.sketchDue = this.now;
     this.pickedOnly = pickedOnly;
     this.openRows = e.send === "open";
-    this.userLine = e.user?.trim() || void 0;
+    const userLine = e.user?.trim() || void 0;
+    const userChanged = this.userLine !== userLine;
+    this.userLine = userLine;
     this.today = e.today;
-    this.depths = { ...e.depths ?? {} };
+    const depths = e.depths ?? {};
+    const depthChanged = this.depth !== (e.depth ?? "standard") || Object.keys(this.depths).length !== Object.keys(depths).length || Object.entries(depths).some(([profile, depth]) => this.depths[profile] !== depth);
+    this.depths = { ...depths };
+    this.depth = e.depth ?? "standard";
     const prefer = [...e.prefer ?? []].sort();
-    if (prefer.join() !== this.prefer.join()) {
+    const preferChanged = prefer.join() !== this.prefer.join();
+    if (preferChanged) {
       this.prefer = prefer;
       this.projectLenses = this.index ? detectLenses(this.index.vocab, this.prefer) : [];
     }
@@ -2562,8 +2657,6 @@ var Core = class {
       if (this.card.sketch.req !== null) this.out.push({ type: "cancel", req: this.card.sketch.req });
       this.card.sketch = null;
     }
-    const depthChanged = this.depth !== (e.depth ?? "standard");
-    this.depth = e.depth ?? "standard";
     const language = e.language ?? "en";
     const languageChanged = this.language !== language;
     this.language = language;
@@ -2607,8 +2700,17 @@ var Core = class {
       this.reviewAt = null;
     }
     if (languageChanged) this.expertPicks.clear();
-    if (!enabled || sheetEnabled !== true || languageChanged || (profileChanged || depthChanged) && this.card?.stage === "draft") {
+    const contextChanged = depthChanged || userChanged || preferChanged;
+    if (contextChanged) this.clearExpert();
+    if (!enabled || sheetEnabled !== true || languageChanged || profileChanged && this.card?.stage === "draft") {
       this.clearCard();
+    } else if (contextChanged && this.card?.stage === "draft") {
+      const card = this.card;
+      if (card.req !== null) this.out.push({ type: "cancel", req: card.req });
+      if (card.sketch?.req != null) this.out.push({ type: "cancel", req: card.sketch.req });
+      Object.assign(card, { req: null, readFor: null, read: null, kind: null, error: false, sketch: null, sketchDue: null });
+      card.rows = card.rows.filter((row) => row.origin === "repo" || row.picked !== null);
+      this.fixCardFocus();
     }
     if (!this.enabled) {
       this.cancelAll();
@@ -2617,8 +2719,9 @@ var Core = class {
       this.focus = null;
       return;
     }
-    if (!wasEnabled || profileChanged || modeChanged || sheetChanged || languageChanged || sheetEnabled && (depthChanged || readModeChanged)) {
+    if (!wasEnabled || profileChanged || modeChanged || sheetChanged || languageChanged || sheetEnabled && (contextChanged || readModeChanged)) {
       this.actionAt = this.now;
+      if (sheetEnabled && !this.card && this.cardText()) this.onCardDraft(this.text);
       this.schedule("open", null);
     }
   }
@@ -2900,7 +3003,7 @@ ${target}` : asked;
     if (result.status !== "open") return result.reason;
     if (this.stateDismissed.has(result.slot.id)) return "dismissed";
     if (draft.directive === "delegate" && !result.slot.guard) return "prompt-delegates";
-    if (!eligibleSlot(result.slot, this.depth, draft.rigor)) return "depth-or-rigor";
+    if (!eligibleSlot(result.slot, this.slotDepth(result.slot), draft.rigor)) return "depth-or-rigor";
     return null;
   }
   decisionView() {
@@ -2908,7 +3011,7 @@ ${target}` : asked;
     const language = this.wordingLanguage(draft);
     const marks = draft?.results.flatMap((result) => {
       if (result.status !== "filled" || !result.span) return [];
-      const option = result.value && decisionFor(result.slot, result.value, language, this.depth)?.option;
+      const option = result.value && decisionFor(result.slot, result.value, language, this.slotDepth(result.slot))?.option;
       const evidence = result.evidence && this.language === "en" ? "set in the draft" : result.evidence;
       const value = option ?? evidence ?? (language === "en" ? "in project instructions" : "dans les consignes du projet");
       return [{ slot: result.slot.id, label: result.slot.label[language], value, span: result.span }];
@@ -2917,12 +3020,12 @@ ${target}` : asked;
     const first = [...open].sort((a, b) => Number(b.slot.guard) - Number(a.slot.guard) || b.slot.cost - a.slot.cost)[0];
     return {
       mode: this.mode,
-      depth: this.depth,
+      depth: this.depthOf(this.profileName),
       language,
       model: this.state.model,
       marks,
       open: open.length,
-      first: first && this.mode !== "quiet" ? stateCue(first, language, this.depth) : null
+      first: first && this.mode !== "quiet" ? stateCue(first, language, this.slotDepth(first.slot)) : null
     };
   }
   wordingLanguage(draft = this.stateDraft) {
@@ -3020,8 +3123,9 @@ ${target}` : asked;
   expertStarted = 0;
   onExpert(profile) {
     const system = this.assets.expertSystem;
-    const slots = this.state.forProfile(profile);
-    if (!this.enabled || this.mode === void 0 || !system || !slots.length || !this.text.trim() || isHostCommand(this.text)) return;
+    if (!this.enabled || this.mode === void 0 || !system || !this.canReview(profile) || !this.text.trim() || isHostCommand(this.text)) return;
+    const depth = this.depthOf(profile);
+    const slots = this.state.forProfile(profile).filter((slot) => eligibleSlot(slot, depth, "study"));
     this.clearExpert();
     this.cancelAll();
     if (this.sheetEnabled === void 0) this.reviewAt = null;
@@ -3046,21 +3150,24 @@ ${target}` : asked;
         });
         return [];
       }
-      return [{ ...stateCue({ slot, options: options2 }, language, this.depth), key: slot.id, persistent: true }];
+      return [{ ...stateCue({ slot, options: options2 }, language, depth), key: slot.id, persistent: true }];
     });
     const prompt = buildPrompt({
       draft: applyDecisions(this.text, this.decisions()),
       dismissed: [...this.dismissed.map((d) => d.statement), ...this.stateDismissed]
     });
+    const chapters = chapterContext(
+      this.assets.chapters?.filter((chapter) => chapter.profile === profile) ?? [],
+      splitDecisions(this.text).body,
+      () => depth
+    );
     this.out.push({
       type: "request",
       req: id,
       kind: "expert",
       tier: "cloud",
       system: [(this.language === "en" ? system.replace("in the draft's language", "in English") : system).replace(/\{\{\s*max_cues\s*\}\}/g, String(MAX_EXPERT_CUES)).trim()],
-      prompt: `${prompt}
-
-${expertPrompt(this.expertCatalog, slots)}`,
+      prompt: [prompt, expertPrompt(this.expertCatalog, slots), chapters].filter(Boolean).join("\n\n"),
       maxTokens: 512
     });
   }
@@ -3257,11 +3364,7 @@ ${expertPrompt(this.expertCatalog, slots)}`,
       card.dirty = false;
     }
     const { system, prompt } = this.cardRequest(card);
-    const key = `${this.profileName}
-${this.language}
-${this.userLine ?? ""}
-${system.length}
-${prompt}`;
+    const key = JSON.stringify([this.profileName, system, prompt]);
     const cached = this.cardCache.get(key);
     if (cached) {
       this.applyCard(card, cached, this.text);
@@ -3275,7 +3378,7 @@ ${prompt}`;
   }
   cardRequest(card) {
     const english = this.wordingLanguage() === "en";
-    const system = [this.assets.cardSystem.replace("{language}", english ? "in English, even when the draft is not" : "in the draft's language")];
+    const system = [this.assets.cardSystem.replace("{language}", english ? "in English, even when the draft is not" : "in the draft's language").replace("{max_option_chars}", String(CARD_OPTION_TARGET))];
     if (this.userLine) system.push(`About the developer: ${this.userLine}`);
     if (this.index?.vocab.map) system.push(`Repository outline (folders with code, most files first):
 ${this.index.vocab.map}`);
@@ -3310,6 +3413,9 @@ ${settled.map((line) => `- ${line}`).join("\n")}`);
   depthOf(profile) {
     return this.depths[profile] ?? this.depth;
   }
+  slotDepth(slot) {
+    return this.depthOf(this.state.profileFor(slot) ?? this.profileName);
+  }
   /** Profiles for this reading: the project's, the one the person picked, and any the draft's own words call for. */
   lensProfiles() {
     const profiles = /* @__PURE__ */ new Set();
@@ -3331,11 +3437,14 @@ ${settled.map((line) => `- ${line}`).join("\n")}`);
     const tiers = ["essential", "standard", "research"];
     const block = (profile, rigor, stakes) => {
       const depth = this.depthOf(profile);
-      const slots = this.state.forProfile(profile).filter((slot) => !this.state.resolve(slot.id) && eligibleSlot(slot, depth, rigor)).sort((a, b) => tiers.indexOf(a.tier) - tiers.indexOf(b.tier) || b.cost - a.cost).slice(0, 10);
-      const lines = slots.map((slot) => {
-        const cue = stateCue({ slot, options: slot.options }, language, depth);
+      const slots = this.state.forProfile(profile).filter((slot) => !this.state.resolve(slot.id) && eligibleSlot(slot, depth, rigor)).sort((a, b) => tiers.indexOf(a.tier) - tiers.indexOf(b.tier) || b.cost - a.cost);
+      const checked = this.state.evaluate(this.text, slots.map((slot) => slot.id));
+      const lines = slots.flatMap((slot) => {
+        const options2 = checked.available(slot);
+        if (checked.suppresses(slot) || this.state.instructionSlots.has(slot.id) || slot.requires?.some((fact) => checked.facts.get(fact) !== true) || options2.length < 2) return [];
+        const cue = stateCue({ slot, options: options2 }, language, depth);
         return `${slot.id} | when: ${slot.when} | ${cue.statement} | ${cue.options.map((option) => option.label).join(" | ")}`;
-      });
+      }).slice(0, 10);
       return lines.length ? `Expert decisions (${profile}${stakes}). When the draft touches one and leaves it open, add it as a row with this exact key, type one and these options:
 ${lines.join("\n")}` : "";
     };
@@ -3391,12 +3500,14 @@ ${lines.join("\n")}` : "";
     if (!partial) card.readFor = text2;
     card.error = false;
     const steps = listsSteps(text2);
-    const fresh = this.stateDraft?.directive === "delegate" || card.kind === "ask" ? [] : parsed.rows.filter((row) => !card.dismissed.has(row.key) && (row.key !== STEP_ORDER_KEY || steps) && !asksPlaces(card.rows, row));
+    const quiet = this.stateDraft?.directive === "delegate" || card.kind === "ask" || insertsPinnedArtifact(splitDecisions(text2).body);
+    const fresh = quiet ? [] : parsed.rows.filter((row) => !card.dismissed.has(row.key) && (row.key !== STEP_ORDER_KEY || steps) && !asksPlaces(card.rows, row));
     const old = card.rows.filter((row) => row.origin === "model" || row.origin === "lens");
     const used = /* @__PURE__ */ new Set();
     const next = [];
     for (const parsedRow of fresh) {
-      const row = this.lensRow(parsedRow) ?? { ...parsedRow, origin: "model" };
+      const row = this.lensRow(parsedRow, text2);
+      if (!row) continue;
       const match = old.find((entry) => !used.has(entry.id) && (entry.key === row.key || normalize(entry.statement) === normalize(row.statement)));
       if (match) used.add(match.id);
       if (match && match.picked !== null) next.push(row.anchor ? { ...match, anchor: row.anchor } : match);
@@ -3413,12 +3524,17 @@ ${lines.join("\n")}` : "";
       card.sketchDue = this.now;
     }
   }
-  /** A row whose key names a decision of an active expert profile takes the catalog's wording. */
-  lensRow(row) {
+  /** Keep catalog choices subject to the local decision state as well as the model's reading. */
+  lensRow(row, text2) {
     const slot = this.state.slot(row.key);
-    const profile = slot && this.lensProfiles().find((name) => this.state.forProfile(name).includes(slot));
-    if (!slot || !profile) return null;
-    const cue = stateCue({ slot, options: slot.options }, this.wordingLanguage(), this.depthOf(profile));
+    const profile = slot && this.state.profileFor(slot);
+    if (!slot || !profile || !this.lensProfiles().includes(profile)) return { ...row, origin: "model" };
+    const draft = this.stateDraft?.text === text2 && this.stateDraft.byId.has(slot.id) ? this.stateDraft : this.state.evaluate(text2, [slot.id]);
+    const depth = this.depthOf(profile);
+    const rigor = this.projectLenses.find((lens) => lens.profile === profile)?.rigor ?? draft.rigor;
+    const options2 = draft.available(slot);
+    if (!eligibleSlot(slot, depth, rigor) || draft.suppresses(slot) || slot.requires?.some((fact) => draft.facts.get(fact) !== true) || options2.length < 2 || this.state.resolve(slot.id) || this.state.instructionSlots.has(slot.id)) return null;
+    const cue = stateCue({ slot, options: options2 }, this.wordingLanguage(draft), depth);
     return {
       key: slot.id,
       label: cutLabel(cue.label.toLowerCase()),
@@ -4087,7 +4203,7 @@ ${prompt}` };
           if (!value || this.state.instructionSlots.has(result.slot.id)) continue;
           if (result.slot.requires?.some((fact) => draft.facts.get(fact) !== true)) continue;
           if (value.option !== "other" && !draft.available(result.slot).some((option) => option.id === value.option)) continue;
-          const decision = decisionFor(result.slot, value, language, this.depth);
+          const decision = decisionFor(result.slot, value, language, this.slotDepth(result.slot));
           if (decision) standing.push(decision);
         }
       }
@@ -4415,6 +4531,777 @@ The user runs MarginCue, which lets them switch the choices you make for them wh
 - At most four per reply, in prose only (never inside code, commands or file contents), and never for something the user already settled or for trivia.
 
 Example: Each run is saved as \u27E6run log format: one JSONL file per run | one SQLite database | one CSV per run\u27E7, and a zone stay counts as stuck after \u27E6stuck threshold: 45 s | 30 s | 60 s\u27E7.`,
+  "chapters": [
+    {
+      "profile": "general",
+      "title": "Scope, interfaces, and acceptance",
+      "signals": [
+        "acceptance criteria",
+        "public interface",
+        "existing behavior",
+        "existing behaviour",
+        "existing callers",
+        "scope of change",
+        "regression test",
+        "refactor the whole",
+        "compatibility contract",
+        "criteres d acceptation",
+        "comportement existant"
+      ],
+      "notes": {
+        "essentials": "Theory. A request to fix one behavior also implies that other behaviors people rely on should keep working.\nWorkflow. Reproduce the issue, name what must stay compatible, and run one check through the usual entry point.\nChoice. Ask about a wider change only if the request plausibly calls for one.",
+        "standard": "Theory. A contract includes inputs, outputs and visible side effects that existing callers depend on. A test should exercise the boundary where a regression would matter.\nWorkflow. Identify affected callers, record a failing behavior, and check both the requested change and its closest neighboring case.\nChoice. Clarify whether existing callers must work as before or can migrate with the change.",
+        "research": "Theory. Public contracts can include ordering, error semantics and persisted representations. With mixed versions, compatibility is directional.\nWorkflow. Inspect the contract actually used by callers and older data. Validate the migration and rollback boundaries, as well as the normal success path.\nChoice. Choose an in-place compatible change or a versioned migration where both are realistic and differ materially in scope."
+      }
+    },
+    {
+      "profile": "general",
+      "title": "Evidence, reproducibility, and verification",
+      "signals": [
+        "verification plan",
+        "verify live",
+        "production smoke test",
+        "repro steps",
+        "reproducible build",
+        "verify the result",
+        "source of truth",
+        "current snapshot",
+        "test evidence",
+        "verifier en production",
+        "etapes de reproduction",
+        "source de verite"
+      ],
+      "notes": {
+        "essentials": "Theory. A check can only show what it ran against. A local pass leaves any claim about the running service open.\nWorkflow. Run the smallest check that answers the question and keep the output. For a reproducible build, have an independent builder repeat it and compare the specified files byte for byte.\nChoice. Choose whether done means a local confirmation or a check in a shared environment when both are in scope.",
+        "standard": "Theory. A reproducible claim needs the inputs, version, environment, and acceptance rule. For a reproducible build, independent rebuilds using the same source, defined environment, and instructions must yield bit-identical copies of every specified artifact.\nWorkflow. Compare artifact hashes across independent rebuilds for a build claim. For a behavior claim, exercise the user-visible path and record the result.\nChoice. Choose the release or validation bar when more than one would meet the stated objective.",
+        "research": "Theory. Evidence transfers only when relevant conditions match. Staging can establish a procedure while leaving live data, load, credentials, or routing untested.\nWorkflow. Define the acceptance claim, observable, and representative environment. For builds, declare the environment properties that must be held fixed and check bit identity of the specified artifacts across independent rebuilds.\nChoice. Decide what evidence is sufficient to act and which uncertainty the deliverable may carry forward."
+      }
+    },
+    {
+      "profile": "general",
+      "title": "Publication, authorization, and rollback",
+      "signals": [
+        "push to main",
+        "deploy to production",
+        "publish release",
+        "publish the release",
+        "public release",
+        "send the message",
+        "post to the forum",
+        "force push",
+        "live deploy",
+        "deploys automatically",
+        "publier en production",
+        "envoyer le message",
+        "publier la version"
+      ],
+      "notes": {
+        "essentials": "Theory. Some changes leave the workspace, reach people, or affect a shared service. Preparing the change and making it public are different steps.\nWorkflow. Identify who or what will see the action and whether its effect can be reversed.\nChoice. Ask what should be prepared or sent only when permission or the destination is genuinely open.",
+        "standard": "Theory. A merge can also deploy, notify, or start automation. Its external effects may persist after a code revert.\nWorkflow. Check the target branch, automation, audience, and recovery path before the shared action.\nChoice. Clarify whether completion includes opening a review, merging, deploying, or publishing when the request leaves that boundary open.",
+        "research": "Theory. Rollback scope depends on the effect boundary. A version can be reverted while recipients, downstream writes, and published artifacts retain its effects.\nWorkflow. Locate the point of no return, stage the reversible steps, and verify how to pause and recover downstream effects.\nChoice. Decide where exposure starts and who owns any irrecoverable step when the authorizations leave both possibilities open."
+      }
+    },
+    {
+      "profile": "general",
+      "title": "Shared data and cleanup",
+      "signals": [
+        "delete old",
+        "delete stale",
+        "wipe data",
+        "remove duplicates",
+        "purge records",
+        "cleanup scope",
+        "overwrite existing",
+        "bulk update",
+        "merge records",
+        "supprimer les anciens",
+        "supprimer les doublons",
+        "ecraser les fichiers",
+        "purge des donnees"
+      ],
+      "notes": {
+        "essentials": "Theory. A cleanup rule defines which records count as stale or redundant. Identical names can refer to different records when teams or accounts share a naming scheme.\nWorkflow. Use shared names to find records to inspect. Check content and ownership before grouping files for cleanup. Preview the affected records and identify how to undo the change.\nChoice. Choose which teams are in scope or whether verified duplicates should be archived or deleted. Reused names alone are insufficient evidence for deletion.",
+        "standard": "Theory. Copying, archiving, and deleting differ in visibility, retention, and recoverability. Concurrent updates can change the set after a preview.\nWorkflow. Check ownership and references, use an explicit predicate, and verify the outcome against the reviewed set. Identical content across owners still requires a retention policy for both.\nChoice. Decide between a reversible archive and permanent removal if both meet the request and retention policy.",
+        "research": "Theory. Entity resolution trades false merges against missed matches. Deleting a canonical record can propagate to references, while hiding it may leave those references intact.\nWorkflow. Inspect the lineage and the ambiguous tail, establish a stable set at write time, and reconcile dependent records after the change.\nChoice. Agree on tolerated false merges or deletion boundaries before applying an irreversible bulk change."
+      }
+    },
+    {
+      "profile": "general",
+      "title": "Budgets, stopping conditions, and handoff",
+      "signals": [
+        "spend limit",
+        "budget cap",
+        "paid api",
+        "overnight run",
+        "timebox",
+        "stop condition",
+        "approval checkpoint",
+        "handoff criteria",
+        "budget maximum",
+        "plafond de depenses",
+        "condition d arret"
+      ],
+      "notes": {
+        "essentials": "Theory. An open-ended task can keep spending time after the useful answer is known.\nWorkflow. Name the result that would be enough, the budget, and what should happen on reaching it.\nChoice. Decide whether to stop at the first usable result or continue to compare feasible options.",
+        "standard": "Theory. A budget can limit money, elapsed time, or attempts. The right stopping condition is tied to the decision the work will inform.\nWorkflow. Gather a cheap, representative signal first where the request allows it. Record the evidence threshold and checkpoint the result.\nChoice. Clarify the budget dimension or decision threshold when the options would materially change the work.",
+        "research": "Theory. Information has value when it changes a decision or reduces a consequential downside. Overlapping evidence can add less value than a different check.\nWorkflow. Identify the leading decision and the outcome that would reverse it, then sequence tests by decision impact and cost.\nChoice. Decide whether unresolved uncertainty warrants another costly pass or a handoff with a stated limit."
+      }
+    },
+    {
+      "profile": "ml-research",
+      "title": "Prediction targets and statistical risk",
+      "signals": [
+        "prediction target",
+        "prediction horizon",
+        "forecasting horizon",
+        "loss function",
+        "prediction loss",
+        "label definition",
+        "label cutoff",
+        "bias variance",
+        "bayes risk",
+        "variable cible",
+        "horizon de prediction",
+        "fonction de perte"
+      ],
+      "notes": {
+        "essentials": "Theory. A prediction is judged against an outcome and a definition of error. Averaging equally bad misses and penalizing large misses heavily can favor different predictions.\nWorkflow. Write down who gets a prediction, when it is made, what counts as the outcome, and which inputs exist at that time.\nChoice. Pin down the event, horizon, or meaning of a costly miss when the draft leaves several useful interpretations.",
+        "standard": "Theory. Squared loss targets the conditional mean and absolute loss a conditional median. Under asymmetric linear loss, forecast the conditional quantile at level c_under / (c_under + c_over), where the costs are per unit of underprediction and overprediction.\nWorkflow. Define the prediction timestamp and label window, audit features as of that time, and match the baseline, loss, and metrics to the same target.\nChoice. Choose a mean forecast for aggregate planning or a quantile that reflects the relative costs of under- and overprediction when both uses are plausible.",
+        "research": "Theory. With finite second moments, squared risk at fixed x decomposes into irreducible conditional variance and squared deviation from the conditional mean. Averaging this deviation over training samples gives squared bias plus estimator variance.\nWorkflow. Specify the deployment distribution, the loss, and the source of randomness. Check overlap and information timing before comparing risks across populations.\nChoice. Decide which population's risk or which loss functional the claim should target."
+      }
+    },
+    {
+      "profile": "ml-research",
+      "title": "Resampling, leakage, and final assessment",
+      "signals": [
+        "cross validation",
+        "nested cv",
+        "nested resampling",
+        "train test split",
+        "train test",
+        "holdout",
+        "hold out",
+        "test accuracy",
+        "test set",
+        "validation set",
+        "group split",
+        "temporal split",
+        "time series split",
+        "data leakage",
+        "out of sample",
+        "validation croisee",
+        "jeu de test",
+        "fuite de donnees"
+      ],
+      "notes": {
+        "essentials": "Theory. Examples used to pick a model can make its final score look better than it is. Rows from the same person or from the future can also give the model clues it will lack in real use.\nWorkflow. Choose what must be held out, fit preprocessing and models on training data, tune on validation, then score on separate data.\nChoice. Clarify whether the score is for new groups or later records from known groups when both uses are possible.",
+        "standard": "Theory. Resampling estimates performance for the split and training procedure it reproduces. Group-disjoint and rolling-origin splits estimate different generalization targets.\nWorkflow. Freeze the unit, horizon, and split before tuning. Fit preprocessing inside each training fold, preserve label availability, and use a locked test set or nested evaluation for the final estimate.\nChoice. Decide which deployment population or time horizon the headline estimate represents.",
+        "research": "Theory. In nested CV the outer loop evaluates the full selection procedure at the outer training size. Reporting the best inner-CV score reuses the selection signal. Training-error optimism is the expected excess of loss on fresh responses at the same inputs over training loss.\nWorkflow. Apply group or time restrictions in both loops when deployment requires them. Keep any external test cohort locked and account for dependence among overlapping folds.\nChoice. Raise procedure performance versus frozen-fit performance only if the target remains open and suitable data exist for both."
+      }
+    },
+    {
+      "profile": "ml-research",
+      "title": "Linear models, shrinkage, and selection",
+      "signals": [
+        "linear regression",
+        "least squares",
+        "ridge regression",
+        "ridge penalty",
+        "lasso",
+        "elastic net",
+        "regularization path",
+        "feature selection",
+        "one standard error rule",
+        "one se rule",
+        "regression lineaire",
+        "moindres carres",
+        "regularisation"
+      ],
+      "notes": {
+        "essentials": "Theory. A linear model combines features with weights. Shrinkage pulls weights toward zero and can make predictions less sensitive to noise. Some penalties also drop features.\nWorkflow. Fit a simple linear baseline, scale features on training data, and compare the models on fresh data.\nChoice. Decide whether the result should prioritize prediction or a small set of features that people can inspect.",
+        "standard": "Theory. The least-squares residual is orthogonal to the design's column span. Ridge shrinks directions with little information most strongly. An L1 penalty can set coefficients exactly to zero.\nWorkflow. Standardize inside each fold, trace cross-validated error along the penalty path, and check residuals and feature stability.\nChoice. Choose the model with minimum mean CV loss or use the one-standard-error rule to pick the simplest model within one SE of that minimum. Use the SE at the minimum.",
+        "research": "Theory. Under E[Y | X] = X\u03B2, full rank, and spherical errors, Gauss\u2013Markov gives least squares minimum covariance among linear unbiased coefficient estimators. Ridge with RSS + \u03BB\u2016\u03B2\u2016\xB2 trades bias for variance on penalized directions. The lasso KKT conditions allow a zero coefficient when its absolute residual score is at most the penalty threshold.\nWorkflow. Check conditioning and support stability under resampling. Use a separate inference design for claims after selection.\nChoice. Distinguish prediction risk, support recovery, and coefficient inference before choosing the analysis."
+      }
+    },
+    {
+      "profile": "ml-research",
+      "title": "Classification, calibration, and operating points",
+      "signals": [
+        "classifier",
+        "classification threshold",
+        "operating point",
+        "probability calibration",
+        "calibration curve",
+        "calibrated probabilities",
+        "decision threshold",
+        "roc auc",
+        "precision recall",
+        "brier score",
+        "log loss",
+        "false positives",
+        "false negatives",
+        "seuil de decision",
+        "faux positifs",
+        "courbe roc"
+      ],
+      "notes": {
+        "essentials": "Theory. A score can rank cases well and still misstate their chances. Changing the cutoff trades missed cases for false alerts.\nWorkflow. Compare a simple baseline, check whether predicted chances agree with observed frequencies, and inspect how alert volume changes across cutoffs.\nChoice. Decide how many false alerts are worth catching more real cases, or whether the deliverable only needs to rank cases.",
+        "standard": "Theory. ROC AUC measures ranking. Precision depends on prevalence and the threshold. Log loss and the Brier score reward honest probabilities in expectation.\nWorkflow. Calibrate with held-out or out-of-fold predictions, choose an operating point from costs or capacity on validation data, then report discrimination, calibration, and threshold metrics on untouched data.\nChoice. Decide whether calibrated probabilities, ranking, or a fixed alert workload should drive selection.",
+        "research": "Theory. For calibrated posterior p and constant false-positive and false-negative costs, predict positive when p exceeds C_FP / (C_FP + C_FN), taking correct decisions to cost zero. Capacity limits or varying costs change the policy.\nWorkflow. Inspect calibration by relevant slice, quantify uncertainty at the operating point and stress-test under plausible prevalence or cost shifts.\nChoice. Choose the utility, volume constraint, or abstention policy that defines success."
+      }
+    },
+    {
+      "profile": "ml-research",
+      "title": "Nonlinearity, splines, and additive models",
+      "signals": [
+        "smoothing spline",
+        "smoothing splines",
+        "regression spline",
+        "regression splines",
+        "additive model",
+        "nonlinear regression",
+        "polynomial regression",
+        "partial effects",
+        "basis expansion",
+        "modele additif",
+        "regression non lineaire"
+      ],
+      "notes": {
+        "essentials": "Theory. A curve can capture a changing trend. A very flexible curve can also follow random bumps or behave poorly outside the observed range.\nWorkflow. Plot the data and residuals, compare a line to a smooth curve on fresh data, and inspect behavior near the edges.\nChoice. Establish whether the result must extrapolate, explain individual trends, or only predict inside the observed range.",
+        "standard": "Theory. Regression splines join low-degree polynomials with continuity constraints. Additive models sum smooth feature effects and need explicit terms for interactions.\nWorkflow. Tune basis size or smoothing inside validation, compare a linear baseline, and inspect support for each smooth.\nChoice. Decide whether interactions are part of the target or whether additive effects are needed for interpretation.",
+        "research": "Theory. With a positive integrated squared second-derivative penalty weight and at least two distinct inputs, the squared-error smoothing problem has a unique natural cubic spline minimizer with knots at the distinct design points.\nWorkflow. Inspect effective degrees of freedom and sensitivity to boundary assumptions. Check correlated smooth terms and support before interpreting partial effects.\nChoice. Choose the smoothness or shape constraints that the scientific claim can defend."
+      }
+    },
+    {
+      "profile": "ml-research",
+      "title": "Trees, bagging, and boosting",
+      "signals": [
+        "decision tree",
+        "decision trees",
+        "random forest",
+        "random forests",
+        "gradient boosting",
+        "boosted trees",
+        "xgboost",
+        "lightgbm",
+        "tree pruning",
+        "bagging",
+        "out of bag",
+        "arbre de decision",
+        "foret aleatoire"
+      ],
+      "notes": {
+        "essentials": "Theory. A tree predicts by following simple rules. Combining many trees can improve predictions at the cost of one readable set of rules.\nWorkflow. Fit a small tree first, compare a forest or boosted model on the same split, and inspect where each makes mistakes.\nChoice. Decide whether a person must be able to follow the whole model or whether a better-scoring ensemble is usable.",
+        "standard": "Theory. Bagging averages unstable fits. Random forests randomize candidate features to reduce dependence among trees. Boosting fits trees successively to improve a loss.\nWorkflow. Tune pruning or leaf size, check an ensemble against a small tree at the same evaluation budget, and keep early stopping off the test set.\nChoice. Decide which latency, stability, or interpretability constraint the fitted model must satisfy.",
+        "research": "Theory. For B exchangeable tree predictions with variance \u03C3\xB2 and common correlation \u03C1, the mean's variance is \u03C3\xB2[\u03C1 + (1 \u2212 \u03C1)/B]. Gradient boosting adds weak learners along fitted negative loss gradients.\nWorkflow. Check correlation and error curves as ensemble size grows, compare at matched budgets, and evaluate importance on held-out data with correlated predictors in mind.\nChoice. Separate predictive comparison from a claim about variable importance."
+      }
+    },
+    {
+      "profile": "ml-research",
+      "title": "Margins and kernels",
+      "signals": [
+        "support vector machine",
+        "support vector machines",
+        "support vector classifier",
+        "support vector classification",
+        "svm",
+        "rbf kernel",
+        "margin classifier",
+        "kernel trick",
+        "noyau gaussien",
+        "marge maximale"
+      ],
+      "notes": {
+        "essentials": "Theory. A margin classifier looks for a boundary with room between classes. A curved boundary can fit more patterns and may fit more noise.\nWorkflow. Scale the features using training data, then compare a simple boundary and a flexible one on fresh examples.\nChoice. Decide whether added accuracy is worth slower predictions or a harder-to-explain boundary.",
+        "standard": "Theory. A soft-margin SVM trades margin size against hinge-loss violations. An RBF kernel controls the distance over which observations influence each other.\nWorkflow. Fit scaling within folds, compare a linear baseline with tuned C and kernel width, and calibrate separately if the output must be a probability.\nChoice. Specify whether the use case needs a margin score or calibrated probabilities.",
+        "research": "Theory. A positive-semidefinite kernel supplies inner products in a feature space. In the soft-margin SVM dual, only nonzero dual coefficients contribute to the decision function.\nWorkflow. Validate kernel and scaling together, track support-vector count and latency, and stress-test under plausible feature-scale or distribution shifts.\nChoice. Decide which error and serving-budget target should constrain selection."
+      }
+    },
+    {
+      "profile": "ml-research",
+      "title": "Neural networks and training comparisons",
+      "signals": [
+        "neural network",
+        "neural networks",
+        "deep learning",
+        "checkpoint selection",
+        "early stopping",
+        "transformer model",
+        "fine tuning",
+        "finetuning",
+        "compute budget",
+        "training seeds",
+        "reseau de neurones",
+        "apprentissage profond",
+        "arret anticipe"
+      ],
+      "notes": {
+        "essentials": "Theory. A larger network can fit more patterns, including noise. Training progress and performance on fresh data answer different questions.\nWorkflow. Start from a simple baseline, choose when to stop using validation data, and evaluate the chosen checkpoint on untouched examples.\nChoice. Establish whether to optimize result quality or compare what can be achieved within a fixed budget.",
+        "standard": "Theory. Backpropagation computes gradients by the chain rule. Early stopping, weight decay, and augmentation change the effective training procedure.\nWorkflow. Track learning curves, use a fixed model-selection rule, log data and seeds, and compare against a simpler model under a stated tuning budget.\nChoice. Decide whether model comparisons hold compute, data exposure, or search effort fixed.",
+        "research": "Theory. A reported run mixes architecture, optimization, data, checkpoint selection and run-to-run variance. Repeated checkpoint selection on the same set adapts the procedure to that set.\nWorkflow. Match the budget tied to the claim, cross or pair seeds where appropriate, and fix the selection and ablation protocol before final evaluation.\nChoice. Distinguish an architectural effect under controls from best achievable performance at a fixed resource budget."
+      }
+    },
+    {
+      "profile": "ml-research",
+      "title": "Unsupervised structure and dimension reduction",
+      "signals": [
+        "pca",
+        "principal component",
+        "principal components",
+        "k means",
+        "clustering",
+        "cluster stability",
+        "unsupervised learning",
+        "dimensionality reduction",
+        "analyse en composantes principales",
+        "reduction de dimension",
+        "classification non supervisee"
+      ],
+      "notes": {
+        "essentials": "Theory. PCA finds directions that capture variation. Clustering groups nearby points. Both depend on how features are scaled and what counts as nearby.\nWorkflow. Choose meaningful features and scales, inspect the representation, and see whether groups survive reasonable changes.\nChoice. Decide whether the goal is a compact view of the data or stable groups for people to act on.",
+        "standard": "Theory. For centered data, PCA directions are covariance eigenvectors ordered by explained variance. K-means minimizes squared distance to assigned centroids for the given representation.\nWorkflow. Compare scaling choices, tune dimension or cluster count for the intended use, and check stability across initializations and resamples.\nChoice. Choose whether compression error, stability, or a downstream task should validate the representation.",
+        "research": "Theory. Eckart\u2013Young characterizes the truncated SVD as a best rank-k approximation in Frobenius norm. Near-tied eigenvalues can leave individual principal directions unstable while the subspace is stable.\nWorkflow. Inspect spectral gaps and subspace stability, align cluster labels across resamples, and validate any externally named categories on independent evidence.\nChoice. Distinguish a descriptive partition from a reproducible subgroup or prediction claim."
+      }
+    },
+    {
+      "profile": "ml-research",
+      "title": "Survival, censoring, and event risk",
+      "signals": [
+        "survival analysis",
+        "survival curve",
+        "survival model",
+        "censoring",
+        "censored data",
+        "kaplan meier",
+        "cox model",
+        "proportional hazards",
+        "competing risks",
+        "time to event",
+        "analyse de survie",
+        "risque concurrent",
+        "censure a droite"
+      ],
+      "notes": {
+        "essentials": "Theory. In time-to-event data, some people stop being observed before the event. Their observed follow-up still tells us something about how long they stayed event-free.\nWorkflow. Define the event and time origin, record last follow-up, and inspect how much data is available at each horizon.\nChoice. Clarify which event and horizon the result should describe, including what happens when another event prevents it.",
+        "standard": "Theory. A competing event precludes the target event. Cumulative incidence is the absolute risk with competing events present. A cause-specific hazard is the instantaneous rate of the target event among units still event-free. A hazard ratio compares those rates between groups.\nWorkflow. Use cumulative incidence for observed-world probabilities. Check risk sets, follow-up, and proportional hazards for a Cox comparison.\nChoice. If both targets are open, ask for absolute risk by a horizon or a relative cause-specific hazard. Keep the implied analysis valid for each.",
+        "research": "Theory. Aalen\u2013Johansen estimates cumulative incidence under independent right censoring within risk sets. Censoring competing events in Kaplan\u2013Meier estimates net survival from the cause-specific hazard. Competing causes can be dependent. Interpreting net survival as survival after eliminating competing events requires additional causal assumptions.\nWorkflow. Specify the risk sets, check delayed entry and adjust for covariate-dependent dropout where needed. Assess calibration at the relevant horizon.\nChoice. Choose a cause-specific rate comparison or an absolute event probability. A mechanistic claim needs evidence beyond the hazard contrast."
+      }
+    },
+    {
+      "profile": "ml-research",
+      "title": "Uncertainty for performance and comparisons",
+      "signals": [
+        "confidence interval",
+        "confidence intervals",
+        "paired bootstrap",
+        "bootstrap interval",
+        "bootstrap intervals",
+        "bootstrap resampling",
+        "paired comparison",
+        "seed variability",
+        "error bars",
+        "performance difference",
+        "cluster bootstrap",
+        "standard error of the estimate",
+        "standard error of the difference",
+        "intervalle de confiance",
+        "incertitude d echantillonnage",
+        "erreur standard"
+      ],
+      "notes": {
+        "essentials": "Theory. A small score gap can come from the test examples or from rerunning training. Which source of variation matters depends on what will happen next.\nWorkflow. Compare methods on the same examples where possible, report the gap, and name what repeats when the analysis is rerun.\nChoice. Decide whether the result is about this benchmark, new examples, or new training runs.",
+        "standard": "Theory. Pairing holds shared test cases fixed across methods when computing a difference. Resampling individual rows assumes those rows can vary independently.\nWorkflow. Resample the same independent units jointly across models, such as users or sites. Track training-seed variability separately when it matters.\nChoice. Choose the population and source of variation the reported interval should cover.",
+        "research": "Theory. Resampling test units for frozen fits quantifies conditional sampling variability. Refits at fixed tuning capture fitting variability conditional on the chosen settings. Selection variability requires repeating selection.\nWorkflow. For a pipeline-level interval, rerun selection within each training replicate. Match the resampling to the dependence structure, pair shared test units, and account for overlapping CV folds.\nChoice. Choose uncertainty for frozen fits on new test units or for a refitted selection pipeline when both designs are feasible. A request to freeze fits sets the conditional target."
+      }
+    },
+    {
+      "profile": "ml-research",
+      "title": "Multiple testing and selective claims",
+      "signals": [
+        "multiple testing",
+        "multiple comparisons",
+        "false discovery",
+        "family wise error",
+        "fwer",
+        "fdr",
+        "benjamini hochberg",
+        "bonferroni",
+        "selective inference",
+        "multiple hypotheses",
+        "correction de multiplicite",
+        "tests multiples",
+        "fausses decouvertes"
+      ],
+      "notes": {
+        "essentials": "Theory. When many effects are checked, some can look convincing by chance. The amount of evidence needed depends on whether the work is finding leads or confirming claims.\nWorkflow. List what was tested, label exploratory findings, and reserve separate evidence for confirmation where possible.\nChoice. Decide whether the output should produce leads for follow-up or support a small set of firm claims.",
+        "standard": "Theory. Family-wise error is the chance of at least one false rejection. False discovery rate is the expected false share of discoveries, with the share defined as zero when none are made.\nWorkflow. Define the family before inspecting results, use a correction appropriate to the error criterion, and report effects as well as adjusted significance.\nChoice. Choose the error criterion based on how the discoveries will be used.",
+        "research": "Theory. Bonferroni controls FWER under arbitrary dependence with valid marginal p-values. Benjamini\u2013Hochberg (BH) controls FDR under independence or positive regression dependence on the subset of true nulls (PRDS). Under arbitrary dependence, Benjamini\u2013Yekutieli applies BH at q / (1 + 1/2 + \u2026 + 1/m) for m tests.\nWorkflow. Define the tested family and account for prior filtering. Justify PRDS beyond pairwise positive correlations if using BH under dependence.\nChoice. If the guarantee is open, choose between controlling the chance of any false rejection and controlling the expected false share of discoveries."
+      }
+    },
+    {
+      "profile": "ml-research",
+      "title": "Effects, identification, and sensitivity",
+      "signals": [
+        "causal inference",
+        "treatment effect",
+        "propensity score",
+        "observational study",
+        "difference in differences",
+        "confounding",
+        "causal effect",
+        "effet causal",
+        "score de propension",
+        "effet du traitement",
+        "inference causale"
+      ],
+      "notes": {
+        "essentials": "Theory. Predicting what happens and finding what an action changes are different jobs. People receiving an action may already differ from the others.\nWorkflow. Name the action, comparison, outcome, and time window. Inspect how people got the action and whether the groups can be compared.\nChoice. Decide whether the result is for prediction, description, or a claim about the effect of an intervention.",
+        "standard": "Theory. Under consistency, conditional exchangeability, and positivity, adjusting for appropriate pre-treatment covariates can identify an average treatment effect. Positivity requires a positive chance of each treatment across the target covariate support. Some sample strata can still be empty.\nWorkflow. Write the target trial, choose time zero, inspect overlap and balance, and run sensitivity checks tied to the assignment process.\nChoice. Decide whether to target the eligible population, treated units, or a supported overlap population.",
+        "research": "Theory. The ATE and ATT integrate conditional effects over different covariate distributions. Doubly robust estimation can protect against misspecification of one nuisance model under its conditions, while causal identification still requires assumptions about assignment and outcomes.\nWorkflow. State the identification argument and assess practical positivity, interference, and unmeasured confounding.\nChoice. Select the estimand and defensible sensitivity analysis before choosing the estimator."
+      }
+    },
+    {
+      "profile": "product",
+      "title": "Discovery, segments, and the job",
+      "signals": [
+        "customer discovery",
+        "target customer",
+        "target audience",
+        "first customer",
+        "user research",
+        "user needs",
+        "user interviews",
+        "job to be done",
+        "customer segment",
+        "product discovery",
+        "recherche utilisateur",
+        "besoin utilisateur",
+        "segment client",
+        "public cible"
+      ],
+      "notes": {
+        "essentials": "Theory. Different people can use the same product for different reasons. The first release needs one person with a real task.\nWorkflow. Describe who they are, when they face the task, what they do now, and what a better outcome looks like.\nChoice. Pick which audience and job the first release serves when the pitch leaves several plausible.",
+        "standard": "Theory. An observed workaround is evidence of behavior and friction. Stated interest is evidence of preference under interview conditions.\nWorkflow. Recruit from the proposed segment, reconstruct recent cases, compare workarounds, and record evidence that would rule out the segment.\nChoice. Choose whether to serve a narrow high-need segment or validate a broader audience first.",
+        "research": "Theory. Recruiting from existing users conditions on adoption and can miss barriers that kept other eligible people out. Buyer, operator, and beneficiary may face different incentives.\nWorkflow. Sample adopters, eligible non-adopters, and abandoned attempts where practical. Map buying and use separately and triangulate interview claims with observed behavior.\nChoice. Choose which population and adoption barrier the discovery is meant to resolve."
+      }
+    },
+    {
+      "profile": "product",
+      "title": "Workflow, usability, and the first release",
+      "signals": [
+        "first release",
+        "mvp",
+        "onboarding flow",
+        "first run experience",
+        "product prototype",
+        "clickable prototype",
+        "usability test",
+        "core workflow",
+        "activation flow",
+        "time to value",
+        "service journey",
+        "premiere version",
+        "parcours utilisateur",
+        "test d utilisabilite"
+      ],
+      "notes": {
+        "essentials": "Theory. A usable first release lets someone finish a whole task. A prototype can test whether they know what to do before the task is built.\nWorkflow. Pick a start, an end, and the shortest realistic path between them. Try it with a person from the target group.\nChoice. If both assisted and self-serve paths are feasible, ask how the first release handles that step. Once the workflow is chosen, sketch it in the requested scope and use a simple presentation.",
+        "standard": "Theory. A prototype can expose navigation problems. Evidence of demand and repeat use comes from observing the product in use.\nWorkflow. Map the happy path and a common recovery path. Test a realistic task with a measurable success criterion, then instrument the live value event.\nChoice. Choose between testing workflow comprehension and delivering a usable pilot for repeat behavior.",
+        "research": "Theory. High-touch help can raise pilot completion by removing friction a self-serve product still has. A release validates adoption only for the support and distribution actually offered.\nWorkflow. Log assisted and unassisted completion, recruit across access constraints, and compare where people abandon or need intervention.\nChoice. Decide whether the pilot tests the value of the service or the viability of delivering it self-serve."
+      }
+    },
+    {
+      "profile": "product",
+      "title": "Activation, retention, and cohort measurement",
+      "signals": [
+        "activation metric",
+        "activation rate",
+        "product analytics",
+        "retention cohort",
+        "cohort analysis",
+        "retention rate",
+        "conversion funnel",
+        "north star metric",
+        "signup conversion",
+        "event instrumentation",
+        "taux d activation",
+        "taux de retention",
+        "taux de conversion"
+      ],
+      "notes": {
+        "essentials": "Theory. Signing up records interest. Finishing a useful task and coming back record different behaviors.\nWorkflow. Pick the action to count, who can take it, and when to check it. Review where people stop along the way.\nChoice. If success is still open, choose between signups, a completed first task, or coming back. When reporting an existing measure, use its given cohort and window.",
+        "standard": "Theory. Activation is the share of all eligible units that complete the value event during the window. The denominator includes eligible units that never activate.\nWorkflow. Set eligibility independently of the outcome, count each unit once, and use comparable follow-up. For workspaces, specify whether activation takes one member's action, actions by several distinct members, or a workspace-level event.\nChoice. When the unit is open, decide whether the value event belongs to a person or a workspace. Keep any eligibility, event, and window already defined for that unit.",
+        "research": "Theory. A cohort enrolled near the reporting cutoff has less opportunity to return. Conditioning on activation changes the population and can hide shifts in signup quality.\nWorkflow. Define risk sets and comparable follow-up, break out acquisition mix, and audit missing or double-counted events.\nChoice. Distinguish retention conditional on activation from retention across the eligible starting cohort."
+      }
+    },
+    {
+      "profile": "product",
+      "title": "Experiments, rollout, and decisions",
+      "signals": [
+        "a b test",
+        "ab test",
+        "randomized experiment",
+        "experiment rollout",
+        "feature experiment",
+        "holdout group",
+        "guardrail metric",
+        "sample ratio mismatch",
+        "test de variante",
+        "test controle",
+        "experience randomisee"
+      ],
+      "notes": {
+        "essentials": "Theory. Users can act differently on different days even if the product stays the same. Concurrent random assignment helps isolate the effect of each version.\nWorkflow. Define who is eligible, randomly assign people or groups to versions, and pick the main outcome and what would stop or expand rollout.\nChoice. Decide which result matters most and what minimum harm should pause rollout.",
+        "standard": "Theory. Random assignment makes assignment groups comparable in expectation. The experiment unit should match the boundary where people share the experience.\nWorkflow. Define eligibility, assignment, primary and guardrail metrics, detectable effect, and stopping rule. Check allocation before interpreting outcomes.\nChoice. Choose the assignment unit or rollout rule when people can cross or share product variants.",
+        "research": "Theory. Intent-to-treat compares groups as assigned. Partial interference confines spillovers to teams. Two-stage randomization can identify direct, spillover, total, and overall effects for the tested allocations.\nWorkflow. Randomize whole teams to compare team-wide rollout policies. To study spillovers, randomize treatment coverage across teams, then assign treatment to members within each team at its assigned coverage.\nChoice. Choose a team-wide rollout comparison or specify which effects at the tested coverage levels matter. Keep the stated metrics."
+      }
+    },
+    {
+      "profile": "product",
+      "title": "Pricing, packaging, and unit economics",
+      "signals": [
+        "pricing page",
+        "pricing plan",
+        "pricing plans",
+        "pricing tier",
+        "seat based pricing",
+        "paid conversion",
+        "free trial",
+        "pricing experiment",
+        "willingness to pay",
+        "unit economics",
+        "usage based pricing",
+        "modele tarifaire",
+        "disposition a payer",
+        "essai gratuit"
+      ],
+      "notes": {
+        "essentials": "Theory. People can like an offer and still choose against paying for it. A plan should make clear what it buys.\nWorkflow. Identify the buyer, state the offer and renewal terms, and look for behavior such as purchasing or renewing.\nChoice. Decide who gets free access and what useful boundary separates it from paid access.",
+        "standard": "Theory. Higher conversion, higher revenue, and higher contribution after variable costs can favor different plans. The charge unit also influences how customers use the product.\nWorkflow. Compare offers on an eligible cohort, include support and usage cost, and check price comprehension and renewal behavior.\nChoice. If the draft asks which supported unit to bill, compare those units directly. Include allowances, fees or mixed plans only when the billing decision includes them.",
+        "research": "Theory. Paid conversion can occur at signup, when a trial ends, or on a later purchase. Profitability depends on retention, usage cost, and who changes their purchasing behavior. Willingness-to-pay estimates depend on how they are elicited, including whether a response has real purchase consequences.\nWorkflow. Define the conversion event and its window from signup or exposure, including how trials count. Compare cohorts with equivalent follow-up, track selection and renewals, and stress-test costs for heavy usage.\nChoice. Decide whether to optimize short-term paid adoption or durable contribution under uncertain retention and cost."
+      }
+    },
+    {
+      "profile": "product",
+      "title": "Policy, permissions, and user trust",
+      "signals": [
+        "product policy",
+        "refund policy",
+        "cancellation policy",
+        "audit access",
+        "approval flow",
+        "account permissions",
+        "role permissions",
+        "role based access control",
+        "rbac",
+        "staff notes",
+        "user consent",
+        "price guarantee",
+        "saved quote",
+        "supplier price",
+        "regle de remboursement",
+        "droits d acces",
+        "consentement utilisateur"
+      ],
+      "notes": {
+        "essentials": "Theory. Different people can need different views or actions in the same task. Showing too much can expose information they were never meant to see.\nWorkflow. Walk through the task as each role, check what they need to know, and show them what happens when an action fails.\nChoice. Decide which role can see sensitive information, take an action, or approve an exception.",
+        "standard": "Theory. Role-based access control assigns permissions through roles. Product commitments can also depend on account state and earlier promises about price, access, or deadlines.\nWorkflow. Map roles, commitments and edge cases. Check the copy, user-visible state, and an escalation path against the same policy.\nChoice. Clarify which commitment or authorization should apply across the handoff.",
+        "research": "Theory. Policies at role, account and lifecycle boundaries can conflict. The product's permission and exception rules define which grants or restrictions take precedence.\nWorkflow. Trace precedence to the product's rules and test competing roles, revocation, and replay of prior actions. Measure completion and errors that expose information or violate commitments.\nChoice. Decide who owns exceptions and settle precedence where the product's rules leave a conflict open."
+      }
+    },
+    {
+      "profile": "system-design",
+      "title": "Service objectives and error budgets",
+      "signals": [
+        "slo",
+        "sli",
+        "error budget",
+        "burn rate",
+        "availability target",
+        "latency target",
+        "tail latency",
+        "service objective",
+        "budget d erreur",
+        "objectif de disponibilite",
+        "latence p99"
+      ],
+      "notes": {
+        "essentials": "Theory. A service target describes how often users get a good result. Average response time can hide a slow minority.\nWorkflow. Pick one important user action, count successes and slow responses, and choose a time window and target.\nChoice. Clarify whether the promise is about finishing successfully, finishing in time, or both.",
+        "standard": "Theory. An event-based SLI divides good eligible events by all eligible events. An SLO sets the target for that ratio over a window. One minus the target is the allowed fraction of bad events.\nWorkflow. Measure at the caller-visible boundary, define exclusions and latency thresholds, and decide how consuming the error budget changes rollout policy.\nChoice. Decide which critical paths or customer cohorts get their own objective.",
+        "research": "Theory. Burn rate is the observed bad-event fraction divided by the allowed fraction. A long window estimates budget impact, while a short window helps confirm the problem is ongoing. Low traffic can make both noisy.\nWorkflow. Backtest alert windows and targets using production traffic patterns and known incidents. Review classifier and denominator changes too.\nChoice. Set the page-worthy impact and response window for each service promise."
+      }
+    },
+    {
+      "profile": "system-design",
+      "title": "Commit points and external effects",
+      "signals": [
+        "durable enqueue",
+        "durable queue",
+        "durable write",
+        "submit succeeds",
+        "transactional outbox",
+        "database transaction",
+        "atomic write",
+        "batch atomicity",
+        "commit point",
+        "partial success",
+        "all or nothing",
+        "mise en file durable",
+        "transaction distribuee",
+        "succes partiel"
+      ],
+      "notes": {
+        "essentials": "Theory. A queued job may still fail. A job number can confirm that the request was saved. A finished result confirms that the work completed.\nWorkflow. Specify the response payload, status, and retry behavior at acceptance and completion.\nChoice. When both are open, choose what the endpoint returns and when. It can return a job number after durable acceptance or the result after completion. A draft that sets the acknowledgement point settles this choice.",
+        "standard": "Theory. A database transaction can commit local changes atomically. Sending an external message in a separate write creates a failure window. An outbox records the publish intent in the same commit.\nWorkflow. Trace commit, retry, and crash boundaries. Confirm when the caller receives an acknowledgement and how unfinished effects become visible.\nChoice. Decide whether to acknowledge durable acceptance or wait for the visible effect to finish.",
+        "research": "Theory. An outbox makes intent durable but replay can publish duplicates. Even with atomic database state, a side effect outside that boundary needs downstream deduplication or a recovery contract.\nWorkflow. State the invariant across stores and exercise crashes immediately before and after each commit and acknowledgement.\nChoice. Decide which effects must become visible together and which may converge or be compensated later."
+      }
+    },
+    {
+      "profile": "system-design",
+      "title": "Replication, consistency, and isolation",
+      "signals": [
+        "read replica",
+        "read replicas",
+        "replica lag",
+        "consistency guarantee",
+        "linearizability",
+        "linearizable",
+        "serializable isolation",
+        "write skew",
+        "split brain",
+        "network partition",
+        "read your writes",
+        "quorum reads",
+        "coherence forte",
+        "isolation serialisable",
+        "retard de replication"
+      ],
+      "notes": {
+        "essentials": "Theory. Without a freshness guarantee, replicas can lag indefinitely. A user who just made a change usually expects to see it on their next read.\nWorkflow. Name the reads that must see recent writes, then try delayed updates and an unavailable copy.\nChoice. Decide whether to wait for a fresh answer or serve a clearly marked older answer.",
+        "standard": "Theory. Read-your-writes lets callers observe their own completed writes. Linearizability gives individual operations a sequential order consistent with real time. Strict serializability requires a serial transaction order that respects real-time precedence.\nWorkflow. Write the invariants and read paths, then test concurrent updates, replica lag, and failure of an origin.\nChoice. Choose where a stronger promise applies and what callers get when it cannot be met.",
+        "research": "Theory. The Gilbert\u2013Lynch result makes linearizable read/write semantics and availability at every nonfailed node mutually exclusive during a network partition. Strict serializability adds a real-time requirement to serializability.\nWorkflow. Specify the consistency model by operation. Use failure histories and invariant-based tests across partitions and reconciliation.\nChoice. Decide which operations may return degraded results and which must reject or wait."
+      }
+    },
+    {
+      "profile": "system-design",
+      "title": "Messaging, retries, and idempotency",
+      "signals": [
+        "at least once",
+        "exactly once",
+        "delivery guarantee",
+        "idempotency",
+        "idempotency key",
+        "duplicate delivery",
+        "redelivery",
+        "webhook retry",
+        "retry policy",
+        "message ordering",
+        "livraison au moins une fois",
+        "cle d idempotence",
+        "ordre des messages"
+      ],
+      "notes": {
+        "essentials": "Theory. A timeout can mean the first attempt succeeded and the reply was lost. Repeating an action can apply it twice.\nWorkflow. Reuse the same server-enforced idempotency key on every retry of an operation. Test duplicate delivery and make status visible when the outcome is unclear.\nChoice. Choose whether people can retry immediately or must first check the status of the original operation.",
+        "standard": "Theory. At-least-once delivery can redeliver messages. Idempotency requires that reprocessing the same operation has the same effect, including when attempts overlap.\nWorkflow. Define key scope and retention, atomically record effects and deduplication where possible, and test both acknowledgement loss and reordering.\nChoice. Decide whether events need order per entity or whether operations can commute or reconcile.",
+        "research": "Theory. A broker's transaction or deduplication scope bounds its exactly-once guarantee. An external effect needs a shared transaction or an equivalent protocol at its own boundary.\nWorkflow. Test crashes before and after effect and acknowledgement, replay past retention, and define reconciliation for uncertain outcomes.\nChoice. Decide which boundary the guarantee covers and how operators resolve ambiguous effects."
+      }
+    },
+    {
+      "profile": "system-design",
+      "title": "Capacity, queues, and overload",
+      "signals": [
+        "backpressure",
+        "queue backlog",
+        "queue depth",
+        "load shedding",
+        "rate limit",
+        "rate limiting",
+        "capacity planning",
+        "saturation",
+        "concurrency limit",
+        "throughput target",
+        "delestage",
+        "file d attente",
+        "limite de debit"
+      ],
+      "notes": {
+        "essentials": "Theory. When more work arrives than can finish, waiting time grows. Retrying immediately can make a busy service busier.\nWorkflow. Measure how long work waits, limit how much can queue, and test what happens at peak load.\nChoice. Decide whether to delay, refuse, or serve a smaller result when the system runs out of capacity.",
+        "standard": "Theory. Little's law relates averages in a stable system. The mean number of requests in the system equals throughput times mean time in the system. Use the same boundary for all terms and measure tail latency separately.\nWorkflow. Load-test bursts and sustained traffic, measure queue age and saturation, and budget concurrency, timeouts, and retry volume together.\nChoice. Choose which traffic gets priority and how rejected work can recover.",
+        "research": "Theory. Once work reaches the bottleneck's service rate, allowing more requests in flight usually lengthens the queue. Correlated retries and common deadlines can amplify overload.\nWorkflow. Test the saturation knee with realistic arrivals, dependency latency, and retries. Measure goodput and per-class tail latency as shedding begins and recovers.\nChoice. Pick a priority or fairness promise if both are supported. When priority, queue limit and retry response are given, use that contract."
+      }
+    },
+    {
+      "profile": "system-design",
+      "title": "Freshness, caches, and degraded reads",
+      "signals": [
+        "cache invalidation",
+        "cache ttl",
+        "data freshness",
+        "stale data",
+        "stale reads",
+        "stale while revalidate",
+        "cache aside",
+        "read through cache",
+        "materialized view",
+        "invalidation du cache",
+        "donnees perimees",
+        "fraicheur des donnees"
+      ],
+      "notes": {
+        "essentials": "Theory. A cached or precomputed answer can be faster and can show older information after something changes.\nWorkflow. Measure how old an answer can become, test updates and outages, and show the user its age when it matters.\nChoice. Decide how old an answer is acceptable and when the screen should say it is unavailable.",
+        "standard": "Theory. TTL limits how long an entry can be reused under a policy. Source data can already be old at refresh, and outage policy can extend reuse past expiry.\nWorkflow. Track source timestamps, test invalidation races and concurrent misses, and define a different policy for outage fallback if needed.\nChoice. Choose which reads may be stale and which must wait for a current source.",
+        "research": "Theory. Freshness is a property of the end-to-end path. A per-cache TTL cannot prove read-your-writes or an age bound across layers.\nWorkflow. Budget lag from origin through refresh and cache, measure age by cohort, and test invalidation races, failover, and refresh failure.\nChoice. Set separate freshness and availability promises for normal and degraded operation when both modes are in scope."
+      }
+    },
+    {
+      "profile": "system-design",
+      "title": "Rollout, compatibility, and migration",
+      "signals": [
+        "canary",
+        "phased rollout",
+        "feature flag rollout",
+        "contract migration",
+        "expand contract",
+        "rolling deploy",
+        "schema migration",
+        "dual write",
+        "backwards compatibility",
+        "rollback window",
+        "deploiement progressif",
+        "migration de schema",
+        "retrocompatibilite"
+      ],
+      "notes": {
+        "essentials": "Theory. A release can expose everyone to a defect at once. Restoring the old code may fail if the new version already changed the data.\nWorkflow. Try a small rollout, check one user-visible signal, and rehearse stopping it and restoring service.\nChoice. Use the specified audience or choose one that fits the rollout goal when delegated. If initial exposure is still an open choice, offer a pilot or all eligible users when both are feasible.",
+        "standard": "Theory. During a rolling deploy, old and new versions may run together. Expand\u2013contract keeps the shared interface compatible until the data migration and cutover are verified.\nWorkflow. Add compatible fields, backfill, compare reads, switch traffic, and only then remove the old representation.\nChoice. Decide how long the rollback window lasts and which user cohort verifies the new route.",
+        "research": "Theory. A canary needs a comparable control and enough traffic to see a meaningful degradation. Rolling traffic back can leave writes from the new version in place.\nWorkflow. Choose guardrail metrics and a hold period, test mixed-version reads and writes, and rehearse rollback after a partial backfill.\nChoice. Decide when operators can promote, roll back, or must repair forward after an irreversible step."
+      }
+    },
+    {
+      "profile": "system-design",
+      "title": "Recovery, durability, and degraded operation",
+      "signals": [
+        "disaster recovery",
+        "data loss",
+        "recovery point",
+        "recovery time",
+        "rpo",
+        "rto",
+        "backup restore",
+        "restore drill",
+        "point in time recovery",
+        "regional failover",
+        "restore from backup",
+        "reprise apres sinistre",
+        "restauration de sauvegarde"
+      ],
+      "notes": {
+        "essentials": "Theory. Recovering quickly and recovering every recent change are different goals. A backup is useful only if it can be restored.\nWorkflow. Pick a likely failure, restore to a clean environment, and check how much time and data were lost.\nChoice. Decide what users may see during recovery and how much downtime or data loss they can tolerate.",
+        "standard": "Theory. RPO limits how far back restored data may fall. RTO limits elapsed recovery time. Replication can reduce recovery time while copying a bad write to the replicas.\nWorkflow. Rehearse restoring backups and logs, validate data at the restore point, and measure time to resume the critical user path.\nChoice. Decide whether a read-only view is useful while writes are being recovered.",
+        "research": "Theory. Region loss, logical corruption, and compromised credentials have different fault and recovery boundaries. Multi-store recovery can violate cross-store invariants without a compatible restore cut or reconciliation.\nWorkflow. Test a representative failure per boundary, restore independent backups, and reconcile cross-store changes before advertising recovery.\nChoice. Specify which acknowledged writes must survive each fault class and when degraded operation is acceptable."
+      }
+    }
+  ],
   "bundles": [
     {
       "formatVersion": 1,
@@ -6736,7 +7623,7 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
     },
     {
       "formatVersion": 1,
-      "version": "ca4366fbe886",
+      "version": "2ad8601a537b",
       "profile": "ml-research",
       "slots": [
         {
@@ -6890,7 +7777,8 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
                 "hold out whole",
                 "split by group",
                 "split by time",
-                "use the existing splits"
+                "use the existing splits",
+                "use the existing test set"
               ]
             },
             "fr": {
@@ -8129,7 +9017,7 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
     },
     {
       "formatVersion": 1,
-      "version": "ecde66f57ce3",
+      "version": "ba4623fee817",
       "profile": "system-design",
       "slots": [
         {
@@ -8542,7 +9430,9 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
                 "saved_snapshot": [
                   "last labeled snapshot",
                   "saved snapshot",
-                  "last saved view"
+                  "last saved view",
+                  "tagged snapshot",
+                  "dated mirror"
                 ]
               }
             },
@@ -10376,8 +11266,7 @@ var processEngine = {
 
 // src/card-config.ts
 function cardConfig(settings) {
-  const user = settings.user;
-  const depths = Object.fromEntries(Object.entries(user?.levels ?? {}).map(([profile, level]) => [profile, depthFor(level)]));
+  const user = readUser(settings.user);
   const date = /* @__PURE__ */ new Date();
   const today = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
   return {
@@ -10394,7 +11283,7 @@ function cardConfig(settings) {
     profile: "general",
     streaming: false,
     eagerPlan: false,
-    depths,
+    depths: userDepths(user),
     ...user && { user: describeUser(user), prefer: preferredProfiles(user) }
   };
 }
@@ -10539,7 +11428,7 @@ import { spawn as spawn2 } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.24";
+var VERSION = "0.4.25";
 var MIN_CODEX = "0.171";
 function tooOld(output2) {
   const match = /codex-cli (\d+)\.(\d+)\.(\d+)/.exec(output2);
@@ -12739,7 +13628,8 @@ async function main(argv) {
   if (command === "codex") return launch(rest);
   if (command === "setup") return setup();
   if (command === "status") return status2();
-  process.stdout.write("margincue setup | codex [args] | compose FILE | hook prompt|stop|start | mcp | status\n");
+  if (command === "level") return setLevel(rest);
+  process.stdout.write("margincue setup | codex [args] | compose FILE | hook prompt|stop|start | mcp | status | level PROFILE LEVEL\n");
 }
 async function hook(event) {
   try {
@@ -12950,12 +13840,24 @@ function aliasLine() {
 }
 function status2() {
   const settings = readSettings();
+  const user = readUser(settings.user);
   process.stdout.write([
     `MarginCue for Codex: ${settings.mode ?? "auto"} \xB7 sketch ${settings.sketch === false ? "off" : "on"} \xB7 blanks ${settings.blanks === false ? "off" : "on"}`,
     `Read: ${settings.read === "key" ? "key" : "auto"} \xB7 Send: ${sendSetting(settings)}`,
-    settings.user ? `You: ${describeUser(settings.user)}` : "You: not set up yet (margincue setup asks a few questions).",
+    user ? `You: ${describeUser(user)}` : "Run margincue setup to set your level and the kinds of choices you make.",
     `Composer: ${existsSync2(STABLE) ? STABLE : "not installed (margincue setup)"}`
   ].join("\n") + "\n");
+}
+function setLevel(args) {
+  const [profile, level] = args;
+  if (args.length !== 2 || !profile || !LEVEL_PROFILES.includes(profile) || !level || !USER_LEVELS.includes(level)) {
+    throw new Error(`Use margincue level <${LEVEL_PROFILES.join("|")}> <${USER_LEVELS.join("|")}>`);
+  }
+  const settings = readSettings();
+  const user = readUser(settings.user) ?? { work: [], levels: {}, decide: [] };
+  saveSettings({ ...settings, user: { ...user, levels: { ...user.levels, [profile]: level } } });
+  process.stdout.write(`MarginCue will use the ${level} level for ${profile}.
+`);
 }
 main(process.argv.slice(2)).catch((error) => {
   process.stderr.write(`margincue: ${error instanceof Error ? error.message : String(error)}

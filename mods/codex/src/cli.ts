@@ -7,6 +7,7 @@
 //   margincue mcp             the desktop card's stdio server
 //   margincue prefetch ID     read a desktop card in the background (the prompt hook starts it)
 //   margincue status          what MarginCue knows about you
+//   margincue level PROFILE LEVEL   change your stated level in a field
 
 import { spawn, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, appendFileSync } from 'node:fs'
@@ -14,7 +15,8 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
-import { describeUser, interview } from '../../claude-code/hooks/onboarding'
+import { describeUser, interview, LEVEL_PROFILES, readUser, USER_LEVELS } from '../../claude-code/hooks/onboarding'
+import type { Level } from '../../claude-code/hooks/onboarding'
 import { runnable } from './command'
 import { compose } from './compose'
 import { promptHook, stopHook } from './hooks'
@@ -39,7 +41,8 @@ async function main(argv: string[]): Promise<void> {
   if (command === 'codex') return launch(rest)
   if (command === 'setup') return setup()
   if (command === 'status') return status()
-  process.stdout.write('margincue setup | codex [args] | compose FILE | hook prompt|stop|start | mcp | status\n')
+  if (command === 'level') return setLevel(rest)
+  process.stdout.write('margincue setup | codex [args] | compose FILE | hook prompt|stop|start | mcp | status | level PROFILE LEVEL\n')
 }
 
 // ---- hooks: never in the way of the person's prompt --------------------------------------
@@ -277,12 +280,24 @@ function aliasLine(): { files: string[]; text: string } {
 
 function status(): void {
   const settings = readSettings()
+  const user = readUser(settings.user)
   process.stdout.write([
     `MarginCue for Codex: ${settings.mode ?? 'auto'} · sketch ${settings.sketch === false ? 'off' : 'on'} · blanks ${settings.blanks === false ? 'off' : 'on'}`,
     `Read: ${settings.read === 'key' ? 'key' : 'auto'} · Send: ${sendSetting(settings)}`,
-    settings.user ? `You: ${describeUser(settings.user)}` : 'You: not set up yet (margincue setup asks a few questions).',
+    user ? `You: ${describeUser(user)}` : 'Run margincue setup to set your level and the kinds of choices you make.',
     `Composer: ${existsSync(STABLE) ? STABLE : 'not installed (margincue setup)'}`,
   ].join('\n') + '\n')
+}
+
+function setLevel(args: string[]): void {
+  const [profile, level] = args as [string?, Level?]
+  if (args.length !== 2 || !profile || !LEVEL_PROFILES.includes(profile) || !level || !USER_LEVELS.includes(level)) {
+    throw new Error(`Use margincue level <${LEVEL_PROFILES.join('|')}> <${USER_LEVELS.join('|')}>`)
+  }
+  const settings = readSettings()
+  const user = readUser(settings.user) ?? { work: [], levels: {}, decide: [] }
+  saveSettings({ ...settings, user: { ...user, levels: { ...user.levels, [profile]: level } } })
+  process.stdout.write(`MarginCue will use the ${level} level for ${profile}.\n`)
 }
 
 main(process.argv.slice(2)).catch((error: unknown) => {
