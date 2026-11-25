@@ -23,10 +23,11 @@ import { joinList, sameSelection } from '../core/card'
 import { splitDecisions } from '../core/decisions'
 import { closesFrame, tidySketch } from '../core/frame'
 import type { MargincueCard, MargincueReceipt, MargincueRow } from '../types'
-import { CARD_READ_KEY, CHORD_NEXT, CHORD_SWAP, DARK, RECEIPT_DIFF_KEY, cells, segmentsWidth, text, truncate, wrapLines } from './segments'
+import { CARD_KEEP_KEY, CARD_READ_KEY, CHORD_NEXT, CHORD_SWAP, DARK, RECEIPT_DIFF_KEY, cells, segmentsWidth, text, truncate, wrapLines } from './segments'
 import type { Color, Palette, Segment, Style } from './segments'
 
-export type CardOptions = { chords: boolean; extra: Segment[]; palette?: Palette; sketchKey?: string; readHint?: string }
+type Button = Extract<Segment, { kind: 'button' }>
+export type CardOptions = { chords: boolean; extra: Button[]; palette?: Palette; sketchKey?: string; readHint?: string; keepHint?: string }
 
 type Line = Segment[]
 
@@ -43,7 +44,7 @@ type Grid = { label: number; content: number; columns: number }
 
 type Words = {
   inCode: string; preview: string; reading: string; noReading: string; readHint: string; drawing: string; attach: string; attached: string
-  change: string; nextRow: string; set: string; open: string; toAgent: string; was: string; more: (n: number) => string
+  change: string; nextRow: string; set: string; open: string; toAgent: string; keepAll: string; was: string; more: (n: number) => string
   turn: (n: number) => [string, string]; after: (n: number) => [string, string]; lines: (n: number) => string
   folded: (n: number) => string
 }
@@ -52,7 +53,7 @@ const EN: Words = {
   inCode: 'in code', preview: 'preview', reading: 'reading your draft…', noReading: 'no reading this time',
   readHint: `ctrl+x tab, ${CARD_READ_KEY} to read`,
   drawing: 'drawing…', attach: 'attach to prompt', attached: '✓ goes with the prompt',
-  change: 'change', nextRow: 'next row', set: 'set', open: 'open', toAgent: 'left to agent', was: 'was',
+  change: 'change', nextRow: 'next row', set: 'set', open: 'open', toAgent: 'left to agent', keepAll: 'keep all', was: 'was',
   more: (n) => `+${n} more row${n === 1 ? '' : 's'} · alt↑`,
   turn: (n) => [`The agent made ${n} choice${n === 1 ? '' : 's'} for you.`, 'Switch one: it adapts at its next step.'],
   after: (n) => [`The agent made ${n} choice${n === 1 ? '' : 's'}.`, 'Switching one writes the follow-up prompt.'],
@@ -64,7 +65,7 @@ const FR: Words = {
   inCode: 'dans le code', preview: 'aperçu', reading: 'lecture du brouillon…', noReading: 'pas de lecture cette fois',
   readHint: `ctrl+x tab, ${CARD_READ_KEY} pour lire`,
   drawing: 'dessin…', attach: 'joindre au prompt', attached: '✓ joint au prompt',
-  change: 'changer', nextRow: 'ligne suivante', set: 'choisis', open: 'en attente', toAgent: 'à décider', was: 'avant',
+  change: 'changer', nextRow: 'ligne suivante', set: 'choisis', open: 'en attente', toAgent: 'à décider', keepAll: 'tout garder', was: 'avant',
   more: (n) => `+${n} ligne${n === 1 ? '' : 's'} · alt↑`,
   turn: (n) => [`L'agent a fait ${n} choix pour vous.`, 'Changez-en un : il en tient compte à son étape suivante.'],
   after: (n) => [`L'agent a fait ${n} choix.`, 'En changer un écrit la suite.'],
@@ -84,15 +85,30 @@ export function layoutCard(card: MargincueCard, columns: number, budget: number,
   const P = options.palette ?? DARK
   const labels = card.language === 'fr' ? FR : EN
   const words = { ...labels, ...(card.pickedOnly && { open: labels.toAgent }), readHint: options.readHint ?? labels.readHint }
-  const hidden = hiddenButtons(card, options.chords)
+  const shortcuts = hiddenButtons(card, options.chords)
   const open = card.rows.filter((row) => !row.chosen && !(card.pickedOnly && row.learned)).length
-  if (card.collapsed) return [collapsed(card, columns, P, words, open, hidden)]
+  const controls = card.stage === 'draft' ? [...options.extra] : []
+  if (card.stage === 'draft' && card.rows.some((row) => !row.chosen && !row.openOnSend && row.selected.length)) {
+    controls.unshift({
+      kind: 'button', key: 'card-keep', hotkey: CARD_KEEP_KEY, label: words.keepAll,
+      ...(options.keepHint && { face: `${options.keepHint} ${words.keepAll}` }),
+      dim: true, action: { type: 'cardKeep' },
+    })
+  }
 
   const g = grid(card, columns, words)
-  const right = status(card, words, open, columns >= 110 && card.stage === 'draft' ? options.extra : [], P)
+  const right = card.collapsed ? [] : status(card, words, open, P)
+  const available = columns - g.content - 3 - (card.awaitingRead ? cells(words.readHint) : 16)
+  for (const button of controls) {
+    const gap = right.length ? [text('  ')] : []
+    if (segmentsWidth([...right, ...gap, button]) <= available) right.push(...gap, button)
+  }
   // The reading is the card's point: on a narrow screen it takes a fourth line rather than lose its end.
-  const head = header(card, g, right, P, words, budget >= 10 ? 4 : budget >= 6 ? 2 : 1)
-  head[0]!.push(...hidden)
+  const head = card.collapsed ? [withRight(collapsed(card, columns, P, words, open), right, columns)]
+    : header(card, g, right, P, words, budget >= 10 ? 4 : budget >= 6 ? 2 : 1)
+  // The key still has a mounted control when its label will not fit.
+  head[0]!.push(...shortcuts, ...controls.filter((button) => !head[0]!.includes(button)).map((button): Button => ({ ...button, hidden: true })))
+  if (card.collapsed) return head
   const room = budget - head.length
   if (room <= 0) return head
 
@@ -173,7 +189,7 @@ function header(card: MargincueCard, g: Grid, right: Line, P: Palette, words: Wo
 }
 
 /** The right end of the head line: a refresh mark, the counts, then the review and depth buttons. */
-function status(card: MargincueCard, words: Words, open: number, extra: Segment[], P: Palette): Line {
+function status(card: MargincueCard, words: Words, open: number, P: Palette): Line {
   const parts: Line = []
   if (card.stage === 'draft' && card.reading && card.read) parts.push(text('⟳', { dim: true }))
   if (card.stage === 'draft' && card.rows.length) {
@@ -182,7 +198,6 @@ function status(card: MargincueCard, words: Words, open: number, extra: Segment[
     if (set) parts.push(text(`${set} ${words.set}`, { color: P.yours.color!, bold: true }), text(' · ', { dim: true }))
     parts.push(text(`${open} ${words.open}`, { dim: true }))
   }
-  for (const button of extra) parts.push(...(parts.length ? [text('  ')] : []), button)
   return parts
 }
 
@@ -192,7 +207,7 @@ function withRight(left: Line, right: Line, columns: number): Line {
   return gap >= 3 ? [...left, text(' '.repeat(gap)), ...right] : left
 }
 
-function collapsed(card: MargincueCard, columns: number, P: Palette, words: Words, open: number, hidden: Line): Line {
+function collapsed(card: MargincueCard, columns: number, P: Palette, words: Words, open: number): Line {
   const lead: Line = [text(' '), text(TAG, P.tag), text(GAP)]
   const width = columns - segmentsWidth(lead)
   const count = `${open} ${words.open}`
@@ -200,7 +215,7 @@ function collapsed(card: MargincueCard, columns: number, P: Palette, words: Word
     : card.reading && !card.read ? words.reading : `${count}${card.rows.length ? ' · alt↑ alt↓' : ''}`
   const room = width - cells(tail) - 3
   const read = card.read && room >= 12 ? truncate(card.read, room) : ''
-  return [...lead, ...(read ? [text(read)] : []), text(`${read ? ' · ' : ''}${tail}`, { dim: true }), ...hidden]
+  return [...lead, ...(read ? [text(read)] : []), text(`${read ? ' · ' : ''}${tail}`, { dim: true })]
 }
 
 // ---- the body: names in the code, then one row per choice ---------------------------

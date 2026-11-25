@@ -40,7 +40,7 @@ lines.on('line', (line) => {
       return
     }
     const prompt = params.input[0].text
-    let text = `read | You want ${prompt.slice(0, 20)}.\nkind | build\n`
+    let text = process.env.FAKE_CODEX_CARD ?? `read | You want ${prompt.slice(0, 20)}.\nkind | build\n`
     if (process.env.FAKE_CODEX_PROJECT) {
       text = instructions.get(threadId).includes('Draw what the finished result will look like')
         ? ['title | Activity report', 'Weekly activity', ...prompt.split('\n').filter((line) => line.startsWith('- ')), ''].join('\n')

@@ -38,6 +38,7 @@ Write the prompt in Codex as usual. The card sits under Codex's prompt box and f
 | `enter` | Send with the configured card choices |
 | `ctrl+g` | The full-screen card (below) |
 | `ctrl+]` then `c` | Read the draft in `key` mode (relay 0.1.3 or later) |
+| `ctrl+]` then `k` | Keep all shown selections (relay 0.1.4 or later). You can also click **Keep all** |
 | `ctrl+]` then `d` | Hide the card for this prompt |
 | `ctrl+]` then `t` | MarginCue off or on for this session |
 
@@ -53,6 +54,7 @@ Press **ctrl+g** in the prompt. Codex hands the draft to MarginCue, which shows 
 | --- | --- |
 | `alt+↑` / `alt+↓` (or `ctrl+↑` / `ctrl+↓`) | Next row / change its value |
 | `tab`, then `1`–`9`, `x`, `s`, `p`, `c` | Pick an option, drop a row, show the sketch, attach it, read the draft |
+| `tab`, then `k` | Keep all shown selections. Pick hard-to-undo choices individually |
 | `enter` | Return to Codex with the configured card choices. Press `enter` there to send |
 | `shift+enter` (or `alt+enter`) | New line |
 | `ctrl+e` | Your own editor on the draft |
@@ -66,7 +68,7 @@ The card's readings use your own Codex login: each is a one-off thread on the li
 
 On a new task, Codex opens the card at Enter and waits. In `auto` mode the card fills in as MarginCue reads. In `key` mode click **Read prompt** to start. Click an underlined choice to change it. A missing name's menu lists the closest names in the code. If a name matches several files, pick the file from its menu. The preview redraws when you change a choice.
 
-**Go ahead** sends the choices according to your `send` setting, along with your note and the preview if it is ready for those choices. **Use as written** sends the original prompt alone. The card shows what was sent, and the receipt follows the work. If the card tool is unavailable, `auto` falls back to a text card and `key` continues with the original prompt.
+**Keep all** sets the shown selections as your decisions. Pick hard-to-undo choices individually. **Go ahead** sends the choices according to your `send` setting, along with your note and the preview if it is ready for those choices. **Use as written** sends the original prompt alone. The card shows what was sent, and the receipt follows the work. If the card tool is unavailable, `auto` falls back to a text card and `key` continues with the original prompt.
 
 ### Test from this checkout
 
@@ -94,13 +96,13 @@ Edit `~/.margincue/settings.json`. Start a new CLI to pick up relay settings. `m
 
 | Setting | What it does |
 | --- | --- |
-| `"send": "all"` (default) | Send your picks and the card's ordinary defaults as Decisions. Untouched hard-to-undo defaults go as open questions. |
-| `"send": "picked"` | Send your picks, saved choices, and the written step order. |
-| `"send": "open"` | Send the same Decisions as `picked` and pass the remaining choices as questions with unmarked options. Codex settles each one and says what it chose. |
+| `"send": "open"` (default) | Send your picks, saved choices and written step order as decisions. Codex settles the other rows as questions with unmarked options and says what it chose. |
+| `"send": "all"` | Also send ordinary defaults as decisions. |
+| `"send": "picked"` | Send your picks, saved choices and written step order. |
 | `"read": "auto"` (default) | Read automatically. |
 | `"read": "key"` | Wait for `ctrl+]`, then `c` in the relay, `tab`, then `c` in the full-screen card, or **Read prompt** in the desktop card. |
 
-An unanswered file choice can travel with its candidate paths under `Where things are`. In `open` mode it also travels as a question.
+Hard-to-undo choices stay open until you pick an option. An unanswered file choice can also list its candidate paths under `Where things are`.
 
 Other settings include `"mode": "off" | "quiet" | "auto"`, `"sketch": false`, `"blanks": false`, and `"relay": false`. `MARGINCUE_RELAY=off` skips the relay for one launch.
 

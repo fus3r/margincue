@@ -9,6 +9,7 @@
      pencil's dotted underline (solid once they are yours), and a name the code lacks gets a squiggle. */
   :root {
     color-scheme: light;
+    background-color: #ffffff;
     --line: rgba(13, 13, 13, 0.1);
     --ink: #0d0d0d;
     --ink-2: #5d5d5d;
@@ -28,6 +29,7 @@
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       color-scheme: dark;
+      background-color: #212121;
       --line: rgba(255, 255, 255, 0.1); --ink: #ececec; --ink-2: #a8a8a8; --ink-3: #989898; --pencil: #7cb1ff;
       --pencil-wash: rgba(124, 177, 255, 0.14); --squiggle: #e3a54e; --squiggle-wash: rgba(227, 165, 78, 0.14);
       --wash: rgba(255, 255, 255, 0.06); --inset: rgba(255, 255, 255, 0.035); --rule: rgba(255, 255, 255, 0.28);
@@ -37,6 +39,7 @@
   }
   :root[data-theme="dark"] {
     color-scheme: dark;
+    background-color: #212121;
     --line: rgba(255, 255, 255, 0.1); --ink: #ececec; --ink-2: #a8a8a8; --ink-3: #989898; --pencil: #7cb1ff;
     --pencil-wash: rgba(124, 177, 255, 0.14); --squiggle: #e3a54e; --squiggle-wash: rgba(227, 165, 78, 0.14);
     --wash: rgba(255, 255, 255, 0.06); --inset: rgba(255, 255, 255, 0.035); --rule: rgba(255, 255, 255, 0.28);
@@ -218,6 +221,7 @@
       <form id="actions" class="actions">
         <input id="note" class="note" type="text" placeholder="Add a note for Codex" aria-label="Add a note for Codex" autocomplete="off">
         <button id="read" class="quiet" type="button" hidden>Read prompt</button>
+        <button id="keep" class="quiet" type="button" hidden>Keep all</button>
         <button id="as-written" class="quiet" type="button">Use as written</button>
         <button id="go" class="go" type="submit">Go ahead</button>
       </form>

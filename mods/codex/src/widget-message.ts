@@ -2,6 +2,7 @@ import { openChoiceLine, openChoicesBlock, rowValue, STEP_ORDER_KEY } from '../.
 import type { ParsedSketch } from '../../claude-code/core/card'
 import { decisionLine, fileReferenceDecision } from '../../claude-code/core/decisions'
 import type { CardRowView, SendSetting } from '../../claude-code/core/types'
+import { DEFAULT_SEND } from '../../claude-code/core/types'
 
 export type WidgetRow = Pick<CardRowView, 'id' | 'label' | 'type' | 'statement' | 'options'> &
   Partial<Pick<CardRowView, 'key' | 'origin' | 'learned' | 'openOnSend'>> & {
@@ -44,17 +45,17 @@ export function choiceLine(row: WidgetRow, selected: number[]): string {
   return decisionLine({ statement: row.statement, option: file ? `${value} (${file})` : value })
 }
 
-export function cardPlan(rows: WidgetRow[], picks: Selections, send: SendSetting) {
+export function cardPlan(rows: WidgetRow[], picks: Selections, send: SendSetting = DEFAULT_SEND) {
   const decisions: string[] = []
   const openChoices: string[] = []
   for (const row of rows) {
     const repo = row.origin === 'repo' || row.files !== undefined
     const order = row.key === STEP_ORDER_KEY
-    const defaultIsOpen = send === 'all' && row.openOnSend
+    const defaultIsOpen = row.openOnSend
     const assumed = !repo && row.assumed.length && (row.learned || order || send === 'all' && !defaultIsOpen) ? row.assumed : undefined
     const selected = picks[row.id] ?? assumed
     if (selected !== undefined) decisions.push(choiceLine(row, selected))
-    else if (defaultIsOpen || send === 'open' && !order && (!repo || row.key?.startsWith('file_'))) openChoices.push(openChoiceLine(row))
+    else if (defaultIsOpen || send === 'open' && !order) openChoices.push(openChoiceLine(row))
   }
   return { decisions, openChoices }
 }
@@ -69,7 +70,7 @@ export function targetLines(sketch: ParsedSketch): string {
  * Use as written sends the prompt alone.
  */
 export function composeFollowUp(rows: WidgetRow[], picks: Selections, note: string, asWritten = false,
-  sketch: ParsedSketch | null = null, send: SendSetting = 'all',
+  sketch: ParsedSketch | null = null, send: SendSetting = DEFAULT_SEND,
   fileReferences: WidgetCard['fileReferences'] = []): FollowUp {
   if (asWritten) return { text: AS_WRITTEN, decisions: [], extra: '' }
   const { decisions, openChoices } = cardPlan(rows, picks, send)

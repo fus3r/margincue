@@ -36,7 +36,7 @@ While you type:
 
 - **The reading.** One line above the prompt says what the agent will deliver and how it takes your request, including whether the cases you list are the whole job or just examples.
 - **Your names, checked against your code.** Names in the prompt are looked up in the project as you type. A name the code doesn't have ("Audit Log", when the code says `activityLogs`) is flagged before you send, with the closest names it does have, one key each.
-- **The open choices, each with a control.** Chips, sliders and pick-any rows for what the prompt leaves open. By default, your picks and the card's ordinary defaults go with the prompt in a visible Decisions block. A hard-to-undo default you leave untouched goes as an open question for the agent to settle.
+- **The open choices, each with a control.** Chips, sliders and pick-any rows for what the prompt leaves open. By default, your picks, saved decisions and written step order go with the prompt. The remaining rows go as open questions, with every option unmarked.
 - **A sketch of the result.** For something new: a wireframe, a sample of the report, a results table. Change a choice and it redraws.
 
 While Claude works:
@@ -48,14 +48,18 @@ It adapts to you and to the project. The first run asks what you work on and you
 
 The on-demand expert review (`ctrl+x tab`, then `r`, or `/margincue review`) draws on chapters for [general coding-agent work](profiles/general/chapters.md), [ML research](profiles/ml-research/chapters.md), [product](profiles/product/chapters.md), and [system design](profiles/system-design/chapters.md). It picks up to two chapters that match the draft and uses the theory and workflow for your stated level in each field. For example, a learner working on model evaluation gets help choosing what data to hold out. An expert gets guidance on what the evaluation design lets them claim.
 
+Automatic chapter review (beta) is off by default and can be enabled with `/margincue review auto` or, for the Codex live card, by setting `"review": "auto"` in `~/.margincue/settings.json`.
+
 ## Keys
 
 | Key | What it does |
 | --- | --- |
 | `alt+↑` / `alt+↓` (or `ctrl+↑` / `ctrl+↓`) | Next row / change its value, without leaving the prompt |
 | `ctrl+x tab`, then `1`–`9`, `x`, `s`, `p` | Pick an option, drop a row, open the sketch, attach it to the prompt |
+| `ctrl+x tab`, then `k` (Claude Code) | Keep all shown selections. Pick hard-to-undo choices individually |
 | A number in the empty prompt during a turn | Switch Claude's focused choice right away |
 | `ctrl+]` then `c` (Codex) | Read the draft in `key` mode with relay 0.1.3 or later |
+| `ctrl+]` then `k` (Codex) | Keep all shown selections, with relay 0.1.4 or later. The full-screen card uses `tab`, then `k` |
 | `e` on a focused receipt choice (Claude Code terminal) | Open related edits |
 | `ctrl+]` then `t` (Codex) | MarginCue off or on for this session |
 
@@ -79,7 +83,7 @@ Your draft goes to Claude the same way your prompt does, through your own sessio
 
 ## Commands
 
-In Claude Code, `/margincue status` shows what MarginCue knows about you and the project, `/margincue setup` asks the first-run questions again, and `/margincue card|sketch|refs|blanks on|off` switches each part. Use `/margincue send all|picked|open` to choose what the card sends and `/margincue read auto|key` to choose when it reads. [Claude Code guide](mods/claude-code/README.md)
+In Claude Code, `/margincue status` shows what MarginCue knows about you and the project, `/margincue setup` asks the first-run questions again, and `/margincue card|sketch|refs|blanks on|off` switches each part. Use `/margincue send open|all|picked` to choose what the card sends and `/margincue read auto|key` to choose when it reads. [Claude Code guide](mods/claude-code/README.md)
 
 In Codex, set `send` and `read` in `~/.margincue/settings.json`, and update a field with `margincue level <profile> <learning|practitioner|expert>`. [Codex settings and shortcuts](mods/codex/README.md#settings-and-removal)
 

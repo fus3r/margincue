@@ -100,12 +100,15 @@ export class CodexModel {
   async complete(system: string, prompt: string, options: { signal?: AbortSignal; onDelta?: (delta: string) => void; strong?: boolean } = {}): Promise<Completion> {
     const { signal, onDelta } = options
     const started = Date.now()
+    const cancelled = (): Completion => ({ ok: false, reason: 'cancelled', ms: Date.now() - started })
     const light = await this.start()
+    if (signal?.aborted) return cancelled()
     const model = options.strong ? this.strongModel ?? light : light
     if (!model) return { ok: false, reason: this.failure ?? 'no Codex model', ms: Date.now() - started }
     const thread = await this.call('thread/start', {
       model, cwd: this.cwd, approvalPolicy: 'never', sandbox: 'read-only', baseInstructions: system, ephemeral: true,
     })
+    if (signal?.aborted) return cancelled()
     const threadId = (thread.result as { thread?: { id?: string } } | undefined)?.thread?.id
     if (!threadId) return { ok: false, reason: thread.error?.message ?? 'no thread', ms: Date.now() - started }
     return new Promise<Completion>((resolve) => {
@@ -123,7 +126,7 @@ export class CodexModel {
       }, TIMEOUT_MS)
       signal?.addEventListener('abort', () => {
         void this.call('turn/interrupt', { threadId }).catch(() => {})
-        done({ ok: false, reason: 'cancelled', ms: Date.now() - started })
+        done(cancelled())
       }, { once: true })
       this.turns.set(threadId, { threadId, text: '', done, started, ...(onDelta && { onDelta }) })
       void this.call('turn/start', {

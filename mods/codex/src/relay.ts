@@ -14,7 +14,7 @@ import { VERSION } from './version'
 
 export const RELAY = join(PATHS.bin, 'margincue-relay')
 /** The relay version this copy of MarginCue ships with (crates/margincue-relay/Cargo.toml). */
-const RELAY_VERSION = '0.1.3'
+const RELAY_VERSION = '0.1.4'
 const SUPPORTED = process.platform === 'darwin' || process.platform === 'linux'
 
 /** Top-level Codex options that take a value. */

@@ -260,8 +260,7 @@ export function openChoiceLine(row: Pick<ParsedRow, 'type' | 'statement' | 'opti
   if (!options.length) return `${head}?`
   // Options can hold commas ("logged only, no email yet"): a slash keeps them apart.
   if (row.type === 'range') {
-    // An ordered scale keeps its order; a long one reads as its span.
-    return `${head} (${options.length > 4 ? `between ${options[0]} and ${options.at(-1)}` : options.join(' / ')})?`
+    return `${head} (${options.join(' / ')})?`
   }
   const sorted = [...options].sort((a, b) => a.localeCompare(b, 'en', { numeric: true, sensitivity: 'base' }))
   return `${head} (${row.type === 'many' ? 'any of: ' : ''}${sorted.join(' / ')})?`
@@ -318,6 +317,24 @@ export function deriveCardKind(draft: string): CardKind | null {
   if (text.endsWith('?') || /^(?:how|what|why|where|when|who|which)\s/i.test(text)) return 'ask'
   if (/^(?:(?:i|we)\s+(?:want|need)\s+)?(?:a\s+)?new(?:\s+[\w-]+){0,4}\s+page\b/i.test(text)) return 'build'
   return null
+}
+
+const ROUTINE_VERB = /^(?:fix|rename|reformat|format|sort|translate|bump|typo|document|edit|re?write|change|update|upgrade|pin|move|remove|delete)\b/i
+const ROUTINE_OBJECT = /^(?:add|build|create|make|write|set)\s+(?:(?:the|a|an|some)\s+)?(?:type hints?|type annotations?|comments?|docstrings?|documentation|docs|readme|changelog)\b|^make\s.+\b(?:chart line|text color|line color|font size)\b/i
+const BUILD_OR_DESIGN = /^(?:apply|cache|choose|decide|define|design|implement|migrate|pick|plan|roll out|route|run|set|shed|split|use|write (?:a |the )?(?:schema|migration)|ajoute|conçois|fais|migre)\b/i
+const ANALYZE = /^(?:account for|analy[sz]e|assess|calibrate|check whether|compare|comparez|compute|estimate|estime|evaluate|évalue|fit|investigate|measure|mesure|model|predict|report|train|entraîne|tune|verify|vérifie)\b/i
+const NEXT_TASK = /\s+(?:and|then)\s+(?=(?:please\s+)?(?:add|build|change|choose|compare|create|define|design|fix|implement|make|set|update|use)\b)/i
+
+/** Topic evidence must belong to a substantive request, rather than a nearby routine edit. */
+export function substantiveChapterDraft(draft: string): string {
+  return draft.split(/(?:[.!?]\s+|;\s+(?=(?:add|build|create|design|implement|make|set)\b)|\n+)/).flatMap((sentence) => sentence.split(NEXT_TASK))
+    .map((task) => task.trim().replace(/^(?:(?:please[, ]+|(?:can|could|would|will) you\s+|(?:i|we) (?:want|need) to\s+))+/i, ''))
+    .filter((task) => {
+      if (ROUTINE_VERB.test(task) || ROUTINE_OBJECT.test(task)) return false
+      return deriveCardKind(task) === 'build' || BUILD_OR_DESIGN.test(task) || ANALYZE.test(task) ||
+        /^(?:which|what)\b.*\b(?:should|hold up|would)\b/i.test(task) ||
+        /^(?:(?:we|i) (?:tested|compared|measured)|.+\b(?:jumped|dropped)\b).*,?\s+(?:tell me which|check whether|which)\b/i.test(task)
+    }).join('\n')
 }
 
 /** A direct insertion with an explicitly pinned source leaves the artifact choice closed. */

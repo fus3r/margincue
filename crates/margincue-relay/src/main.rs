@@ -644,6 +644,7 @@ impl State {
             max: self.max,
             full: self.full,
             read_key: true,
+            keep_key: true,
         });
     }
 
@@ -795,6 +796,7 @@ impl State {
             enter: live && plain && self.claims.enter,
             arrows: live && visible && self.claims.arrows,
             read: live && plain && self.claims.read,
+            keep: live && plain && self.claims.keep,
         };
     }
 
@@ -821,6 +823,7 @@ impl State {
             }
             Action::Dismiss => self.send(Up::Dismiss),
             Action::Read => self.send(Up::Key { key: "read" }),
+            Action::Keep => self.send(Up::Key { key: "keep" }),
             Action::Up => self.send(Up::Key { key: "up" }),
             Action::Down => self.send(Up::Key { key: "down" }),
             Action::Click { x, y } => self.send(Up::Click { x, y }),
@@ -871,8 +874,8 @@ impl State {
                 self.reshape(terminal, out, child_fd)?;
                 self.repaint(terminal);
             }
-            Down::Claims { enter, arrows, read } => {
-                self.claims = Claims { enter, arrows, read };
+            Down::Claims { enter, arrows, read, keep } => {
+                self.claims = Claims { enter, arrows, read, keep };
                 self.apply_claims(input);
             }
             Down::Enter { action, text } => {

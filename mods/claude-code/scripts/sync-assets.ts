@@ -7,7 +7,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DEPTHS } from '../core/bundle.ts'
 import type { Depth } from '../core/bundle.ts'
-import { MAX_CHAPTER_NOTE, normalizeTopic } from '../core/chapters.ts'
+import { MAX_CHAPTER_NOTE, normalizeChapterSignal } from '../core/chapters.ts'
 import type { ProfileChapter } from '../core/chapters.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -72,7 +72,7 @@ function readChapters(profile: string, markdown: string): ProfileChapter[] {
     const where = `${profile}/chapters.md — ${name}`
     if (!name || titles.has(name)) throw new Error(`Missing or duplicate chapter title in ${where}`)
     titles.add(name)
-    const signals = [...new Set((contents.get('signals') ?? '').split('|').map(normalizeTopic).filter(Boolean))]
+    const signals = [...new Set((contents.get('signals') ?? '').split('|').map(normalizeChapterSignal).filter(Boolean))]
     if (!signals.length || !contents.get('sources')?.includes('https://')) {
       throw new Error(`Add signals and a source link to ${where}`)
     }

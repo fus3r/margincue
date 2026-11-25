@@ -33,6 +33,10 @@ const CARD = [
   'row | batch_size | batch | num | Write {} per batch | 500 | 100 | 5000 | rows',
 ].join('\n')
 const SKETCH = ['title | Export dialog', '┌ Export ───────────┐', '│ Rows: filtered    │', '│ [ Download CSV ]  │', '└───────────────────┘'].join('\n')
+const OPEN_CHOICES = '\n\nOpen choices ('
+const EXPORT_QUESTION = '\n- Export … (all rows / the filtered rows / the selected rows)?'
+const RUN_QUESTION = '\n- Run it … (from the terminal / in the browser)?'
+const BATCH_QUESTION = '\n- Write … per batch (100 rows / 160 rows / 270 rows / 430 rows / 500 rows / 710 rows / 1200 rows / 1900 rows / 3100 rows / 5000 rows)?'
 /** The preview as it travels with a prompt, once drawn for the choices being sent. */
 const TARGET = `Target output, as sketched (Export dialog):\n\`\`\`text\n${SKETCH.split('\n').slice(1).join('\n')}\n\`\`\``
 
@@ -196,7 +200,8 @@ test('the card reads a draft, shows typed controls, and sends its whole plan wit
   expect(await ui.find({ type: 'Text', text: /^710 rows$/ })).toBeDefined()
   await ui.unmount()
   const sent = await $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
-  expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.\n- Run it in the browser.\n- Write 710 rows per batch.`)
+  expect(sent.text).toContain(`${DRAFT}.\n\nDecisions:\n- Export all rows.\n- Write 710 rows per batch.${OPEN_CHOICES}`)
+  expect(sent.text).toContain(RUN_QUESTION)
 })
 
 test('the read setting persists and the band shortcut reads the draft in either mode', async ($, on) => {
@@ -258,14 +263,68 @@ test('a click on a chip or a step sets its row; x drops a row and a newer readin
   await ui.unmount()
 })
 
-test('an untouched card sends the plan it showed, with its preview', async ($, on) => {
-  const { clock } = world(on, replies())
+test('a fresh store sends an untouched card as open questions, with its preview', async ($, on) => {
+  const { clock, store } = world(on, replies())
+  expect(store.has('settings')).toBe(false)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await composer($).edit(edit(DRAFT, '.'))
   await clock.settle()
   const sent = await $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
-  expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Export the filtered rows.\n- Run it in the browser.\n- Write 500 rows per batch.\n\n${TARGET}`)
+  expect(sent.text?.startsWith(`${DRAFT}.${OPEN_CHOICES}`)).toBe(true)
+  expect(sent.text?.endsWith(`${EXPORT_QUESTION}${RUN_QUESTION}${BATCH_QUESTION}\n\n${TARGET}`)).toBe(true)
+  expect(sent.text).not.toContain('\n\nDecisions:')
 })
+
+test('an unmarked stored all migrates to open and an explicit all survives a restart', async ($, on) => {
+  const { clock, store } = world(on, replies())
+  store.set('settings', { send: 'all', sketch: false })
+  const start = () => $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
+  await start()
+  expect((await command('send')).text).toBe('MarginCue send is open.')
+  await command('send all')
+  expect(store.get('settings')).toMatchObject({ send: 'all', sendExplicit: true })
+  await start()
+  expect((await command('send')).text).toBe('MarginCue send is all.')
+  await composer($).edit(edit(DRAFT, '.'))
+  await clock.settle()
+  const sent = await $.prompt.submit({ ...cli, text: `${DRAFT}.`, wait: false })
+  expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Export the filtered rows.\n- Run it in the browser.\n- Write 500 rows per batch.`)
+})
+
+test('the keep-all hotkey sets every shown value and Enter sends the decisions', async ($, on) => {
+  const { clock, store } = world(on, replies())
+  store.set('settings', { sketch: false })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await composer($).edit(edit(DRAFT, '.'))
+  await clock.settle()
+  const ui = await $.ui.mount(WIDE)
+  await ui.press({ key: 'card-c1-1' })
+  expect((await ui.find({ key: 'card-keep' }))?.props.hotkey).toBe('k')
+  await ui.press({ key: 'card-keep' })
+  expect(await ui.find({ type: 'Text', text: /^3 set$/ })).toBeDefined()
+  const sent = await $.prompt.submit({ ...cli, text: `${DRAFT}.`, wait: false })
+  expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.\n- Run it in the browser.\n- Write 500 rows per batch.`)
+  await ui.unmount()
+})
+
+for (const columns of [60, 80, 120]) {
+  test(`the review hotkey runs the review at ${columns} columns`, async ($, on) => {
+    const { clock, calls, panes } = world(on, replies())
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await composer($).edit(edit(DRAFT, '.'))
+    await clock.settle()
+    const ui = await $.ui.mount({ ...WIDE, props: { ...WIDE.props, bodyColumns: columns } })
+    const before = calls.length
+    expect((await ui.find({ key: 'review' }))?.props.hotkey).toBe('r')
+    await ui.press({ key: 'review' })
+    await clock.settle()
+    expect(calls.length).toBe(before + 1)
+    expect(calls.at(-1)).toContain(`Draft:\n<<<\n${DRAFT}.\n>>>`)
+    expect(panes).toContainEqual(expect.objectContaining({ id: 'margincue-review' }))
+    await ui.unmount()
+  })
+}
 
 test('send picked is saved, labels open rows, and sends a preview only for the outgoing picks', async ($, on) => {
   const { clock, calls, store } = world(on, replies())
@@ -278,7 +337,7 @@ test('send picked is saved, labels open rows, and sends a preview only for the o
   const submit = () => $.prompt.submit({ ...cli, text: `${DRAFT}.`, wait: false })
 
   await start()
-  expect((await command('send')).text).toBe('MarginCue send is all.')
+  expect((await command('send')).text).toBe('MarginCue send is open.')
   await type()
   const ui = await $.ui.mount(WIDE)
   await command('send picked')
@@ -319,7 +378,7 @@ test('send open is saved, labels open rows, and asks the agent about the rows le
   // The pick travels as a decision; the rows left alone travel as questions, never as the reading's guesses.
   expect(sent.text?.startsWith(`${DRAFT}.\n\nDecisions:\n- Export all rows.\n\nOpen choices (`)).toBe(true)
   expect(sent.text).toContain('\n- Run it … (from the terminal / in the browser)?')
-  expect(sent.text).toContain('\n- Write … per batch (between 100 rows and 5000 rows)?')
+  expect(sent.text).toContain(BATCH_QUESTION)
   expect(sent.text).not.toContain('Run it in the browser.')
   await ui.unmount()
   await command('send all')
@@ -337,7 +396,9 @@ test('the clear that precedes a submit does not lose the decisions', async ($, o
   // Enter: the engine empties the box, then raises prompt.submit.
   await composer($).change({ text: '', cursor: 0, origin: { kind: 'clear' } })
   const sent = await $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
-  expect(sent.text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.\n- Run it in the browser.\n- Write 500 rows per batch.`)
+  expect(sent.text?.startsWith(`${DRAFT}.\n\nDecisions:\n- Export all rows.${OPEN_CHOICES}`)).toBe(true)
+  expect(sent.text).toContain(RUN_QUESTION)
+  expect(sent.text).toContain(BATCH_QUESTION)
 })
 
 test('the band lays out at the terminal; an app draws no draft card', async ($, on) => {
@@ -423,7 +484,9 @@ test('in the desktop app the draft is unseen while typed: its open choices come 
   await clock.settle()
   await clock.advance(1000)
   // Two answered; the third question was closed, which stops the questions: what is set goes.
-  expect((await pending).text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.\n- Run it from the terminal.`)
+  const sent = (await pending).text
+  expect(sent?.startsWith(`${DRAFT}.\n\nDecisions:\n- Export all rows.\n- Run it from the terminal.${OPEN_CHOICES}`)).toBe(true)
+  expect(sent?.endsWith(BATCH_QUESTION)).toBe(true)
   expect(asked.map((question) => question.header)).toEqual(['Rows', 'Runs in', 'Batch'])
   // The app shows the question alone: the label leads it, unless the question already opens on it.
   expect(asked.map((question) => question.question)).toEqual(['Rows: export …?', 'Run it …?', 'Batch: write … per batch?'])
@@ -480,7 +543,7 @@ test('in the desktop app MarginCue draws its own card above Claude\'s dialog; Go
   // The card: how the prompt reads, then one line a choice, its name and what Claude would assume; a click opens
   // the app's own menu there.
   expect(await ui.find({ type: 'Text', text: /^You want a CSV export/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /3 choices Claude would make · to add a note/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /3 choices Claude would make · leaves suggested defaults to Claude/ })).toBeDefined()
   const chip = async (row: string) => (await ui.find({ key: `card-${row}` }))?.props as ChipProps
   expect([(await chip('c1')).label, (await chip('c1')).value]).toEqual(['Rows', '0'])
   expect((await chip('c1')).options?.map((option) => option.label)).toEqual(['the filtered rows', 'all rows', 'the selected rows'])
@@ -491,6 +554,8 @@ test('in the desktop app MarginCue draws its own card above Claude\'s dialog; Go
   expect(await ui.find({ type: 'Text', text: /^\u2713 yours$/ })).toBeDefined()
   // A range offers every step in its menu.
   expect((await chip('c3')).options?.length).toBe(10)
+  await ui.press({ key: 'card-keep' })
+  expect(await ui.find({ type: 'Text', text: /3 choices Claude would make, 3 yours/ })).toBeDefined()
   gate.answer('Go ahead with this plan')
   expect((await pending).text).toBe(`${DRAFT}.\n\nDecisions:\n- Export all rows.\n- Run it in the browser.\n- Write 500 rows per batch.`)
   await ui.unmount()
@@ -650,7 +715,9 @@ test('what the person types under "Other" in Claude\'s dialog is added to the pr
   const { gate, pending, ui } = await desktopAtEnter($, on)
   await pick(ui, 'c1', 1)
   gate.answer('Only owners of paid teams get the CSV.')
-  expect((await pending).text).toBe(`${DRAFT}.\n\nOnly owners of paid teams get the CSV.\n\nDecisions:\n- Export all rows.\n- Run it in the browser.\n- Write 500 rows per batch.`)
+  const sent = (await pending).text
+  expect(sent?.startsWith(`${DRAFT}.\n\nOnly owners of paid teams get the CSV.\n\nDecisions:\n- Export all rows.${OPEN_CHOICES}`)).toBe(true)
+  expect(sent?.endsWith(RUN_QUESTION + BATCH_QUESTION)).toBe(true)
   await ui.unmount()
 })
 
@@ -673,7 +740,9 @@ test('Skip, like closing the dialog, sends the prompt as written: the picks go o
 test('typed text in brackets under Other is the person\'s words, not a skip', async ($, on) => {
   const { gate, pending, ui } = await desktopAtEnter($, on)
   gate.answer('[include archived teams]')
-  expect((await pending).text).toBe(`${DRAFT}.\n\n[include archived teams]\n\nDecisions:\n- Export the filtered rows.\n- Run it in the browser.\n- Write 500 rows per batch.\n\n${TARGET}`)
+  const sent = (await pending).text
+  expect(sent?.startsWith(`${DRAFT}.\n\n[include archived teams]${OPEN_CHOICES}`)).toBe(true)
+  expect(sent?.endsWith(`${EXPORT_QUESTION}${RUN_QUESTION}${BATCH_QUESTION}\n\n${TARGET}`)).toBe(true)
   await ui.unmount()
 })
 
@@ -698,9 +767,11 @@ test('a name the code lacks reads unmatched on the card until the person picks i
   const match = (await ui.find({ key: 'card-c1' }))?.props as ChipProps
   expect(match.value).toBe('none')
   expect(match.options?.[0]?.label).toBe('Choose a match\u2026')
-  // Picking nothing says nothing about it: the card never claims a match it was not given.
+  // The candidates travel as an open question.
   gate.answer('Go ahead with this plan')
-  expect((await pending).text).not.toContain('Old Market" is')
+  const sent = (await pending).text
+  expect(sent).toContain('\n- "Old Market" is … (new, to be added / South of Market)?')
+  expect(sent).not.toContain('Decisions:')
   await ui.unmount()
 })
 
@@ -770,7 +841,9 @@ test('one question at a time: what the person types under "Other" goes as that c
   const pending = $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'sdk' }, wait: false })
   await clock.settle()
   await clock.advance(1000)
-  expect((await pending).text).toBe(`${DRAFT}.\n\nDecisions:\n- Export only the rows changed since the last export, newest first.`)
+  const sent = (await pending).text
+  expect(sent?.startsWith(`${DRAFT}.\n\nDecisions:\n- Export only the rows changed since the last export, newest first.${OPEN_CHOICES}`)).toBe(true)
+  expect(sent?.endsWith(RUN_QUESTION + BATCH_QUESTION)).toBe(true)
 })
 
 test('one question at a time: Skip leaves a question to Claude, and the next question still comes', async ($, on) => {
@@ -779,7 +852,9 @@ test('one question at a time: Skip leaves a question to Claude, and the next que
   const pending = $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'sdk' }, wait: false })
   await clock.settle()
   await clock.advance(1000)
-  expect((await pending).text).toBe(`${DRAFT}.\n\nDecisions:\n- Run it from the terminal.`)
+  const sent = (await pending).text
+  expect(sent?.startsWith(`${DRAFT}.\n\nDecisions:\n- Run it from the terminal.${OPEN_CHOICES}`)).toBe(true)
+  expect(sent?.endsWith(EXPORT_QUESTION + BATCH_QUESTION)).toBe(true)
   expect(asked.length).toBe(3)
 })
 
@@ -797,7 +872,7 @@ test('the desktop app says so in the engine entrypoint: its prompts get the card
   expect((await $.prompt.compose(COMPOSE)).sections.some((section) => section.id === 'margincue:blanks')).toBe(true)
   expect(gate.asked.length).toBe(1)
   gate.answer('Go ahead with this plan')
-  expect((await pending).text).toBe(`${DRAFT}.\n\nDecisions:\n- Export the filtered rows.\n- Run it in the browser.\n- Write 500 rows per batch.\n\n${TARGET}`)
+  expect((await pending).text?.startsWith(`${DRAFT}.${OPEN_CHOICES}`)).toBe(true)
   await ui.unmount()
 })
 
@@ -844,10 +919,10 @@ test('quiet keeps the card to one line and the alt keys still work', async ($, o
   await composer($).edit(edit(DRAFT, '.'))
   await clock.settle()
   const ui = await $.ui.mount(WIDE)
-  expect(await ui.find({ type: 'Text', text: /3 open/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /3 left to agent/ })).toBeDefined()
   expect(await ui.find({ key: 'card-c1-0' })).toBeUndefined()
   await ui.press({ key: 'card-cycle' })
-  expect(await ui.find({ type: 'Text', text: /2 open/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /2 left to agent/ })).toBeDefined()
   await ui.unmount()
 
   const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
@@ -887,13 +962,15 @@ test('grounding links names to the code, asks what a missing one means, and says
   await ui.unmount()
   const sent = await $.prompt.submit({ ...cli, text: `${draft}.`, wait: false })
   // Only what the draft wrote as code says where things are; Dashboard and Maya stay links on screen.
-  expect(sent.text).toBe(`${draft}.\n\nDecisions:\n- "Old Market" is South of Market (src/city/canvas.ts).\n` +
-    '- Export the filtered rows.\n- Run it in the browser.\n- Write 500 rows per batch.\n- Where things are: ExportTool (src/dashboard/export.ts).')
+  expect(sent.text?.startsWith(`${draft}.\n\nDecisions:\n- "Old Market" is South of Market (src/city/canvas.ts).\n` +
+    `- Where things are: ExportTool (src/dashboard/export.ts).${OPEN_CHOICES}`)).toBe(true)
+  expect(sent.text?.endsWith(EXPORT_QUESTION + RUN_QUESTION + BATCH_QUESTION)).toBe(true)
   expect((await $.command.run({ ...cli, command: 'margincue', args: 'status' })).text).toContain('Project index: ready')
 })
 
 test('the sketch shows what done looks like and travels with the prompt unless left out', async ($, on) => {
-  const { clock, calls } = world(on, replies())
+  const { clock, calls, store } = world(on, replies())
+  store.set('settings', { send: 'all', sendExplicit: true })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await composer($).edit(edit(DRAFT, '.'))
   await clock.settle()
@@ -1247,21 +1324,21 @@ test('quiet shows a count and loads a personal bundle from the temporary home', 
   await ui.unmount()
 })
 
-test('review uses the requested catalog and offers a checklist with a persistent pick', async ($, on) => {
+test('on-demand review without chapter notes still offers a persistent checklist pick', async ($, on) => {
   let waitForReply: () => Promise<void>
   const { clock, calls, files, store } = world(on, async () => {
     await waitForReply()
-    return 'holdout | final_score_partition\n'
+    return 'catalog | Delete | cleanup_reach\n'
   })
   waitForReply = () => clock.sleep(550)
   store.set('settings', { mode: 'quiet', sheet: false })
   await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
-  const draft = 'Validation picked our best checkpoint. Logs and an untouched labeled holdout are ready. Give me a headline number.'
+  const draft = 'Delete the obsolete log files and keep the current reports.'
   await composer($).edit(edit(draft.slice(0, -1), '.'))
-  const command = await $.command.run({ ...cli, command: 'margincue', args: 'review ml-research' })
-  expect(command.text).toContain('ml-research')
+  const command = await $.command.run({ ...cli, command: 'margincue', args: 'review' })
+  expect(command.text).toContain('general')
   expect(calls[0]).toContain('Candidate catalog:')
-  expect(calls[0]).toContain('final_score_partition')
+  expect(calls[0]).toContain('cleanup_reach')
   const pane = await $.ui.mount({
     plugin: 'margincue', component: 'Pane', requestId: 'margincue-review', surface: 'terminal',
     props: { title: 'MarginCue review', placement: 'inline', isFocused: true, bodyColumns: 100, scroll: { offset: 0, bodyRows: 12 }, view: {} },
@@ -1274,11 +1351,11 @@ test('review uses the requested catalog and offers a checklist with a persistent
   await clock.advance(600)
   expect(await ui.find({ type: 'Text', text: /MarginCue · thinking…/ })).toBeUndefined()
   await ui.unmount()
-  expect(await pane.find({ key: 'final_score_partition-untouched_holdout' })).toBeDefined()
-  await pane.press({ key: 'final_score_partition-untouched_holdout' })
-  expect(JSON.parse(files.get(PROJECT_DECISIONS)!).decisions).toMatchObject([{ slot: 'final_score_partition', option: 'untouched_holdout' }])
+  expect(await pane.find({ key: 'cleanup_reach-unused_only' })).toBeDefined()
+  await pane.press({ key: 'cleanup_reach-unused_only' })
+  expect(JSON.parse(files.get(PROJECT_DECISIONS)!).decisions).toMatchObject([{ slot: 'cleanup_reach', option: 'unused_only' }])
   const sent = await $.prompt.submit({ ...cli, text: draft, wait: false })
-  expect(sent.text).toContain('Headline evaluation uses untouched labeled holdout.')
+  expect(sent.text).toContain('Deletion targets unreferenced matches only.')
   await pane.unmount()
 })
 
@@ -1302,6 +1379,57 @@ test('event log records suppressed candidates without source text and preserves 
   expect(rows.find((row) => row.event === 'candidate')).toMatchObject({
     mode: 'quiet', profile: 'general', slot: 'cleanup_reach', shown: false, reason: 'quiet',
     optionOrder: ['all_matches', 'unused_only', 'task_only'], default: 'all_matches',
+  })
+})
+
+test('a selected profile adds chapter choices to the live card and logs counts without the draft', async ($, on) => {
+  let waitForReply: () => Promise<void>
+  const text = 'Plan the A/B test for the private checkout redesign.'
+  const { clock, calls, files, store } = world(on, async (prompt) => {
+    if (!prompt.includes('Profile chapters matched to the draft.')) return CARD
+    await waitForReply()
+    return [
+      'choice | | Export rows | Export {} | the filtered rows | all rows',
+      'choice | | Assignment unit | Randomize by {} | account | workspace',
+    ].join('\n')
+  })
+  waitForReply = () => clock.sleep(300)
+  const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
+  const path = '/project/chapter-log.jsonl'
+  store.set('settings', { sketch: false })
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  await command('profile product')
+  await command('depth essentials')
+  await command(`log ${path}`)
+  await composer($).edit(edit(text.slice(0, -1), '.'))
+  await clock.settle()
+  expect(calls.length).toBe(1)
+  expect((await command('review auto')).text).toContain('automatic review is auto')
+  expect(store.get('settings')).toMatchObject({ review: 'auto', profileSelected: true })
+  await clock.settle()
+  expect(calls.length).toBe(2)
+  expect(calls[0]).not.toContain('Profile chapters')
+  expect(calls[1]).toContain('Concurrent random assignment')
+  expect(calls[1]).toContain('Decisions already on the card')
+  expect(calls[1]).not.toContain('Candidate catalog:')
+  const ui = await $.ui.mount(WIDE)
+  expect(await ui.find({ type: 'Text', text: /You want a CSV export/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /assignment unit/ })).toBeUndefined()
+  await clock.advance(400)
+  expect(await ui.find({ type: 'Text', text: '◆ ' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'assignment unit' })).toBeDefined()
+  expect((await command('review off')).text).toContain('automatic review is off')
+  expect(store.get('settings')).toMatchObject({ review: 'off' })
+  expect(await ui.find({ type: 'Text', text: 'assignment unit' })).toBeUndefined()
+  await ui.unmount()
+  await command('log off')
+  const contents = files.get(path)!
+  expect(contents).not.toContain('private checkout redesign')
+  const rows = contents.trim().split('\n').map((line) => JSON.parse(line))
+  const started = rows.find((row) => row.event === 'chapter-review-started')
+  expect(started).toMatchObject({ profile: 'product', depth: 'essentials', chapters: ['Experiments, rollout, and decisions'] })
+  expect(rows.find((row) => row.event === 'chapter-review-finished')).toMatchObject({
+    req: started.req, profile: 'product', ok: true, rowsAdded: 1, duplicates: 1,
   })
 })
 
@@ -1399,7 +1527,7 @@ test('the first-run questions come once on an empty prompt; closing them skips t
   await clock.settle()
   expect(calls.length).toBeGreaterThan(0)
   const sent = await $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
-  expect(sent.text).toContain(`${DRAFT}.\n\nDecisions:`)
+  expect(sent.text).toContain(`${DRAFT}.${OPEN_CHOICES}`)
   // The next session does not ask again.
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await clock.advance(2000)
@@ -1470,5 +1598,7 @@ test('one question at a time: a name in several files is asked as which file it 
   await clock.advance(1000)
   expect(asked[0]?.question).toBe('"layout.tsx" is in 2 files. Which do you mean?')
   expect(asked[0]?.options.map((option) => option.label)).toEqual(['app/layout.tsx', 'app/(dashboard)/layout.tsx'])
-  expect((await pending).text).toBe(`${FOOTER}\n\nDecisions:\n- "layout.tsx" is the one in app/layout.tsx.`)
+  const sent = (await pending).text
+  expect(sent?.startsWith(`${FOOTER}\n\nDecisions:\n- "layout.tsx" is the one in app/layout.tsx.${OPEN_CHOICES}`)).toBe(true)
+  expect(sent).not.toContain('"layout.tsx" is the one in …')
 })

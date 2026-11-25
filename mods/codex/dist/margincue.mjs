@@ -91,7 +91,7 @@ async function interview(ask) {
     multiSelect: true
   }), WORK);
   const levels = {};
-  const profiles = ["general", ...preferredProfiles({ work: work.keys })];
+  const profiles = /* @__PURE__ */ new Set(["general", ...preferredProfiles({ work: work.keys })]);
   for (const profile of profiles) {
     const field = LEVELS[profile];
     const level = levelOf(await ask(field.question, { options: field.options.map(([label]) => label), header: field.header }), field.options);
@@ -112,7 +112,10 @@ function userDepths(user) {
   return Object.fromEntries(Object.entries(user?.levels ?? {}).map(([profile, level]) => [profile, depthFor(level)]));
 }
 function preferredProfiles(user) {
-  return WORK.flatMap((w) => "profile" in w && user.work.includes(w.key) ? [w.profile] : []);
+  return [
+    ...WORK.flatMap((w) => "profile" in w && user.work.includes(w.key) ? [w.profile] : []),
+    ...user.work.includes("tooling") ? ["general"] : []
+  ];
 }
 function readUser(value) {
   const v = value;
@@ -809,36 +812,69 @@ var MAX_CHAPTERS = 2;
 function normalizeTopic(text2) {
   return text2.normalize("NFD").replace(new RegExp("\\p{M}", "gu"), "").toLowerCase().match(/[\p{L}\p{N}]+/gu)?.join(" ") ?? "";
 }
+function normalizeChapterSignal(text2) {
+  return normalizeTopic(text2).replace(/\bidempotent\b/g, "idempotency").replace(/\b(?:l2 (?:regularization|penalty)|ridge (?:regularization|penalty))\b/g, "ridge regression").replace(/\bmultiple comparisons?\b/g, "multiple testing").replace(/\bcross validat(?:e|ed|ing)\b/g, "cross validation").replace(/\b(?:hold|held) out\b/g, "holdout").replace(/\b(?:shed load|shedding load)\b/g, "load shedding").replace(/\brate limit(?:ed|ing)\b/g, "rate limit").replace(/\b(backward)s compatibility\b/g, "$1 compatibility").replace(/\b(retry polic)ies\b/g, "$1y").replace(/\b(retr|deliver)ies\b/g, "$1y").replace(
+    /\b(budgets|classifiers|forests|intervals|limits|machines|metrics|replicas|splines|tests)\b/g,
+    (word) => word.slice(0, -1)
+  );
+}
 function chapterContext(chapters, draft, depthOf, preferred = []) {
-  if (!chapters.length) return "";
-  const text2 = ` ${normalizeTopic(draft)} `;
+  return chapterNotes(matchChapters(chapters, draft, preferred), depthOf);
+}
+function matchChapters(chapters, draft, preferred = [], requireEvidence = false) {
+  if (!chapters.length) return [];
+  const text2 = ` ${normalizeChapterSignal(draft)} `;
+  const clauses = requireEvidence ? draft.split("\n").map((clause) => normalizeChapterSignal(clause).split(" ").map(signalWord)) : [];
   const ranked = chapters.flatMap((chapter) => {
-    const hits = chapter.signals.filter((signal) => text2.includes(` ${signal} `));
+    const signals = [...new Set(chapter.signals.map(normalizeChapterSignal))];
+    const exact = signals.filter((signal) => text2.includes(` ${signal} `));
+    const hits = exact.length >= 2 || exact.some((signal) => signal.includes(" ")) ? exact : [...exact, ...signals.filter((signal) => !exact.includes(signal) && phraseNearby(signal, clauses))];
     if (!hits.length) return [];
+    const specificity = Math.max(...hits.map((signal) => signal.split(" ").length));
+    if (requireEvidence && specificity < 2 && hits.length < 2) return [];
     return [{
       chapter,
       hits: hits.length,
-      specificity: Math.max(...hits.map((signal) => signal.split(" ").length)),
+      specificity,
+      exact: exact.length,
       preferred: Number(preferred.includes(chapter.profile))
     }];
-  }).sort((a, b) => b.specificity - a.specificity || b.hits - a.hits || b.preferred - a.preferred);
-  if (!ranked.length) return "";
-  const notes = ranked.slice(0, MAX_CHAPTERS).map(({ chapter }) => `[${chapter.profile}] ${chapter.title}
+  }).sort((a, b) => b.specificity - a.specificity || b.exact - a.exact || b.hits - a.hits || b.preferred - a.preferred);
+  return ranked.slice(0, MAX_CHAPTERS).map(({ chapter }) => chapter);
+}
+function signalWord(word) {
+  return word.replace(/^([a-z]{4,}?)(?:age|ed|ing|s|e)$/, "$1");
+}
+function phraseNearby(signal, clauses) {
+  const words = signal.split(" ");
+  if (words.length !== 2 || words.some((word) => word.length < 3)) return false;
+  const [first, second] = words.map(signalWord);
+  return first !== second && clauses.some((clause) => clause.some((word, i) => word === first && clause.slice(Math.max(0, i - 6), i + 7).includes(second)));
+}
+function chapterNotes(chapters, depthOf) {
+  if (!chapters.length) return "";
+  const notes = chapters.map((chapter) => `[${chapter.profile}] ${chapter.title}
 ${chapter.notes[depthOf(chapter.profile)]}`);
   return [
-    "Profile chapters matched to the draft. These notes explain trade-offs. Use them only for a choice the final request still leaves open. Check each option against the available data, permissions and assumptions. Use routine workflow steps as context.",
-    ...notes,
-    "Check the end of the draft again. A later instruction may have picked one of the options listed earlier. Report that decision in the reading and leave it out of the rows. A chapter can match a topic with no open choice."
+    "Profile chapters matched to the draft. Use the Choice in these level-specific notes to identify what the developer should settle. Use the Theory and Workflow to make the options concrete for the draft.",
+    ...notes
   ].join("\n\n");
 }
 
 // ../claude-code/core/expert.ts
-var MAX_EXPERT_CUES = 8;
+var MAX_EXPERT_CUES = 2;
+function expertCardContext(rows) {
+  if (!rows.length) return "";
+  return [
+    "Decisions already on the card (key, statement, options). Skip the same choice even if you would word it differently:",
+    ...rows.map(({ key, statement, options: options2 }) => JSON.stringify({ key, statement, options: options2 }))
+  ].join("\n");
+}
 function expertPrompt(catalog, slots) {
-  if (!catalog.length) return "Candidate catalog: (none)";
+  if (!catalog.length) return "";
   const definitions = new Map(slots.map((slot) => [slot.id, slot]));
   return [
-    "Candidate catalog:",
+    "Candidate catalog: for an applicable, unsettled entry below, start the line with `catalog |`, then give the anchor field and the exact supplied key, separated by a pipe.",
     ...catalog.map((item) => {
       const slot = definitions.get(item.key);
       return [
@@ -855,34 +891,71 @@ function parseExpert(reply, draft, catalog, reserved) {
   const seen = /* @__PURE__ */ new Set();
   const out = [];
   for (const line of reply.split(/\r?\n/)) {
-    if (out.length >= MAX_EXPERT_CUES || line.trim() === "NONE") break;
-    const [anchor, key, statement, ...options2] = line.split("|").map((s) => s.trim());
-    if (!anchor || !isId(key) || seen.has(key)) continue;
-    const span = anchor === "-" ? void 0 : resolveAnchor(draft, anchor) ?? void 0;
-    if (!span && anchor !== "-") continue;
-    const item = known.get(key);
+    if (line.trim() === "NONE") break;
+    const [first = "", ...fields] = line.trim().replace(/^[-*+]\s+(?=[^|])/, "").split("|").map((s) => s.trim());
+    const tagged = first === "choice" || first === "catalog";
+    const [anchor = "", rawKey, statement, ...options2] = tagged ? fields : [first, ...fields];
+    const span = anchor && (tagged || anchor !== "-") ? resolveAnchor(draft, anchor) : null;
+    const anchored = !anchor || !tagged && anchor === "-" || span !== null;
+    const item = first === "catalog" && anchored && fields.length === 2 ? known.get(rawKey) : tagged ? void 0 : (anchored && rawKey ? known.get(rawKey) : void 0) ?? known.get(anchor);
     if (item) {
-      if (statement !== void 0) continue;
-      out.push({ ...item, ...span && { span } });
-    } else {
-      if (reserved(key) || !statement || statement.split("{}").length !== 2 || options2.length < 2 || options2.length > 3 || options2.some((o) => !o) || new Set(options2.map((o) => o.toLowerCase())).size !== options2.length) continue;
-      out.push({
-        key,
-        slot: key,
-        persistent: false,
-        label: key.replace(/[_-]/g, " "),
-        statement,
-        options: options2.map((label, i) => ({ id: String(i), label })),
-        scope: "session",
-        guard: false,
-        why: "",
-        source: "",
-        ...span && { span }
-      });
+      if (seen.has(item.key)) continue;
+      const location = anchored && item.key === rawKey ? span : rawKey && statement === void 0 ? resolveAnchor(draft, rawKey) : null;
+      out.push({ ...item, ...location && { span: location } });
+      seen.add(item.key);
+      continue;
     }
+    if (first === "catalog" || !anchored || !rawKey || !statement || statement.split("{}").length !== 2 || options2.length < 2 || options2.length > 3 || options2.some((o) => !o) || new Set(options2.map((o) => o.toLowerCase())).size !== options2.length) continue;
+    const label = first === "choice" ? rawKey : rawKey === "new_key" ? statement.replace("{}", "").trim() : rawKey.replace(/[_-]/g, " ");
+    const key = first === "choice" || rawKey === "new_key" ? choiceKey(label) : rawKey;
+    if (!isId(key) || seen.has(key) || reserved(key)) continue;
+    out.push({
+      key,
+      slot: key,
+      persistent: false,
+      label,
+      statement,
+      options: options2.map((label2, i) => ({ id: String(i), label: label2 })),
+      scope: "session",
+      guard: false,
+      why: "",
+      source: "",
+      ...span && { span }
+    });
     seen.add(key);
   }
   return out;
+}
+function choiceKey(label) {
+  const words = normalizeTopic(label);
+  const key = words.replace(/[^a-z0-9 ]/g, "").trim().replace(/ +/g, "_").slice(0, 40);
+  if (isId(key)) return key;
+  let hash = 0;
+  for (const char of words) hash = Math.imul(hash, 31) + char.codePointAt(0) | 0;
+  return `choice_${(hash >>> 0).toString(36)}`;
+}
+var DECISION_TOPICS = [
+  [/\b(?:confidence )?interval\b/, /\b(?:holdout|hold out|resampling|bootstrap)\b/],
+  [/\bretr(?:y|ied|ies)\b/, /\b(?:idempoten\w*|dedup\w*|retry safe)\b/],
+  [/\b(?:limit\w*|capacity|quota)\b/, /\bper (?:plan|tier)\b/],
+  [/\b(?:sli|success ratio|count an error|availability indicator)\b/],
+  [
+    /\b(?:invite|email)\b.*\b(?:send\w*|deliver\w*|reconcil\w*)\b|\b(?:send\w*|deliver\w*)\b.*\b(?:invite|email)\b/,
+    /\b(?:exactly once|idempotent|reconciliation)\b/
+  ]
+];
+var FILLER = new Set("a all also an and both by define each for from is of on only pick same select set the to use using which with".split(" "));
+function nouns(text2) {
+  return new Set(normalizeTopic(text2).split(" ").map((word) => word.length > 4 ? word.replace(/(?:ies|s)$/, (end) => end === "ies" ? "y" : "") : word).filter((word) => word.length > 2 && !FILLER.has(word)));
+}
+function nearExpertDecision(card, choice) {
+  const cardTopic = normalizeTopic(`${card.key} ${card.statement} ${card.options.join(" ")}`);
+  const choiceTopic = normalizeTopic(`${choice.key} ${choice.statement} ${choice.options.join(" ")}`);
+  if (DECISION_TOPICS.some((topic) => topic.every((pattern2) => pattern2.test(cardTopic) && pattern2.test(choiceTopic)))) return true;
+  const subject = nouns(`${choice.key} ${choice.statement}`);
+  const sharedSubject = [...nouns(`${card.key} ${card.statement}`)].filter((noun) => subject.has(noun));
+  const options2 = nouns(choice.options.join(" "));
+  return sharedSubject.length >= 2 && [...nouns(card.options.join(" "))].some((noun) => options2.has(noun));
 }
 
 // ../claude-code/core/frame.ts
@@ -1280,7 +1353,7 @@ function openChoiceLine(row) {
   const options2 = row.options.map((option) => option.trim()).filter((option) => option !== "");
   if (!options2.length) return `${head}?`;
   if (row.type === "range") {
-    return `${head} (${options2.length > 4 ? `between ${options2[0]} and ${options2.at(-1)}` : options2.join(" / ")})?`;
+    return `${head} (${options2.join(" / ")})?`;
   }
   const sorted = [...options2].sort((a, b) => a.localeCompare(b, "en", { numeric: true, sensitivity: "base" }));
   return `${head} (${row.type === "many" ? "any of: " : ""}${sorted.join(" / ")})?`;
@@ -1319,6 +1392,17 @@ function deriveCardKind(draft) {
   if (text2.endsWith("?") || /^(?:how|what|why|where|when|who|which)\s/i.test(text2)) return "ask";
   if (/^(?:(?:i|we)\s+(?:want|need)\s+)?(?:a\s+)?new(?:\s+[\w-]+){0,4}\s+page\b/i.test(text2)) return "build";
   return null;
+}
+var ROUTINE_VERB = /^(?:fix|rename|reformat|format|sort|translate|bump|typo|document|edit|re?write|change|update|upgrade|pin|move|remove|delete)\b/i;
+var ROUTINE_OBJECT = /^(?:add|build|create|make|write|set)\s+(?:(?:the|a|an|some)\s+)?(?:type hints?|type annotations?|comments?|docstrings?|documentation|docs|readme|changelog)\b|^make\s.+\b(?:chart line|text color|line color|font size)\b/i;
+var BUILD_OR_DESIGN = /^(?:apply|cache|choose|decide|define|design|implement|migrate|pick|plan|roll out|route|run|set|shed|split|use|write (?:a |the )?(?:schema|migration)|ajoute|conçois|fais|migre)\b/i;
+var ANALYZE = /^(?:account for|analy[sz]e|assess|calibrate|check whether|compare|comparez|compute|estimate|estime|evaluate|évalue|fit|investigate|measure|mesure|model|predict|report|train|entraîne|tune|verify|vérifie)\b/i;
+var NEXT_TASK = /\s+(?:and|then)\s+(?=(?:please\s+)?(?:add|build|change|choose|compare|create|define|design|fix|implement|make|set|update|use)\b)/i;
+function substantiveChapterDraft(draft) {
+  return draft.split(/(?:[.!?]\s+|;\s+(?=(?:add|build|create|design|implement|make|set)\b)|\n+)/).flatMap((sentence) => sentence.split(NEXT_TASK)).map((task) => task.trim().replace(/^(?:(?:please[, ]+|(?:can|could|would|will) you\s+|(?:i|we) (?:want|need) to\s+))+/i, "")).filter((task) => {
+    if (ROUTINE_VERB.test(task) || ROUTINE_OBJECT.test(task)) return false;
+    return deriveCardKind(task) === "build" || BUILD_OR_DESIGN.test(task) || ANALYZE.test(task) || /^(?:which|what)\b.*\b(?:should|hold up|would)\b/i.test(task) || /^(?:(?:we|i) (?:tested|compared|measured)|.+\b(?:jumped|dropped)\b).*,?\s+(?:tell me which|check whether|which)\b/i.test(task);
+  }).join("\n");
 }
 function insertsPinnedArtifact(draft) {
   const [insert, source, ...rest] = draft.trim().split(/(?<=[.!?])\s+/);
@@ -2326,6 +2410,9 @@ function countLibraries(lines) {
   return libs;
 }
 
+// ../claude-code/core/types.ts
+var DEFAULT_SEND = "open";
+
 // ../claude-code/core/core.ts
 var DEFAULT_TIMING = {
   idleMs: 280,
@@ -2373,6 +2460,7 @@ var Core = class {
   enabled = false;
   generation = 0;
   profileName = "";
+  profileSelected = false;
   profile = EMPTY_PROFILE;
   system = [];
   timing = { ...DEFAULT_TIMING };
@@ -2397,6 +2485,7 @@ var Core = class {
   /** Undefined under the original conformance protocol; otherwise whether the card runs. */
   sheetEnabled;
   readMode = "auto";
+  autoReview = false;
   sketchEnabled = true;
   refsEnabled = true;
   pickedOnly = false;
@@ -2410,6 +2499,9 @@ var Core = class {
   pendingSent = [];
   nextCard = 1;
   cardCache = new Lru(24);
+  chapterCache = new Lru(24);
+  manuallyReviewed = new Lru(24);
+  chapterReview = null;
   sketchCache = new Lru(16);
   lastCardAt = null;
   index = null;
@@ -2428,6 +2520,7 @@ var Core = class {
   now = 0;
   text = "";
   atEnter = false;
+  afterEnter = false;
   cursor = 0;
   textAt = 0;
   /** When the person last acted without editing (a pick, accept all, switching on): latency counts from here too. */
@@ -2464,7 +2557,7 @@ var Core = class {
         this.onConfig(event);
         break;
       case "draft":
-        this.onDraft(event.text, event.origin, event.edit, event.cursor, event.atEnter === true);
+        this.onDraft(event);
         break;
       case "timer":
         this.onTimer();
@@ -2548,6 +2641,9 @@ var Core = class {
         break;
       case "cardRead":
         this.fireCard(true);
+        break;
+      case "cardKeep":
+        this.onCardKeep();
         break;
       case "cardFocus":
         this.onCardFocus(event.dir, event.row);
@@ -2633,12 +2729,16 @@ var Core = class {
     const readMode = e.read ?? "auto";
     const readModeChanged = this.readMode !== readMode;
     this.readMode = readMode;
+    const autoReview = e.review === "auto";
+    const reviewChanged = this.autoReview !== autoReview;
+    this.autoReview = autoReview;
     this.sketchEnabled = e.sketch !== false;
     this.refsEnabled = e.refs !== false;
-    const pickedOnly = e.send === "picked" || e.send === "open";
+    const send = e.send ?? DEFAULT_SEND;
+    const pickedOnly = send !== "all";
     if (pickedOnly !== this.pickedOnly && this.card?.sketch) this.card.sketchDue = this.now;
     this.pickedOnly = pickedOnly;
-    this.openRows = e.send === "open";
+    this.openRows = send === "open";
     const userLine = e.user?.trim() || void 0;
     const userChanged = this.userLine !== userLine;
     this.userLine = userLine;
@@ -2680,6 +2780,9 @@ var Core = class {
         }
       }
     }
+    const profileSelected = this.profileName === e.profile && (this.profileName !== "general" || e.profileSelected === true);
+    const selectionChanged = this.profileSelected !== profileSelected;
+    this.profileSelected = profileSelected;
     this.state.use(this.profileName);
     this.system = buildSystem(this.assets.system, this.mode === void 0 ? this.profile : { ...this.profile, maxCues: 1 });
     const enabled = this.mode === void 0 ? e.enabled : this.mode !== "off";
@@ -2702,14 +2805,16 @@ var Core = class {
     if (languageChanged) this.expertPicks.clear();
     const contextChanged = depthChanged || userChanged || preferChanged;
     if (contextChanged) this.clearExpert();
+    if (modeChanged || contextChanged || selectionChanged || reviewChanged) this.cancelChapterReview();
+    if ((this.mode === "quiet" || !autoReview) && this.card?.stage === "draft") this.dropChapterSuggestions(this.card);
     if (!enabled || sheetEnabled !== true || languageChanged || profileChanged && this.card?.stage === "draft") {
       this.clearCard();
     } else if (contextChanged && this.card?.stage === "draft") {
-      const card = this.card;
-      if (card.req !== null) this.out.push({ type: "cancel", req: card.req });
-      if (card.sketch?.req != null) this.out.push({ type: "cancel", req: card.sketch.req });
-      Object.assign(card, { req: null, readFor: null, read: null, kind: null, error: false, sketch: null, sketchDue: null });
-      card.rows = card.rows.filter((row) => row.origin === "repo" || row.picked !== null);
+      const card2 = this.card;
+      if (card2.req !== null) this.out.push({ type: "cancel", req: card2.req });
+      if (card2.sketch?.req != null) this.out.push({ type: "cancel", req: card2.sketch.req });
+      Object.assign(card2, { req: null, readFor: null, read: null, kind: null, error: false, sketch: null, sketchDue: null });
+      card2.rows = card2.rows.filter((row) => row.origin === "repo" || row.picked !== null);
       this.fixCardFocus();
     }
     if (!this.enabled) {
@@ -2724,12 +2829,19 @@ var Core = class {
       if (sheetEnabled && !this.card && this.cardText()) this.onCardDraft(this.text);
       this.schedule("open", null);
     }
+    const card = this.card;
+    if (reviewChanged && autoReview && card?.stage === "draft" && (card.readFor === this.text || card.req !== null && card.reqText === this.text)) this.startChapterReview(card);
   }
-  onDraft(text2, origin, edit, cursor, atEnter) {
+  onDraft({ text: text2, origin, edit, cursor, atEnter, afterEnter }) {
     const before2 = this.text;
     this.cursor = cursor === void 0 ? text2.length : Math.max(0, Math.min(text2.length, cursor));
     if (text2 === before2 && origin === "type") return;
-    this.atEnter = atEnter;
+    this.atEnter = atEnter === true;
+    this.afterEnter = atEnter === true || afterEnter === true;
+    if (text2 !== before2 || this.afterEnter) {
+      this.cancelChapterReview();
+      if (this.card?.stage === "draft") this.dropChapterSuggestions(this.card);
+    }
     const splice = edit !== void 0 && spliceFits(before2, text2, edit) ? edit : diffSplice(before2, text2);
     this.text = text2;
     if (text2 !== before2) {
@@ -2788,6 +2900,10 @@ var Core = class {
     }
     if (req === this.expertReq) {
       this.onExpertReply(chunk, done, ok);
+      return;
+    }
+    if (this.chapterReview?.req === req) {
+      this.onChapterReply(this.chapterReview, chunk, done, ok);
       return;
     }
     if (req === this.late?.review.full) {
@@ -2931,7 +3047,7 @@ var Core = class {
     const decisions = isPrompt ? this.decisions(exact, whole) : [];
     const attached = attachDecisions(text2, decisions);
     const added = attached.added;
-    const open = isPrompt && exact ? openChoicesBlock(this.openChoices(plan, read)) : "";
+    const open = isPrompt && exact ? openChoicesBlock(this.openChoices(read)) : "";
     const asked = open ? `${attached.text.replace(/\s+$/, "")}
 
 ${open}` : attached.text;
@@ -2970,6 +3086,7 @@ ${target}` : asked;
     this.reviewAt = null;
     this.text = "";
     this.atEnter = false;
+    this.afterEnter = false;
     this.cursor = 0;
     this.textAt = this.now;
     this.cues = [];
@@ -3122,23 +3239,40 @@ ${target}` : asked;
   expertBuffer = "";
   expertStarted = 0;
   onExpert(profile) {
-    const system = this.assets.expertSystem;
-    if (!this.enabled || this.mode === void 0 || !system || !this.canReview(profile) || !this.text.trim() || isHostCommand(this.text)) return;
-    const depth = this.depthOf(profile);
-    const slots = this.state.forProfile(profile).filter((slot) => eligibleSlot(slot, depth, "study"));
+    if (!this.enabled || this.mode === void 0 || !this.canReview(profile) || !this.text.trim() || isHostCommand(this.text)) return;
+    this.manuallyReviewed.set(this.text, true);
+    this.cancelChapterReview();
     this.clearExpert();
     this.cancelAll();
     if (this.sheetEnabled === void 0) this.reviewAt = null;
-    const draft = this.state.evaluate(this.text, slots.map((slot) => slot.id));
-    const language = this.wordingLanguage(draft);
     const id = this.nextReq++;
     this.expert = { id, profile, phase: "reviewing", items: [] };
     this.expertReq = id;
     this.expertStarted = this.now;
-    this.expertCatalog = slots.flatMap((slot) => {
+    const chapters = chapterContext(
+      this.assets.chapters?.filter((chapter) => chapter.profile === profile) ?? [],
+      splitDecisions(this.text).body,
+      () => this.depthOf(profile)
+    );
+    const catalog = chapters ? [] : this.reviewCatalog(profile);
+    const card = this.card?.stage === "draft" ? this.card : null;
+    const request = this.expertRequest(
+      chapters,
+      expertCardContext(card?.rows ?? []),
+      expertPrompt(catalog, this.state.forProfile(profile))
+    );
+    this.expertCatalog = catalog;
+    this.out.push({ ...request, req: id });
+  }
+  reviewCatalog(profile) {
+    const depth = this.depthOf(profile);
+    const slots = this.state.forProfile(profile).filter((slot) => eligibleSlot(slot, depth, "study"));
+    const draft = this.state.evaluate(this.text, slots.map((slot) => slot.id));
+    const language = this.wordingLanguage(draft);
+    return slots.flatMap((slot) => {
       const options2 = draft.available(slot);
       const value = this.state.resolve(slot.id);
-      const reason = this.state.instructionSlots.has(slot.id) ? "project-instruction" : value ? "standing-value" : draft.suppresses(slot) ? "settled-or-inapplicable" : slot.requires?.some((key) => draft.facts.get(key) !== true) || options2.length < 2 ? "prerequisite" : null;
+      const reason = this.state.instructionSlots.has(slot.id) ? "project-instruction" : value ? "standing-value" : draft.suppresses(slot) ? "settled-or-inapplicable" : slot.requires?.some((key) => draft.facts.get(key) !== true) || options2.length < 2 ? "prerequisite" : draft.byId.get(slot.id)?.status !== "open" ? "not-open" : null;
       if (reason) {
         if (this.audit) this.metric("candidate", {
           tier: "expert",
@@ -3152,30 +3286,33 @@ ${target}` : asked;
       }
       return [{ ...stateCue({ slot, options: options2 }, language, depth), key: slot.id, persistent: true }];
     });
+  }
+  expertRequest(chapters, cardContext, catalog = "") {
+    const system = this.assets.expertSystem;
+    const card = this.card?.stage === "draft" ? this.card : null;
     const prompt = buildPrompt({
       draft: applyDecisions(this.text, this.decisions()),
-      dismissed: [...this.dismissed.map((d) => d.statement), ...this.stateDismissed]
+      dismissed: [
+        ...this.dismissed.map((d) => d.statement),
+        ...this.stateDismissed,
+        ...card ? [...card.dismissed, ...card.chapterDismissed] : []
+      ]
     });
-    const chapters = chapterContext(
-      this.assets.chapters?.filter((chapter) => chapter.profile === profile) ?? [],
-      splitDecisions(this.text).body,
-      () => depth
-    );
-    this.out.push({
+    return {
       type: "request",
-      req: id,
       kind: "expert",
       tier: "cloud",
       system: [(this.language === "en" ? system.replace("in the draft's language", "in English") : system).replace(/\{\{\s*max_cues\s*\}\}/g, String(MAX_EXPERT_CUES)).trim()],
-      prompt: [prompt, expertPrompt(this.expertCatalog, slots), chapters].filter(Boolean).join("\n\n"),
+      prompt: [prompt, cardContext, chapters, catalog].filter(Boolean).join("\n\n"),
       maxTokens: 512
-    });
+    };
   }
   onExpertReply(chunk, done, ok) {
     if (!this.expert) return;
     this.expertBuffer += chunk;
     if (ok && !done) return;
-    const items = ok ? parseExpert(this.expertBuffer, this.text, this.expertCatalog, (key) => this.state.slot(key) !== void 0) : [];
+    const card = this.card?.stage === "draft" ? this.card : null;
+    const items = ok ? parseExpert(this.expertBuffer, this.text, this.expertCatalog, (key) => this.state.slot(key) !== void 0).filter((item) => !card || this.uncoveredChoice(card, item)).slice(0, MAX_EXPERT_CUES) : [];
     this.expertReq = null;
     this.expert = { ...this.expert, phase: ok ? "ready" : "error", items };
     this.expertBuffer = "";
@@ -3222,6 +3359,119 @@ ${target}` : asked;
     this.expertCatalog = [];
     this.expertBuffer = "";
   }
+  // ---- chapter review alongside the card ---------------------------------
+  matchChapterReview() {
+    if (!this.autoReview || this.mode === "quiet" || this.afterEnter || this.readSubmittedPrompt || this.stateDraft?.directive === "delegate" || !this.assets.expertSystem || !this.assets.chapters || this.manuallyReviewed.get(this.text)) return [];
+    const body = splitDecisions(this.text).body;
+    if (insertsPinnedArtifact(body)) return [];
+    const draft = substantiveChapterDraft(body);
+    if (!draft) return [];
+    const own = /* @__PURE__ */ new Set([...this.prefer, ...this.projectLenses.map((lens) => lens.profile)]);
+    if (this.profileSelected) own.add(this.profileName);
+    const chapters = this.assets.chapters.filter((chapter) => own.has(chapter.profile));
+    const [best] = matchChapters(chapters, draft, this.prefer, true);
+    return best ? matchChapters(chapters.filter((chapter) => chapter.profile === best.profile), draft, [], true) : [];
+  }
+  startChapterReview(card, matches = this.matchChapterReview()) {
+    const [best] = matches;
+    if (!best || this.chapterReview || card.readFor === this.text && !this.cardHasChoices(card, this.text)) return;
+    const { profile } = best;
+    const depth = this.depthOf(profile);
+    const cardContext = expertCardContext(card.rows.filter((row) => card.readFor === this.text || row.origin === "repo" || row.picked !== null));
+    const request = this.expertRequest(chapterNotes(matches, () => depth), cardContext);
+    const key = JSON.stringify([profile, depth, request.system, request.prompt]);
+    const items = this.chapterCache.get(key);
+    const req = items ? null : this.nextReq++;
+    this.chapterReview = {
+      profile,
+      req,
+      key,
+      started: this.now,
+      buffer: "",
+      matches,
+      cardContext,
+      ...items && { result: { items, ms: 0, ok: true, cached: true } }
+    };
+    if (req === null) {
+      this.finishChapterReview(card);
+      return;
+    }
+    this.out.push({ ...request, req });
+    this.metric("chapter-review-started", { req, profile, depth, chapters: matches.map((chapter) => chapter.title) });
+  }
+  onChapterReply(review, chunk, done, ok) {
+    if (review.result) return;
+    review.buffer += chunk;
+    if (ok && !done) return;
+    const items = ok ? parseExpert(review.buffer, this.text, [], (key) => this.state.slot(key) !== void 0) : [];
+    if (ok) this.chapterCache.set(review.key, items);
+    review.result = { items, ms: this.now - review.started, ok };
+    if (this.card) this.finishChapterReview(this.card);
+  }
+  finishChapterReview(card) {
+    const review = this.chapterReview;
+    if (!review || card.readFor !== this.text) return;
+    if (!this.cardHasChoices(card, this.text)) {
+      this.cancelChapterReview();
+      return;
+    }
+    if (!review.result) {
+      if (this.now - review.started <= this.timing.idleMs && card.rows.length && review.cardContext !== expertCardContext(card.rows)) {
+        this.cancelChapterReview();
+        this.startChapterReview(card, review.matches);
+      }
+      return;
+    }
+    this.chapterReview = null;
+    const { profile, req, result: { items, ...result } } = review;
+    let rowsAdded = 0;
+    let duplicates = 0;
+    const remaining = MAX_EXPERT_CUES - card.rows.filter((row) => row.chapter).length;
+    for (const item of items) {
+      const choice = expertChoice(item);
+      if (duplicatesCardRow(card.rows, choice)) {
+        duplicates++;
+        continue;
+      }
+      if (rowsAdded >= remaining || card.chapterDismissed.has(item.key) || card.dismissed.has(item.key)) continue;
+      card.rows.push({
+        ...choice,
+        id: this.newId(),
+        label: cutLabel(item.label.toLowerCase()),
+        type: "one",
+        defaults: [],
+        origin: "lens",
+        lens: profile,
+        chapter: true,
+        picked: null,
+        ...item.span && { anchor: this.text.slice(item.span.start, item.span.end) }
+      });
+      rowsAdded++;
+    }
+    this.fixCardFocus();
+    this.metric("chapter-review-finished", { req, ...result, profile, rowsAdded, duplicates });
+  }
+  cancelChapterReview() {
+    const review = this.chapterReview;
+    if (!review) return;
+    this.chapterReview = null;
+    if (review.req !== null && !review.result) this.out.push({ type: "cancel", req: review.req });
+    this.metric("chapter-review-finished", {
+      req: review.req,
+      profile: review.profile,
+      ms: this.now - review.started,
+      cancelled: true,
+      rowsAdded: 0,
+      duplicates: 0
+    });
+  }
+  dropChapterSuggestions(card) {
+    card.rows = card.rows.filter((row) => !row.chapter || row.picked !== null);
+    this.fixCardFocus();
+  }
+  uncoveredChoice(card, item) {
+    return !card.dismissed.has(item.key) && !card.chapterDismissed.has(item.key) && !duplicatesCardRow(card.rows, expertChoice(item));
+  }
   // ---- the card ------------------------------------------------------------
   //
   // Before Enter the card shows how the agent will read the draft, the names it
@@ -3245,6 +3495,7 @@ ${target}` : asked;
       rows: [],
       focus: null,
       dismissed: /* @__PURE__ */ new Set(),
+      chapterDismissed: /* @__PURE__ */ new Set(),
       req: null,
       reqText: "",
       reqKey: "",
@@ -3266,6 +3517,7 @@ ${target}` : asked;
   clearCard() {
     const card = this.card;
     if (!card) return;
+    this.cancelChapterReview();
     if (card.req !== null) this.out.push({ type: "cancel", req: card.req });
     if (card.sketch && card.sketch.req !== null) this.out.push({ type: "cancel", req: card.sketch.req });
     if (card === this.turnCard) this.turnCard = null;
@@ -3368,6 +3620,7 @@ ${target}` : asked;
     const cached = this.cardCache.get(key);
     if (cached) {
       this.applyCard(card, cached, this.text);
+      this.startChapterReview(card);
       return;
     }
     const req = this.nextReq++;
@@ -3375,6 +3628,7 @@ ${target}` : asked;
     this.lastCardAt = this.now;
     this.out.push({ type: "request", req, kind: "card", tier: "cloud", system, prompt, maxTokens: CARD_MAX_TOKENS });
     this.metric("card-requested", { req, card: card.id, words: wordCount(this.text), mentions: this.mentions.length });
+    this.startChapterReview(card);
   }
   cardRequest(card) {
     const english = this.wordingLanguage() === "en";
@@ -3398,11 +3652,11 @@ ${this.text.slice(-DRAFT_MAX * 0.3)}` : this.text;
     if (folders2.length) lines.push(`Folders that may already do part of this: ${folders2.map((f) => `${f.dir}/ (${f.files.join(", ")})`).join("; ")}`);
     const settled = [
       ...this.decisions(false).map(decisionLine),
-      ...card.rows.filter((row) => row.picked !== null).map((row) => decisionLine({ statement: row.statement, option: this.rowText(row, row.picked) }))
+      ...card.rows.filter((row) => !row.chapter && row.picked !== null).map((row) => decisionLine({ statement: row.statement, option: this.rowText(row, row.picked) }))
     ];
     if (settled.length) lines.push(`Already decided (no row for these):
 ${settled.map((line) => `- ${line}`).join("\n")}`);
-    const open = card.rows.filter((row) => (row.origin === "model" || row.origin === "lens") && row.picked === null);
+    const open = card.rows.filter((row) => !row.chapter && (row.origin === "model" || row.origin === "lens") && row.picked === null);
     if (open.length) lines.push(`Rows on screen now (keep a key while its choice is still open): ${open.map((row) => row.key).join(", ")}`);
     if (card.dismissed.size) lines.push(`Dismissed by the user (never raise again): ${[...card.dismissed].join(", ")}`);
     if (this.stateDraft?.directive === "delegate") lines.push("The user leaves the choices to the agent: reply with the read and kind lines only.");
@@ -3478,7 +3732,9 @@ ${lines.join("\n")}` : "";
       this.cardCache.set(card.reqKey, parsed);
       this.applyCard(card, parsed, card.reqText);
       this.metric("card-reply", { req, card: card.id, ok, ms: this.now - card.reqAt, rows: parsed.rows.length, kind: parsed.kind, read: parsed.read !== null });
+      this.finishChapterReview(card);
     } else {
+      this.cancelChapterReview();
       card.error = card.readFor === null;
       this.metric("card-reply", { req, card: card.id, ok, ms: this.now - card.reqAt });
     }
@@ -3500,8 +3756,7 @@ ${lines.join("\n")}` : "";
     if (!partial) card.readFor = text2;
     card.error = false;
     const steps = listsSteps(text2);
-    const quiet = this.stateDraft?.directive === "delegate" || card.kind === "ask" || insertsPinnedArtifact(splitDecisions(text2).body);
-    const fresh = quiet ? [] : parsed.rows.filter((row) => !card.dismissed.has(row.key) && (row.key !== STEP_ORDER_KEY || steps) && !asksPlaces(card.rows, row));
+    const fresh = !this.cardHasChoices(card, text2) ? [] : parsed.rows.filter((row) => !card.dismissed.has(row.key) && (row.key !== STEP_ORDER_KEY || steps) && !asksPlaces(card.rows, row));
     const old = card.rows.filter((row) => row.origin === "model" || row.origin === "lens");
     const used = /* @__PURE__ */ new Set();
     const next = [];
@@ -3519,10 +3774,16 @@ ${lines.join("\n")}` : "";
     }
     for (const row of old) if (!used.has(row.id) && (partial || row.picked !== null)) next.push(row);
     card.rows = [...card.rows.filter((row) => row.origin === "repo"), ...next];
+    if (!partial && text2 === this.text && this.expert?.phase === "ready") {
+      this.expert = { ...this.expert, items: this.expert.items.filter((item) => item.chosen !== void 0 || this.uncoveredChoice(card, item)) };
+    }
     this.fixCardFocus();
     if (!partial && this.sketchEnabled && this.assets.sketchSystem && canSketch(card.kind) && text2 === this.text) {
       card.sketchDue = this.now;
     }
+  }
+  cardHasChoices(card, text2) {
+    return this.stateDraft?.directive !== "delegate" && card.kind !== "ask" && !insertsPinnedArtifact(splitDecisions(text2).body);
   }
   /** Keep catalog choices subject to the local decision state as well as the model's reading. */
   lensRow(row, text2) {
@@ -3603,6 +3864,17 @@ ${lines.join("\n")}` : "";
     } else if (card.stage === "after") this.fillFollowUp();
     else if (card.sketch && canSketch(card.kind)) card.sketchDue = this.now + SKETCH_DELAY_MS;
   }
+  onCardKeep() {
+    const card = this.card;
+    if (card?.stage !== "draft") return;
+    const focus = card.focus;
+    for (const row of card.rows) {
+      if (row.picked === null && !row.hardToUndo && (row.learned ?? row.defaults).length) {
+        this.onCardChange(row.id, (_row, current) => [...current], true);
+      }
+    }
+    card.focus = focus;
+  }
   onCardSay(rowId, text2) {
     const card = this.card;
     const row = card?.rows.find((entry) => entry.id === rowId);
@@ -3625,7 +3897,8 @@ ${lines.join("\n")}` : "";
     const card = this.card;
     const row = card?.rows.find((entry) => entry.id === rowId);
     if (!card || !row) return;
-    card.dismissed.add(row.key);
+    const dismissed = row.chapter ? card.chapterDismissed : card.dismissed;
+    dismissed.add(row.key);
     card.rows = card.rows.filter((entry) => entry !== row);
     this.fixCardFocus();
     this.metric("card-dismissed", { card: card.id, row: row.key, origin: row.origin, stage: card.stage });
@@ -3636,7 +3909,7 @@ ${lines.join("\n")}` : "";
     return card?.stage === "draft" && card.req === null && card.readFor === text2;
   }
   defaultIsOpen(row) {
-    return !this.pickedOnly && row.picked === null && row.hardToUndo === true;
+    return row.picked === null && row.hardToUndo === true;
   }
   /** A finished reading adds learned picks, and adds binding defaults in `all` mode. */
   cardDecisions(whole = false) {
@@ -3649,11 +3922,10 @@ ${lines.join("\n")}` : "";
     }
     return out;
   }
-  openChoices(plan, read) {
+  openChoices(read) {
     const card = this.card;
     if (card?.stage !== "draft") return [];
-    const leaveOpen = plan && this.openRows;
-    return card.rows.filter((row) => row.picked === null && row.learned === void 0 && row.key !== STEP_ORDER_KEY).filter((row) => row.origin === "repo" ? leaveOpen && row.key.startsWith("file_") : read && (row.origin === "model" || row.origin === "lens") && (leaveOpen || this.defaultIsOpen(row))).map((row) => openChoiceLine(row));
+    return card.rows.filter((row) => row.picked === null && row.learned === void 0 && row.key !== STEP_ORDER_KEY).filter((row) => row.origin === "repo" ? this.openRows && (!this.afterEnter || read) : read && (this.openRows || this.defaultIsOpen(row))).map((row) => openChoiceLine(row));
   }
   cardView(canReadCard) {
     const card = this.card;
@@ -3750,7 +4022,7 @@ ${prompt}`;
     this.metric("sketch-requested", { req, card: card.id });
   }
   sketchPrompt(card, added) {
-    const choices = this.pickedOnly ? added ?? attachDecisions(this.text, this.decisions(true, this.hasReadingFor(this.text))).added : card.rows.filter((row) => (row.origin !== "repo" || row.picked !== null) && !this.defaultIsOpen(row)).map((row) => decisionLine({ statement: row.statement, option: this.rowText(row, row.picked ?? row.learned ?? row.defaults) }));
+    const choices = this.pickedOnly ? added ?? attachDecisions(this.text, this.decisions(true, this.hasReadingFor(this.text))).added : card.rows.filter((row) => (row.origin !== "repo" && !row.chapter || row.picked !== null) && !this.defaultIsOpen(row)).map((row) => decisionLine({ statement: row.statement, option: this.rowText(row, row.picked ?? row.learned ?? row.defaults) }));
     const found = this.mentions.filter((m) => m.status === "found").slice(0, 8);
     return buildSketchPrompt({ draft: this.text, read: card.read, choices, names: found.map((m) => m.match ?? m.phrase), today: this.today });
   }
@@ -3796,7 +4068,7 @@ ${tidySketch(sketch.lines).join("\n")}
         sketch: card?.sketch?.pinned ?? false
       });
       for (const row of card?.rows ?? []) {
-        if (row.picked !== null && row.origin !== "repo" && row.type !== "many") {
+        if (row.picked !== null && !row.chapter && row.origin !== "repo" && row.type !== "many") {
           this.out.push({ type: "learn", key: row.key, label: rowValue(row, row.picked) });
         }
       }
@@ -4289,6 +4561,19 @@ function sameOptions(a, b) {
   const right = b.map(normalize).sort();
   return left.every((value, i) => value === right[i]);
 }
+function expertChoice(item) {
+  return { key: item.key, statement: item.statement, options: item.options.map((option) => option.label) };
+}
+function duplicatesCardRow(rows, choice) {
+  return rows.some((row) => sameDecision(row, choice)) || asksPlaces(rows, choice);
+}
+function sameDecision(row, item) {
+  if (normalizeTopic(row.key) === normalizeTopic(item.key) || normalizeTopic(row.statement) === normalizeTopic(item.statement)) return true;
+  if (row.type !== "one") return false;
+  if (sameOptions(row.options, item.options) && row.options.some((option) => !/^(?:yes|no|on|off)$/i.test(option.trim()))) return true;
+  const lines = (choice) => choice.options.map((option) => decisionLine({ statement: choice.statement, option }));
+  return sameOptions(lines(row), lines(item)) || nearExpertDecision(row, item);
+}
 function placeCue(cue, placed) {
   const out = { ...cue, anchor: placed.anchor };
   delete out.start;
@@ -4502,7 +4787,7 @@ manually uploaded preview | A manually uploaded preview is {} | kept until clear
     "product": "---\nname: product\ndescription: Product and startup building. First user, job to be done, first release, validation.\nmax_cues: 3\n---\n## Rubric\nThe draft asks an agent to design or build a product, a feature or a prototype. Read it\nas a product builder who has to ship something small that teaches something.\n\nLook for the open decisions that would change what gets built first:\n- The first user. Who it is for, when the draft names a product but not a person.\n- The job. What that person is trying to get done, and the one workflow that must work.\n- The first release. What is in and what is deliberately left out. Which platform.\n- The proof. What outcome would show the idea works: a number, a behavior, a payment.\n\nPick the decision with the largest effect on the build or on what can be learned from\nit. Keep options concrete enough to choose in a second. Respect choices the draft\nalready makes. Do not cue on technology, architecture or visual design unless the draft\nmakes them the point.\nA request can leave open who acts, whose sign-off is needed, or which promise the\nproduct makes. A scoped feature keeps the stated audience, workflow and permissions.\nFollow references to a named screen, action or rule as written. An alternative that\nwould change an already specified view, condition or action does not qualify.\n\n## Examples\n### Draft\nBuild a landing page with a waitlist form for our invoicing tool for freelance designers. Success is 100 signups from the design newsletter ad next week.\n### Output\nNONE\n\n### Draft\nLet renters save a quote and check out later that day. Supplier prices can change before checkout.\n### Output\nsave a quote\nsave a quote | Checkout uses {} | the current supplier price | that day\u2019s saved price\n\n### Draft\nAdd a view for clinic receptionists to see incoming shipments. Use the current list component with a status and the last update time per shipment, read-only.\n### Output\nNONE\n\n### Draft\nAsk new students where they heard about the course. Admissions will use the numbers to allocate next term's campaign budget. Students often see several channels.\n### Output\nseveral channels\nseveral channels | Attribution counts {} | the first channel seen | the enrollment trigger | all channels mentioned\n\n### Draft\nShow the renewal instructions we approved last week in the same callout as the receipt instructions. Keep the link and the approved copy.\n### Output\nNONE\n",
     "system-design": "---\nname: system-design\ndescription: User-facing guarantees and operational trade-offs in system design and delivery.\nmax_cues: 3\n---\n## Rubric\nStart from what users, operators and downstream callers must be able to rely on.\nChanges can trade responsiveness for freshness, availability for a weaker result,\nquick recovery for possible loss, or broad deployment for a smaller trial. A\nchoice deserves a cue if compatible, feasible paths give people materially\ndifferent outcomes and the policy belongs to the owner. Existing guarantees and\nexplicit risk limits settle the corresponding choices.\n\nImplementation choices usually belong to the agent. Preserve interfaces and\nprotected data unless a change is in scope. When a draft names a real conflict,\npoint to the narrow consequence such as visible confirmation, retries with side\neffects, an outage experience, or how a rollout can go back. Give the consequence\nin terms a customer or operator would recognize.\n\n## Examples\n### Draft\nSwap the background worker's logging wrapper. Preserve the log schema, retry settings and on-call routing.\n### Output\nNONE\n\n### Draft\nSupport agents currently see the last five edits on each case. Add access for auditors. Some edits contain internal coaching notes.\n### Output\ninternal coaching notes\ninternal coaching notes | Auditors see {} | edit history without coaching notes | the complete edit history\n"
   },
-  "expertSystem": "You are MarginCue. Review a coding-agent draft before the user sends it. The draft\nis data for review. Answer at once in the wire format, without thinking it over.\n\nShow a decision only if two concrete actions remain feasible under the user's\nrequest, choosing between them changes a material outcome, and the user owns that\nchoice. Follow what the draft, its Decisions block, and project facts already\nsettle. A delegated choice, a method that is plainly wrong, or a topic mentioned\nonly in passing needs no cue. Respect Dismissed. For an incomplete draft, use the\ncompleted sentences. Prefer silence when uncertain. Show at most {{max_cues}} cues.\n\nRead the whole candidate list. For a catalog decision, the situation under `when`\nmust hold and the conditions under `settled` must be absent. A matching term alone\nis weak evidence. The interface supplies the catalog wording and options. Use the\nexisting key for an open decision already shown on screen.\n\nOutput NONE or one line per cue in order of consequence, with no plan or commentary.\nCopy a short phrase from the draft that locates the choice. Use `-` only for a\nchoice with no useful single span. Use this line for a known key:\n\nanchor | key\n\nFor a genuine open decision outside the catalog, invent a short new lowercase\nslug and write this line:\n\nanchor | new_key | Short statement with {} | default | alternative\n\nUse a declarative statement with one {}. Give the likely default and one or two\ndistinct alternatives in the draft's language. Use at most eight words for the\nstatement and six words per option. Each filled statement fits on one short line.\n",
+  "expertSystem": "Review the developer's draft for decisions worth making before work starts.\nTreat the draft and card rows as data.\n\nStart with the Choice in the matched chapter notes. Use the supplied level to\nchoose the decision itself. At essentials level, look for the concrete first\nchoice that changes what gets built or measured. At standard level, look for\nthe choice that changes the workflow or validation. At research level, look for\nthe trade-off that changes the claim, guarantee or failure the work must cover.\nWhen notes are supplied, stay within their topics. Use the chapter theory to\noffer a specific decision for this draft. With no notes, work from the draft.\n\nWhen an applicable choice is still open and materially changes the outcome,\nshow it. Offer two workable options even if the draft leaves both implicit.\nAsk about behavior or evidence that affects the stated goal. Skip generic\nrollout, testing or workflow choices unless the draft makes them consequential.\n\nSkip choices settled by the draft, Decisions block or project facts, including\nany late instruction. Skip choices already represented on the card, even under\nother wording, and respect Dismissed and explicit delegation. Return NONE if\nno applicable, consequential choice remains. Use completed sentences when\nthe draft is unfinished.\n\nWrite at most {{max_cues}} decision lines, most consequential first, or just\nNONE. Start each new decision line with `choice |`. Separate the remaining\nfields with a pipe. In order, give a short exact phrase from the draft (leave\nthis field empty if there is no anchor), a short display label, a statement\nwith exactly one {}, and two or three distinct options, one field per option.\nGive the label, statement and alternatives in the draft's language. Use at\nmost eight words for the statement and six words per option. Each filled\nstatement fits on one short line. Output plain text without bullets, headings\nor explanations.\n",
   "sheetSystem": "You make a short request more precise before a coding agent builds it.\n\nReply with the single word NONE when the request does not start something new (a fix, a change to something that exists, a question, a follow-up in a conversation), when it asks for a small piece of routine work (a branch, a commit message, a test, a list, a summary), or when it leaves nothing of consequence open. Never ask for missing context.\n\nOtherwise find up to five unresolved decisions on which competent builders would likely choose differently. Put the choices that cost rework first: who uses it and who has access, where it runs, where its data comes from and is kept, what it does or leaves out. Consider core behaviour before presentation. Skip what the request already fixes or strongly implies, and skip cosmetic details.\n\nAt most five lines and nothing else, each in the form:\nquestion | option | option | option\nOne concrete question per decision, with two to four short, plausible options, {language}.",
   "cardSystem": 'You are MarginCue. A developer is typing a prompt for a coding agent (Claude Code or Codex) and has not sent it yet. Before they press Enter, show how the agent will read it and which consequential choices the agent would otherwise make alone. Answer at once in the format below: no preamble, no reasoning.\n\nread | <one sentence of at most 25 words starting "You want": what the agent will deliver, and how it takes the request (its scope; whether listed cases are the whole job or examples; whether listed steps go in the order written). Speak of the agent in the third person ("the agent will\u2026"), never "I".>\nkind | <build | change | fix | explore | ask | other>\nrow | <key> | <label> | <type> | <statement with {}> | <option> | <option> ...\n\nRows (0 to 5, most consequential first) are choices the draft leaves open where:\n- two or more options are plausible for this request in this repository;\n- the choice changes what the developer gets or what counts as done: scope, behaviour, the output and where it goes, which existing code to build on, how far to go, what to leave alone, how the result is checked;\n- a developer could reasonably want something other than what the agent would do unasked.\nNever ask about something the draft states or clearly implies, about names listed as not found in the code, about implementation details the developer would not judge, or about trivia. Prefer fewer, sharper rows. Zero rows is right for a precise request, a question or a small fix.\nOne exception: when the draft lists steps (numbered, or first \u2026 then \u2026 finally), add the row `row | step_order | order | one | Do the steps {} | in written order, from step 1 | in whatever order works`, last, unless the draft already says the order doesn\'t matter. Agents often start at a later step; this row pins the order.\n\nFields:\n- key: snake_case, at most 32 characters. Reuse the key of a row on screen when it is the same choice.\n- label: one or two lowercase words, at most 12 characters ("build on", "deliver", "capture", "scope").\n- type: `one` (pick one; the first option is the default), `many` (pick any; mark the defaults with *), `range` (ordered options from least to most; mark the default with *), or `num`, followed by default | min | max | unit instead of options.\n- statement: the decision as it will be attached to the prompt, with {} where the option goes ("Deliver {} after each run").\n- options: 2 to 5, concrete and short (at most 6 words each), in this repository\'s own terms. Write each option out in full: never abbreviate it or cut it short with "\u2026". The default is what a capable agent would most likely do unasked. A star marking a default goes right after its option.\n- A row may end with | @<a short phrase copied exactly from the draft> that the choice is about.\n\nUse the repository outline, the names found in the code and the folders that may already do part of the job: say "extend tools/runlog" rather than "reuse existing code". Name a file or folder in an option only when the draft, the names found in the code or the listed folders point to it; never infer one from a common word (a draft about how something "renders" is not about render.py). When the draft lists examples of what it wants, a `many` row can let the developer confirm which are in scope: mark the examples * and add one or two natural additions unmarked.\n\nWhen an "About the developer" line is given, fit the rows to that person: leave out basics an expert in that field settles alone; for a field they are learning, prefer the essential choices, in plain words; raise first the kinds of choices they make themselves, and leave the kinds they hand to the agent alone unless the draft asks about them.\n\nWrite the read line, labels, statements and options {language}.\n\nExample\nDraft: Add a CSV export to the orders page, big accounts have thousands of orders\nIn the code: orders page (src/pages/orders.tsx)\nread | You want a CSV download of orders from the orders page that copes with very large accounts.\nkind | change\nrow | export_rows | rows | one | Export {} | the filtered orders | all orders | the selected orders | @CSV export\nrow | export_where | built | one | Build the file {} | on the server, streamed | in the browser\nrow | export_limit | max rows | num | Cap one export at {} | 100000 | 1000 | 1000000 | rows',
   "sketchSystem": `You are MarginCue. A developer is about to send a request to a coding agent. Draw what the finished result will look like to them, so they can see before sending whether it is what they want. Answer at once in this format and nothing else:
@@ -4680,7 +4965,6 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "train test split",
         "train test",
         "holdout",
-        "hold out",
         "test accuracy",
         "test set",
         "validation set",
@@ -4706,7 +4990,6 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "linear regression",
         "least squares",
         "ridge regression",
-        "ridge penalty",
         "lasso",
         "elastic net",
         "regularization path",
@@ -4755,9 +5038,7 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
       "title": "Nonlinearity, splines, and additive models",
       "signals": [
         "smoothing spline",
-        "smoothing splines",
         "regression spline",
-        "regression splines",
         "additive model",
         "nonlinear regression",
         "polynomial regression",
@@ -4779,7 +5060,6 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "decision tree",
         "decision trees",
         "random forest",
-        "random forests",
         "gradient boosting",
         "boosted trees",
         "xgboost",
@@ -4801,7 +5081,6 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
       "title": "Margins and kernels",
       "signals": [
         "support vector machine",
-        "support vector machines",
         "support vector classifier",
         "support vector classification",
         "svm",
@@ -4892,10 +5171,8 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
       "title": "Uncertainty for performance and comparisons",
       "signals": [
         "confidence interval",
-        "confidence intervals",
         "paired bootstrap",
         "bootstrap interval",
-        "bootstrap intervals",
         "bootstrap resampling",
         "paired comparison",
         "seed variability",
@@ -4919,7 +5196,6 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
       "title": "Multiple testing and selective claims",
       "signals": [
         "multiple testing",
-        "multiple comparisons",
         "false discovery",
         "family wise error",
         "fwer",
@@ -4929,7 +5205,7 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "selective inference",
         "multiple hypotheses",
         "correction de multiplicite",
-        "tests multiples",
+        "test multiples",
         "fausses decouvertes"
       ],
       "notes": {
@@ -5161,7 +5437,6 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
       "title": "Replication, consistency, and isolation",
       "signals": [
         "read replica",
-        "read replicas",
         "replica lag",
         "consistency guarantee",
         "linearizability",
@@ -5215,7 +5490,6 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "queue depth",
         "load shedding",
         "rate limit",
-        "rate limiting",
         "capacity planning",
         "saturation",
         "concurrency limit",
@@ -5265,7 +5539,7 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "rolling deploy",
         "schema migration",
         "dual write",
-        "backwards compatibility",
+        "backward compatibility",
         "rollback window",
         "deploiement progressif",
         "migration de schema",
@@ -10471,6 +10745,7 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
 var CHORD_SWAP = "app:diffFileListDown";
 var CHORD_NEXT = "app:diffFileListUp";
 var CARD_READ_KEY = "c";
+var CARD_KEEP_KEY = "k";
 var DARK = {
   tag: { bg: "suggestion", color: "inverseText", bold: true },
   accent: "suggestion",
@@ -10564,6 +10839,7 @@ var EN2 = {
   set: "set",
   open: "open",
   toAgent: "left to agent",
+  keepAll: "keep all",
   was: "was",
   more: (n) => `+${n} more row${n === 1 ? "" : "s"} \xB7 alt\u2191`,
   turn: (n) => [`The agent made ${n} choice${n === 1 ? "" : "s"} for you.`, "Switch one: it adapts at its next step."],
@@ -10585,6 +10861,7 @@ var FR2 = {
   set: "choisis",
   open: "en attente",
   toAgent: "\xE0 d\xE9cider",
+  keepAll: "tout garder",
   was: "avant",
   more: (n) => `+${n} ligne${n === 1 ? "" : "s"} \xB7 alt\u2191`,
   turn: (n) => [`L'agent a fait ${n} choix pour vous.`, "Changez-en un : il en tient compte \xE0 son \xE9tape suivante."],
@@ -10596,13 +10873,30 @@ function layoutCard(card, columns, budget, options2) {
   const P3 = options2.palette ?? DARK;
   const labels = card.language === "fr" ? FR2 : EN2;
   const words = { ...labels, ...card.pickedOnly && { open: labels.toAgent }, readHint: options2.readHint ?? labels.readHint };
-  const hidden = hiddenButtons(card, options2.chords);
+  const shortcuts = hiddenButtons(card, options2.chords);
   const open = card.rows.filter((row) => !row.chosen && !(card.pickedOnly && row.learned)).length;
-  if (card.collapsed) return [collapsed(card, columns, P3, words, open, hidden)];
+  const controls = card.stage === "draft" ? [...options2.extra] : [];
+  if (card.stage === "draft" && card.rows.some((row) => !row.chosen && !row.openOnSend && row.selected.length)) {
+    controls.unshift({
+      kind: "button",
+      key: "card-keep",
+      hotkey: CARD_KEEP_KEY,
+      label: words.keepAll,
+      ...options2.keepHint && { face: `${options2.keepHint} ${words.keepAll}` },
+      dim: true,
+      action: { type: "cardKeep" }
+    });
+  }
   const g = grid(card, columns, words);
-  const right = status(card, words, open, columns >= 110 && card.stage === "draft" ? options2.extra : [], P3);
-  const head = header(card, g, right, P3, words, budget >= 10 ? 4 : budget >= 6 ? 2 : 1);
-  head[0].push(...hidden);
+  const right = card.collapsed ? [] : status(card, words, open, P3);
+  const available = columns - g.content - 3 - (card.awaitingRead ? cells(words.readHint) : 16);
+  for (const button of controls) {
+    const gap = right.length ? [text("  ")] : [];
+    if (segmentsWidth([...right, ...gap, button]) <= available) right.push(...gap, button);
+  }
+  const head = card.collapsed ? [withRight(collapsed(card, columns, P3, words, open), right, columns)] : header(card, g, right, P3, words, budget >= 10 ? 4 : budget >= 6 ? 2 : 1);
+  head[0].push(...shortcuts, ...controls.filter((button) => !head[0].includes(button)).map((button) => ({ ...button, hidden: true })));
+  if (card.collapsed) return head;
   const room = budget - head.length;
   if (room <= 0) return head;
   const sketch = card.stage === "draft" ? card.sketch : void 0;
@@ -10670,7 +10964,7 @@ function header(card, g, right, P3, words, most) {
   if (card.reading) return [withRight([...lead, { kind: "progress", label: words.reading }], right, g.columns)];
   return [withRight([...lead, text(card.error ? words.noReading : "", { dim: true })], right, g.columns)];
 }
-function status(card, words, open, extra, P3) {
+function status(card, words, open, P3) {
   const parts = [];
   if (card.stage === "draft" && card.reading && card.read) parts.push(text("\u27F3", { dim: true }));
   if (card.stage === "draft" && card.rows.length) {
@@ -10679,7 +10973,6 @@ function status(card, words, open, extra, P3) {
     if (set) parts.push(text(`${set} ${words.set}`, { color: P3.yours.color, bold: true }), text(" \xB7 ", { dim: true }));
     parts.push(text(`${open} ${words.open}`, { dim: true }));
   }
-  for (const button of extra) parts.push(...parts.length ? [text("  ")] : [], button);
   return parts;
 }
 function withRight(left, right, columns) {
@@ -10687,14 +10980,14 @@ function withRight(left, right, columns) {
   const gap = columns - segmentsWidth(left) - segmentsWidth(right);
   return gap >= 3 ? [...left, text(" ".repeat(gap)), ...right] : left;
 }
-function collapsed(card, columns, P3, words, open, hidden) {
+function collapsed(card, columns, P3, words, open) {
   const lead = [text(" "), text(TAG, P3.tag), text(GAP)];
   const width = columns - segmentsWidth(lead);
   const count2 = `${open} ${words.open}`;
   const tail = card.awaitingRead ? truncate(`${words.readHint} \xB7 ${count2}`, width) : card.reading && !card.read ? words.reading : `${count2}${card.rows.length ? " \xB7 alt\u2191 alt\u2193" : ""}`;
   const room = width - cells(tail) - 3;
   const read = card.read && room >= 12 ? truncate(card.read, room) : "";
-  return [...lead, ...read ? [text(read)] : [], text(`${read ? " \xB7 " : ""}${tail}`, { dim: true }), ...hidden];
+  return [...lead, ...read ? [text(read)] : [], text(`${read ? " \xB7 " : ""}${tail}`, { dim: true })];
 }
 function bodyLines(card, g, width, P3, words, room) {
   if (room <= 0) return [];
@@ -11139,7 +11432,7 @@ function writeJson(file, value) {
 var readSettings = () => readJson(PATHS.settings, {});
 var saveSettings = (settings) => writeJson(PATHS.settings, settings);
 function sendSetting(settings) {
-  return settings.send === "picked" || settings.send === "open" ? settings.send : "all";
+  return settings.send === "all" || settings.send === "picked" ? settings.send : DEFAULT_SEND;
 }
 function readLearned(root) {
   return readJson(PATHS.learned, {})[root] ?? {};
@@ -11277,6 +11570,7 @@ function cardConfig(settings) {
     sheet: true,
     read: settings.read === "key" ? "key" : "auto",
     send: sendSetting(settings),
+    review: settings.review === "auto" ? "auto" : "off",
     sketch: settings.sketch !== false,
     refs: settings.refs !== false,
     today,
@@ -11428,7 +11722,7 @@ import { spawn as spawn2 } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.25";
+var VERSION = "0.4.26";
 var MIN_CODEX = "0.171";
 function tooOld(output2) {
   const match = /codex-cli (\d+)\.(\d+)\.(\d+)/.exec(output2);
@@ -11513,7 +11807,9 @@ var CodexModel = class {
   async complete(system, prompt, options2 = {}) {
     const { signal, onDelta } = options2;
     const started = Date.now();
+    const cancelled = () => ({ ok: false, reason: "cancelled", ms: Date.now() - started });
     const light = await this.start();
+    if (signal?.aborted) return cancelled();
     const model = options2.strong ? this.strongModel ?? light : light;
     if (!model) return { ok: false, reason: this.failure ?? "no Codex model", ms: Date.now() - started };
     const thread = await this.call("thread/start", {
@@ -11524,6 +11820,7 @@ var CodexModel = class {
       baseInstructions: system,
       ephemeral: true
     });
+    if (signal?.aborted) return cancelled();
     const threadId = thread.result?.thread?.id;
     if (!threadId) return { ok: false, reason: thread.error?.message ?? "no thread", ms: Date.now() - started };
     return new Promise((resolve2) => {
@@ -11543,7 +11840,7 @@ var CodexModel = class {
       signal?.addEventListener("abort", () => {
         void this.call("turn/interrupt", { threadId }).catch(() => {
         });
-        done({ ok: false, reason: "cancelled", ms: Date.now() - started });
+        done(cancelled());
       }, { once: true });
       this.turns.set(threadId, { threadId, text: "", done, started, ...onDelta && { onDelta } });
       void this.call("turn/start", {
@@ -12063,6 +12360,7 @@ async function compose(file) {
       const ch = key.text.toLowerCase();
       if (/^[1-9]$/.test(ch) && focus) run({ type: "cardSet", now: now(), row: focus, option: Number(ch) - 1 });
       else if (ch === "c") run({ type: "cardRead", now: now() });
+      else if (ch === CARD_KEEP_KEY) run({ type: "cardKeep", now: now() });
       else if (ch === "x" && focus) run({ type: "cardDismiss", now: now(), row: focus });
       else if (ch === "s") run({ type: "sketch", now: now(), action: "toggle" });
       else if (ch === "p") run({ type: "sketch", now: now(), action: "pin" });
@@ -12089,6 +12387,7 @@ async function compose(file) {
     if (action.type === "cardFocus") run({ type: "cardFocus", ...action.dir && { dir: action.dir }, ...action.row && { row: action.row } });
     else if (action.type === "cardCycle") run({ type: "cardCycle", now: t, ...action.row && { row: action.row } });
     else if (action.type === "cardSet") run({ type: "cardSet", now: t, row: action.row, option: action.option });
+    else if (action.type === "cardKeep") run({ type: "cardKeep", now: t });
     else if (action.type === "cardDismiss") run({ type: "cardDismiss", now: t, row: action.row });
     else if (action.type === "sketch") run({ type: "sketch", now: t, action: action.action });
   }
@@ -12150,7 +12449,7 @@ async function compose(file) {
     const budget = Math.max(3, height - 1 - editorRows - footer - 1);
     const card = inAgent() ? agentCard(agent) : view?.card ?? null;
     const busy = Boolean(card?.reading || card?.sketch?.drawing);
-    const body = card ? layoutCard(card, width, budget, { chords: true, extra: [], palette: P, sketchKey: "tab, s", readHint: "tab, c to read" }) : [[{ kind: "text", text: " MarginCue ", style: P.tag }, { kind: "text", text: settings.read === "key" ? "  tab, c to read the draft." : draft.text.trim() ? "  reads the prompt once you pause." : "  Write the prompt; MarginCue reads it as you go.", style: { dim: true } }]];
+    const body = card ? layoutCard(card, width, budget, { chords: true, extra: [], palette: P, sketchKey: "tab, s", readHint: "tab, c to read", keepHint: `tab, ${CARD_KEEP_KEY}` }) : [[{ kind: "text", text: " MarginCue ", style: P.tag }, { kind: "text", text: settings.read === "key" ? "  tab, c to read the draft." : draft.text.trim() ? "  reads the prompt once you pause." : "  Write the prompt; MarginCue reads it as you go.", style: { dim: true } }]];
     const lines = body.slice(0, budget);
     const top = height - footer - editorRows - 1 - lines.length - 1;
     const out = [];
@@ -12203,7 +12502,7 @@ async function compose(file) {
         ...key("esc", "cancel")
       ];
     }
-    if (cardKeys) return [{ kind: "text", text: " " }, ...key("1-9", "pick"), ...key("x", "drop row"), ...key("s", "sketch"), ...key("p", "attach sketch"), ...key("tab", "back to the text")];
+    if (cardKeys) return [{ kind: "text", text: " " }, ...key(CARD_KEEP_KEY, "keep all"), ...key("1-9", "pick"), ...key("x", "drop"), ...key("s", "sketch"), ...key("p", "attach"), ...key("tab", "back to text")];
     return [
       { kind: "text", text: " " },
       ...key("enter", "back to Codex"),
@@ -12286,9 +12585,9 @@ var ARTIFACT = "(?:app(?:lication)?|tool|utility|website|site(?: web)?|page|dash
 var BARE_ARTIFACT = new RegExp(`^(?:(?:a|an|un|une|new|nouveau|nouvelle)\\s+)?(?:(?:[\\p{L}0-9-]+)\\s+){0,2}${ARTIFACT}\\b`, "u");
 var ADD_ARTIFACT = new RegExp(`^(?:add|ajoute(?:r|z)?)\\s+(?:a|an|new|un|une|nouveau|nouvelle)\\s+(?:[\\p{L}0-9-]+\\s+){0,3}${ARTIFACT}\\b`, "u");
 var EMBEDDED_CREATION = new RegExp(`\\b(?:create|build|write|make|implement|generate|add|cr\xE9er|construire|\xE9crire|ajouter)\\s+(?:a|an|new|un|une|nouveau|nouvelle)\\s+(?:[\\p{L}0-9-]+\\s+){0,3}${ARTIFACT}\\b`, "u");
-var ROUTINE_VERB = /^(?:add|open|file|prepare|ajoute(?:r|z)?|ouvre|ouvrir|prépare(?:r|z)?)\b/u;
+var ROUTINE_VERB2 = /^(?:add|open|file|prepare|ajoute(?:r|z)?|ouvre|ouvrir|prépare(?:r|z)?)\b/u;
 var OBJECT_MODIFIERS = /^(?:(?:a|an|the|some|my|our|un|une|le|la|les|du|des|mon|ma|nos|ce|cette|new|local|locale|remote|temporary|temporaire|scratch|backup|git|github|gitlab|brief|short|quick|inline|conventional|unit|regression|integration|smoke|simple|nouve(?:au|lle|aux|lles)|court(?:e|es|s)?|petit(?:e|es|s)?|bref|brève|rapide|one|two|three|deux|trois|\d+|(?:one|two|three|\d+)-(?:line|sentence))\s+)*/u;
-var ROUTINE_OBJECT = /^(?:branch(?:es)?|branches?|commits?(?: (?:messages?|subjects?))?|(?:messages?|titres?) (?:de|du) commits?|(?:pull|merge) requests?|prs?|mrs?|demandes? (?:de fusion|de tirage|de pull)|issues?|tickets?|signalements?|tags?|étiquettes?|tests?(?: suites?)?|(?:cas|suites?|scénarios?) de tests?|changelogs?|release notes?|(?:entrées?|notes?) (?:du|de) (?:changelogs?|journ(?:al|aux) des changements)|journ(?:al|aux) des changements|notes? de (?:version|publication|livraison|release)|summar(?:y|ies)|résumés?|synthèses?|lists?|listes?|comments?|commentaires?|doc[- ]?strings?|chaînes? de documentation|regular expressions?|expressions? régulières?|regex(?:es)?|to[- ]?dos?|tâches? à faire)(?=$|[^\p{L}\p{N}_])/u;
+var ROUTINE_OBJECT2 = /^(?:branch(?:es)?|branches?|commits?(?: (?:messages?|subjects?))?|(?:messages?|titres?) (?:de|du) commits?|(?:pull|merge) requests?|prs?|mrs?|demandes? (?:de fusion|de tirage|de pull)|issues?|tickets?|signalements?|tags?|étiquettes?|tests?(?: suites?)?|(?:cas|suites?|scénarios?) de tests?|changelogs?|release notes?|(?:entrées?|notes?) (?:du|de) (?:changelogs?|journ(?:al|aux) des changements)|journ(?:al|aux) des changements|notes? de (?:version|publication|livraison|release)|summar(?:y|ies)|résumés?|synthèses?|lists?|listes?|comments?|commentaires?|doc[- ]?strings?|chaînes? de documentation|regular expressions?|expressions? régulières?|regex(?:es)?|to[- ]?dos?|tâches? à faire)(?=$|[^\p{L}\p{N}_])/u;
 var ROUTINE_ARTIFACT = new RegExp(`^(?:(?:management|automation|reporting)\\s+)?(?:${ARTIFACT}|runners?|managers?|testers?|editors?|builders?)\\b`, "u");
 function kickoffSignal(draft) {
   const text2 = draft.trim().normalize("NFC").replace(/[’‘]/g, "'").toLowerCase();
@@ -12315,10 +12614,10 @@ function kickoffSignal(draft) {
 }
 function createsRoutineObject(request) {
   const lead = request.replace(/^(?:for|in|on|pour|dans|sur)\b[^,]*,\s*/u, "");
-  const verb = CREATION.exec(lead) ?? ROUTINE_VERB.exec(lead);
+  const verb = CREATION.exec(lead) ?? ROUTINE_VERB2.exec(lead);
   if (!verb) return false;
   const object2 = lead.slice(verb[0].length).trimStart().replace(OBJECT_MODIFIERS, "");
-  const routine = ROUTINE_OBJECT.exec(object2);
+  const routine = ROUTINE_OBJECT2.exec(object2);
   return routine !== null && !ROUTINE_ARTIFACT.test(object2.slice(routine[0].length).trimStart());
 }
 function startsSomethingNew(draft, context) {
@@ -12446,17 +12745,17 @@ function choiceLine(row, selected) {
   const value = rowValue(row, selected);
   return decisionLine({ statement: row.statement, option: file ? `${value} (${file})` : value });
 }
-function cardPlan(rows, picks2, send) {
+function cardPlan(rows, picks2, send = DEFAULT_SEND) {
   const decisions = [];
   const openChoices = [];
   for (const row of rows) {
     const repo = row.origin === "repo" || row.files !== void 0;
     const order = row.key === STEP_ORDER_KEY;
-    const defaultIsOpen = send === "all" && row.openOnSend;
+    const defaultIsOpen = row.openOnSend;
     const assumed = !repo && row.assumed.length && (row.learned || order || send === "all" && !defaultIsOpen) ? row.assumed : void 0;
     const selected = picks2[row.id] ?? assumed;
     if (selected !== void 0) decisions.push(choiceLine(row, selected));
-    else if (defaultIsOpen || send === "open" && !order && (!repo || row.key?.startsWith("file_"))) openChoices.push(openChoiceLine(row));
+    else if (defaultIsOpen || send === "open" && !order) openChoices.push(openChoiceLine(row));
   }
   return { decisions, openChoices };
 }
@@ -12640,7 +12939,7 @@ var CardReader = class {
     const model = this.warm(cwd);
     const core = createCore(ASSETS, { readSubmittedPrompt: true });
     const currentCard = () => cardOf(core, seed, config.sketch !== false, config.refs !== false);
-    core.handle({ ...config, read: "key", send: seed.send ?? "all", sketch: false });
+    core.handle({ ...config, read: "key", send: seed.send, sketch: false });
     core.handle({ type: "learned", picks: readLearned(cwd) });
     const indexBy = started + INDEX_MS;
     core.handle({ type: "vocabulary", vocab: await before(vocabulary(cwd, indexBy), indexBy) });
@@ -12680,7 +12979,7 @@ var CardReader = class {
   /** Draws the preview for the card with these choices (none: as Codex would decide them). */
   async sketch(source, picks2) {
     const { card, cwd, names, today } = source;
-    const { decisions: choices } = cardPlan(card.rows, picks2, card.send ?? "all");
+    const { decisions: choices } = cardPlan(card.rows, picks2, card.send);
     const prompt = buildSketchPrompt({ draft: card.prompt, read: card.reading, choices, names, today });
     const system = ASSETS.sketchSystem.replace("{language}", "in English");
     const reply = await before(this.warm(cwd).complete(system, prompt, { strong: true }), Date.now() + SKETCH_MS);
@@ -13030,6 +13329,7 @@ var Band = class {
   coreText = "";
   on = true;
   readKey = false;
+  keepKey = false;
   /** The draft the card was hidden for (ctrl+] d), until it changes. */
   dismissed = null;
   agent = null;
@@ -13085,6 +13385,7 @@ var Band = class {
     switch (message.t) {
       case "hello":
         this.readKey = message.readKey === true;
+        this.keepKey = message.keepKey === true;
         this.size = { cols: message.cols, rows: message.rows, max: message.max, full: message.full };
         break;
       case "size":
@@ -13229,6 +13530,10 @@ var Band = class {
       if (this.on && this.draft.plain && this.shownCard()?.awaitingRead) this.run({ type: "cardRead", now: now2() });
       return;
     }
+    if (key === "keep") {
+      if (this.on && this.draft.plain && this.shownCard()?.stage === "draft") this.act({ type: "cardKeep" });
+      return;
+    }
     const agent = this.shownAgent();
     if (agent) {
       if (key === "up") agent.focus = (agent.focus + 1) % agent.blanks.length;
@@ -13251,6 +13556,7 @@ var Band = class {
     if (action.type === "cardFocus") this.run({ type: "cardFocus", ...action.dir && { dir: action.dir }, ...action.row && { row: action.row } });
     else if (action.type === "cardCycle") this.run({ type: "cardCycle", now: t, ...action.row && { row: action.row } });
     else if (action.type === "cardSet") this.run({ type: "cardSet", now: t, row: action.row, option: action.option });
+    else if (action.type === "cardKeep") this.run({ type: "cardKeep", now: t });
     else if (action.type === "cardDismiss") this.run({ type: "cardDismiss", now: t, row: action.row });
     else if (action.type === "sketch") this.run({ type: "sketch", now: t, action: action.action });
   }
@@ -13322,7 +13628,14 @@ var Band = class {
     if (max > 0) {
       if (card) {
         const budget = full && (card.rows.length || card.read && !card.reading) ? max : 1;
-        lines = layoutCard(card, cols, budget, { chords: true, extra: [], palette: P2, sketchKey: "ctrl+g", readHint: this.readHint() }).slice(0, budget).map((line, y) => drawLine(line, cols, y, this.hits, this.frame));
+        lines = layoutCard(card, cols, budget, {
+          chords: true,
+          extra: [],
+          palette: P2,
+          sketchKey: "ctrl+g",
+          readHint: this.readHint(),
+          keepHint: this.keepKey ? `ctrl+] ${CARD_KEEP_KEY}` : void 0
+        }).slice(0, budget).map((line, y) => drawLine(line, cols, y, this.hits, this.frame));
         if (!this.shownAgent()) this.mark(this.coreText);
       } else lines = [drawLine(this.status(), cols, 0, this.hits, this.frame)];
     }
@@ -13333,15 +13646,17 @@ var Band = class {
     this.emit({ t: "band", lines });
     const decisions = this.view?.decisions.length ?? 0;
     const agentShown = Boolean(this.shownAgent());
-    const openFile = this.sendOpen && card?.rows.some((row) => row.origin === "repo" && row.key.startsWith("file_") && !row.chosen);
-    const plan = card?.stage === "draft" && (openFile || !card.reading && !card.awaitingRead);
+    const openName = this.sendOpen && card?.rows.some((row) => row.origin === "repo" && !row.chosen);
+    const plan = card?.stage === "draft" && (openName || !card.reading && !card.awaitingRead);
     const hidden = this.dismissed !== null && this.dismissed === this.draft.text;
     const read = this.readKey && this.readOnDemand && this.on && this.draft.plain;
+    const keep = this.keepKey && this.draft.plain && card?.stage === "draft" && card.rows.some((row) => !row.chosen && !row.openOnSend && row.selected.length);
     this.emit({
       t: "claims",
       enter: this.on && !agentShown && !hidden && (decisions > 0 || plan) && Boolean(this.draft.text?.trim()),
       arrows: this.on && Boolean(card?.rows.length),
-      ...read && { read }
+      ...read && { read },
+      ...keep && { keep }
     });
     this.spin(Boolean(card?.reading || card?.sketch?.drawing));
   }
@@ -13420,7 +13735,7 @@ function serveBand(link, cwd, model) {
 
 // src/relay.ts
 var RELAY = join4(PATHS.bin, "margincue-relay");
-var RELAY_VERSION = "0.1.3";
+var RELAY_VERSION = "0.1.4";
 var SUPPORTED = process.platform === "darwin" || process.platform === "linux";
 var VALUE_OPTIONS = /* @__PURE__ */ new Set([
   "-c",

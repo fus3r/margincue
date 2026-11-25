@@ -17,10 +17,12 @@ export function layoutBandRows(band: MargincueBand, columns: number, hint: strin
   const card = band.card
   if (!card && !band.reviewPending) {
     const row = layoutBand(band, columns, hint)
+    if (band.canReview && !row.some((s) => s.kind === 'button' && s.hotkey === 'r')) row.push({ ...reviewButton(band), hidden: true })
+    if (row.length && band.depth && !row.some((s) => s.kind === 'button' && s.hotkey === 'd')) row.push({ ...depthButton(band), hidden: true })
     return row.length ? [row] : []
   }
   const rows: Segment[][] = []
-  if (band.first) rows.push(firstTouch(band, columns))
+  if (band.first) rows.push(firstTouch(band, columns, !card))
   else if (band.marks?.length) {
     const marks = summary(band, columns, false)
     if (marks.length) rows.push(marks)
@@ -192,7 +194,7 @@ export function scopeLabel(scope: MargincueScope, lang: 'fr' | 'en' = 'en'): str
     : { project: 'this project', user: 'everywhere', model: 'this model', session: 'this session' }[scope]
 }
 
-function firstTouch(band: MargincueBand, columns: number): Segment[] {
+function firstTouch(band: MargincueBand, columns: number, reviewControls = true): Segment[] {
   const cue = band.first!
   const lang = band.language ?? 'en'
   const choices = [...cue.options]
@@ -202,8 +204,8 @@ function firstTouch(band: MargincueBand, columns: number): Segment[] {
     { kind: 'button', key: 'drop', hotkey: 'x', label: lang === 'fr' ? 'passer' : 'skip', dim: true, action: { type: 'dismiss', cue: cue.slot } },
     { kind: 'button', key: 'why', hotkey: 'w', label: lang === 'fr' ? 'raison' : 'why', dim: true, action: { type: 'why', slot: cue.slot } },
   ]
-  if (band.canReview && columns >= 90) controls.push(reviewButton(band))
-  if (band.depth && columns >= 90) controls.push(depthButton(band))
+  if (reviewControls && band.canReview && columns >= 90) controls.push(reviewButton(band))
+  if (reviewControls && band.depth && columns >= 90) controls.push(depthButton(band))
   const lead: Segment = { kind: 'text', text: `◆ ${truncate(cue.label, columns < 68 ? 9 : 20)}`, style: { color: 'warning', bold: true } }
   // Prefer retaining each choice and the selected scope. Give options equal
   // room when crowded, then give shorter choices' space to longer ones.
@@ -226,11 +228,11 @@ function firstTouch(band: MargincueBand, columns: number): Segment[] {
   return out
 }
 
-function reviewButton(band: MargincueBand, fromPrompt = false): Segment {
+function reviewButton(band: MargincueBand, fromPrompt = false): Extract<Segment, { kind: 'button' }> {
   return { kind: 'button', key: 'review', hotkey: 'r', ...(fromPrompt && { chord: CHORD_NEXT }), label: band.language === 'fr' ? 'revue' : 'review', dim: true, action: { type: 'review' } }
 }
 
-function depthButton(band: MargincueBand): Segment {
+function depthButton(band: MargincueBand): Extract<Segment, { kind: 'button' }> {
   return { kind: 'button', key: 'depth', hotkey: 'd', label: band.depth ?? 'standard', dim: true, action: { type: 'depth' } }
 }
 

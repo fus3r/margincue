@@ -15,7 +15,7 @@ import type { Effect, Event, View } from '../../claude-code/core/index'
 import { ASSETS } from '../../claude-code/hooks/assets'
 import { layoutCard } from '../../claude-code/hooks/card-view'
 import { collectVocabulary } from '../../claude-code/hooks/repo-index'
-import { DARK } from '../../claude-code/hooks/segments'
+import { CARD_KEEP_KEY, DARK } from '../../claude-code/hooks/segments'
 import type { Action, Segment, Style } from '../../claude-code/hooks/segments'
 import { cardConfig } from './card-config'
 import { runnable } from './command'
@@ -207,6 +207,7 @@ export async function compose(file: string): Promise<void> {
       const ch = key.text.toLowerCase()
       if (/^[1-9]$/.test(ch) && focus) run({ type: 'cardSet', now: now(), row: focus, option: Number(ch) - 1 })
       else if (ch === 'c') run({ type: 'cardRead', now: now() })
+      else if (ch === CARD_KEEP_KEY) run({ type: 'cardKeep', now: now() })
       else if (ch === 'x' && focus) run({ type: 'cardDismiss', now: now(), row: focus })
       else if (ch === 's') run({ type: 'sketch', now: now(), action: 'toggle' })
       else if (ch === 'p') run({ type: 'sketch', now: now(), action: 'pin' })
@@ -235,6 +236,7 @@ export async function compose(file: string): Promise<void> {
     if (action.type === 'cardFocus') run({ type: 'cardFocus', ...(action.dir && { dir: action.dir }), ...(action.row && { row: action.row }) })
     else if (action.type === 'cardCycle') run({ type: 'cardCycle', now: t, ...(action.row && { row: action.row }) })
     else if (action.type === 'cardSet') run({ type: 'cardSet', now: t, row: action.row, option: action.option })
+    else if (action.type === 'cardKeep') run({ type: 'cardKeep', now: t })
     else if (action.type === 'cardDismiss') run({ type: 'cardDismiss', now: t, row: action.row })
     else if (action.type === 'sketch') run({ type: 'sketch', now: t, action: action.action })
   }
@@ -312,7 +314,7 @@ export async function compose(file: string): Promise<void> {
     const card = inAgent() ? agentCard(agent!) : view?.card ?? null
     const busy = Boolean(card?.reading || card?.sketch?.drawing)
     const body: Segment[][] = card
-      ? layoutCard(card, width, budget, { chords: true, extra: [], palette: P, sketchKey: 'tab, s', readHint: 'tab, c to read' })
+      ? layoutCard(card, width, budget, { chords: true, extra: [], palette: P, sketchKey: 'tab, s', readHint: 'tab, c to read', keepHint: `tab, ${CARD_KEEP_KEY}` })
       : [[{ kind: 'text', text: ' MarginCue ', style: P.tag }, { kind: 'text', text: settings.read === 'key' ? '  tab, c to read the draft.' : draft.text.trim()
         ? '  reads the prompt once you pause.' : '  Write the prompt; MarginCue reads it as you go.', style: { dim: true } }]]
     const lines = body.slice(0, budget)
@@ -365,7 +367,7 @@ export async function compose(file: string): Promise<void> {
       return [{ kind: 'text', text: ' ' }, ...key('enter', agent!.running ? 'back to Codex, then enter sends the change' : 'back to Codex with the follow-up'),
         ...key('alt↑ alt↓', 'switch'), ...key('esc', 'cancel')]
     }
-    if (cardKeys) return [{ kind: 'text', text: ' ' }, ...key('1-9', 'pick'), ...key('x', 'drop row'), ...key('s', 'sketch'), ...key('p', 'attach sketch'), ...key('tab', 'back to the text')]
+    if (cardKeys) return [{ kind: 'text', text: ' ' }, ...key(CARD_KEEP_KEY, 'keep all'), ...key('1-9', 'pick'), ...key('x', 'drop'), ...key('s', 'sketch'), ...key('p', 'attach'), ...key('tab', 'back to text')]
     return [{ kind: 'text', text: ' ' }, ...key('enter', 'back to Codex'), ...key('shift+enter', 'new line'), ...key('alt↑ alt↓', 'rows'),
       ...key('tab', 'card keys'), ...key('ctrl+e', 'your editor'), ...key('esc', 'cancel')]
   }

@@ -4,20 +4,22 @@ import { applyDecisions, attachDecisions, decisionLine, FILE_REFERENCES_HEADING,
 import { DecisionDraft, DecisionState, decisionFor, eligibleSlot, stateCue } from './state'
 import type { SlotResult, StateChange } from './state'
 import type { Depth, Language, Mode, Rigor, Scope, Slot } from './bundle'
-import { chapterContext } from './chapters'
-import { expertPrompt, MAX_EXPERT_CUES, parseExpert } from './expert'
+import { chapterContext, chapterNotes, matchChapters, normalizeTopic } from './chapters'
+import type { ProfileChapter } from './chapters'
+import { expertCardContext, expertPrompt, MAX_EXPERT_CUES, nearExpertDecision, parseExpert } from './expert'
 import { tidySketch } from './frame'
 import { Lru } from './lru'
 import { normalize, parseReply } from './parse'
 import { parseProfile } from './profile'
 import { buildPrompt, buildSystem, isTerminated, lastSentenceStart } from './request'
-import { buildSketchPrompt, canSketch, CARD_MAX_TOKENS, CARD_OPTION_TARGET, cycleSelection, deriveCardKind, insertsPinnedArtifact, listsSteps, openChoiceLine, openChoicesBlock, parseCard, parseSketch, rowValue, sameSelection, SKETCH_MAX_TOKENS, STEP_ORDER_KEY, toggleSelection } from './card'
+import { buildSketchPrompt, canSketch, CARD_MAX_TOKENS, CARD_OPTION_TARGET, cycleSelection, deriveCardKind, insertsPinnedArtifact, listsSteps, openChoiceLine, openChoicesBlock, parseCard, parseSketch, rowValue, sameSelection, SKETCH_MAX_TOKENS, STEP_ORDER_KEY, substantiveChapterDraft, toggleSelection } from './card'
 import type { CardKind, ParsedCard, ParsedRow, ParsedSketch, RowType } from './card'
 import { isHardToUndo } from './hard-to-undo'
 import { ground, indexVocabulary, nameKey, relatedFolders } from './grounding'
 import type { GroundIndex, Mention } from './grounding'
 import { detectLenses } from './project'
 import type { ProjectLens } from './project'
+import { DEFAULT_SEND } from './types'
 import type {
   Assets,
   CardRowView,
@@ -81,6 +83,12 @@ type Review = {
 
 type Dismissed = { anchor: string; statement: string; options: string[] }
 
+type ChapterResult = { items: ExpertItem[]; ms: number; ok: boolean; cached?: true }
+type ChapterReview = {
+  profile: string; req: number | null; key: string; started: number; buffer: string
+  matches: ProfileChapter[]; cardContext: string; result?: ChapterResult
+}
+
 type CardRow = {
   id: string
   key: string
@@ -97,6 +105,7 @@ type CardRow = {
   hints?: string[]
   origin: 'model' | 'repo' | 'lens' | 'agent'
   lens?: string
+  chapter?: true
   /** The person's selection; null while untouched (the row then reads its habit or default). */
   picked: number[] | null
   learned?: number[]
@@ -116,6 +125,7 @@ type Card = {
   rows: CardRow[]
   focus: string | null
   dismissed: Set<string>
+  chapterDismissed: Set<string>
   req: number | null
   reqText: string
   reqKey: string
@@ -184,6 +194,7 @@ export class Core {
   private enabled = false
   private generation = 0
   private profileName = ''
+  private profileSelected = false
   private profile: Profile = EMPTY_PROFILE
   private system: string[] = []
   private timing: Timing = { ...DEFAULT_TIMING }
@@ -208,6 +219,7 @@ export class Core {
   /** Undefined under the original conformance protocol; otherwise whether the card runs. */
   private sheetEnabled: boolean | undefined
   private readMode: ReadingMode = 'auto'
+  private autoReview = false
   private sketchEnabled = true
   private refsEnabled = true
   private pickedOnly = false
@@ -221,6 +233,9 @@ export class Core {
   private pendingSent: string[] = []
   private nextCard = 1
   private readonly cardCache = new Lru<ParsedCard>(24)
+  private readonly chapterCache = new Lru<ExpertItem[]>(24)
+  private readonly manuallyReviewed = new Lru<true>(24)
+  private chapterReview: ChapterReview | null = null
   private readonly sketchCache = new Lru<ParsedSketch | null>(16)
   private lastCardAt: number | null = null
   private index: GroundIndex | null = null
@@ -240,6 +255,7 @@ export class Core {
   private now = 0
   private text = ''
   private atEnter = false
+  private afterEnter = false
   private cursor = 0
   private textAt = 0
   /** When the person last acted without editing (a pick, accept all, switching on): latency counts from here too. */
@@ -280,7 +296,7 @@ export class Core {
         this.onConfig(event)
         break
       case 'draft':
-        this.onDraft(event.text, event.origin, event.edit, event.cursor, event.atEnter === true)
+        this.onDraft(event)
         break
       case 'timer':
         this.onTimer()
@@ -364,6 +380,9 @@ export class Core {
         break
       case 'cardRead':
         this.fireCard(true)
+        break
+      case 'cardKeep':
+        this.onCardKeep()
         break
       case 'cardFocus':
         this.onCardFocus(event.dir, event.row)
@@ -454,13 +473,17 @@ export class Core {
     const readMode = e.read ?? 'auto'
     const readModeChanged = this.readMode !== readMode
     this.readMode = readMode
+    const autoReview = e.review === 'auto'
+    const reviewChanged = this.autoReview !== autoReview
+    this.autoReview = autoReview
     this.sketchEnabled = e.sketch !== false
     this.refsEnabled = e.refs !== false
     // `open` sends what the person set, like `picked`, and asks the agent about the rest.
-    const pickedOnly = e.send === 'picked' || e.send === 'open'
+    const send = e.send ?? DEFAULT_SEND
+    const pickedOnly = send !== 'all'
     if (pickedOnly !== this.pickedOnly && this.card?.sketch) this.card.sketchDue = this.now
     this.pickedOnly = pickedOnly
-    this.openRows = e.send === 'open'
+    this.openRows = send === 'open'
     const userLine = e.user?.trim() || undefined
     const userChanged = this.userLine !== userLine
     this.userLine = userLine
@@ -506,6 +529,9 @@ export class Core {
         }
       }
     }
+    const profileSelected = this.profileName === e.profile && (this.profileName !== 'general' || e.profileSelected === true)
+    const selectionChanged = this.profileSelected !== profileSelected
+    this.profileSelected = profileSelected
     this.state.use(this.profileName)
     this.system = buildSystem(this.assets.system, this.mode === undefined ? this.profile : { ...this.profile, maxCues: 1 })
     const enabled = this.mode === undefined ? e.enabled : this.mode !== 'off'
@@ -530,6 +556,8 @@ export class Core {
     if (languageChanged) this.expertPicks.clear()
     const contextChanged = depthChanged || userChanged || preferChanged
     if (contextChanged) this.clearExpert()
+    if (modeChanged || contextChanged || selectionChanged || reviewChanged) this.cancelChapterReview()
+    if ((this.mode === 'quiet' || !autoReview) && this.card?.stage === 'draft') this.dropChapterSuggestions(this.card)
     if (!enabled || sheetEnabled !== true || languageChanged || profileChanged && this.card?.stage === 'draft') {
       this.clearCard()
     } else if (contextChanged && this.card?.stage === 'draft') {
@@ -553,13 +581,21 @@ export class Core {
       if (sheetEnabled && !this.card && this.cardText()) this.onCardDraft(this.text)
       this.schedule('open', null)
     }
+    const card = this.card
+    if (reviewChanged && autoReview && card?.stage === 'draft' &&
+      (card.readFor === this.text || card.req !== null && card.reqText === this.text)) this.startChapterReview(card)
   }
 
-  private onDraft(text: string, origin: Origin, edit: Splice | undefined, cursor: number | undefined, atEnter: boolean): void {
+  private onDraft({ text, origin, edit, cursor, atEnter, afterEnter }: Extract<Event, { type: 'draft' }>): void {
     const before = this.text
     this.cursor = cursor === undefined ? text.length : Math.max(0, Math.min(text.length, cursor))
     if (text === before && origin === 'type') return
-    this.atEnter = atEnter
+    this.atEnter = atEnter === true
+    this.afterEnter = atEnter === true || afterEnter === true
+    if (text !== before || this.afterEnter) {
+      this.cancelChapterReview()
+      if (this.card?.stage === 'draft') this.dropChapterSuggestions(this.card)
+    }
     const splice = edit !== undefined && spliceFits(before, text, edit) ? edit : diffSplice(before, text)
     this.text = text
     if (text !== before) {
@@ -622,6 +658,10 @@ export class Core {
     }
     if (req === this.expertReq) {
       this.onExpertReply(chunk, done, ok)
+      return
+    }
+    if (this.chapterReview?.req === req) {
+      this.onChapterReply(this.chapterReview, chunk, done, ok)
       return
     }
     if (req === this.late?.review.full) {
@@ -778,7 +818,7 @@ export class Core {
     const decisions = isPrompt ? this.decisions(exact, whole) : []
     const attached = attachDecisions(text, decisions)
     const added = attached.added
-    const open = isPrompt && exact ? openChoicesBlock(this.openChoices(plan, read)) : ''
+    const open = isPrompt && exact ? openChoicesBlock(this.openChoices(read)) : ''
     const asked = open ? `${attached.text.replace(/\s+$/, '')}\n\n${open}` : attached.text
     const target = isPrompt && exact ? this.targetSketch(plan, added) : null
     const sent = target ? `${asked.replace(/\s+$/, '')}\n\n${target}` : asked
@@ -816,6 +856,7 @@ export class Core {
     this.reviewAt = null
     this.text = ''
     this.atEnter = false
+    this.afterEnter = false
     this.cursor = 0
     this.textAt = this.now
     this.cues = []
@@ -969,26 +1010,39 @@ export class Core {
   private expertStarted = 0
 
   private onExpert(profile: string): void {
-    const system = this.assets.expertSystem
-    if (!this.enabled || this.mode === undefined || !system || !this.canReview(profile) ||
+    if (!this.enabled || this.mode === undefined || !this.canReview(profile) ||
       !this.text.trim() || isHostCommand(this.text)) return
-    const depth = this.depthOf(profile)
-    const slots = this.state.forProfile(profile).filter((slot) => eligibleSlot(slot, depth, 'study'))
+    this.manuallyReviewed.set(this.text, true)
+    this.cancelChapterReview()
     this.clearExpert()
     this.cancelAll()
     if (this.sheetEnabled === undefined) this.reviewAt = null
-    const draft = this.state.evaluate(this.text, slots.map((slot) => slot.id))
-    const language = this.wordingLanguage(draft)
     const id = this.nextReq++
     this.expert = { id, profile, phase: 'reviewing', items: [] }
     this.expertReq = id
     this.expertStarted = this.now
-    this.expertCatalog = slots.flatMap((slot): ExpertItem[] => {
+    const chapters = chapterContext(this.assets.chapters?.filter((chapter) => chapter.profile === profile) ?? [],
+      splitDecisions(this.text).body, () => this.depthOf(profile))
+    const catalog = chapters ? [] : this.reviewCatalog(profile)
+    const card = this.card?.stage === 'draft' ? this.card : null
+    const request = this.expertRequest(chapters, expertCardContext(card?.rows ?? []),
+      expertPrompt(catalog, this.state.forProfile(profile)))
+    this.expertCatalog = catalog
+    this.out.push({ ...request, req: id })
+  }
+
+  private reviewCatalog(profile: string): ExpertItem[] {
+    const depth = this.depthOf(profile)
+    const slots = this.state.forProfile(profile).filter((slot) => eligibleSlot(slot, depth, 'study'))
+    const draft = this.state.evaluate(this.text, slots.map((slot) => slot.id))
+    const language = this.wordingLanguage(draft)
+    return slots.flatMap((slot): ExpertItem[] => {
       const options = draft.available(slot)
       const value = this.state.resolve(slot.id)
       const reason = this.state.instructionSlots.has(slot.id) ? 'project-instruction'
         : value ? 'standing-value' : draft.suppresses(slot) ? 'settled-or-inapplicable'
-        : slot.requires?.some((key) => draft.facts.get(key) !== true) || options.length < 2 ? 'prerequisite' : null
+        : slot.requires?.some((key) => draft.facts.get(key) !== true) || options.length < 2 ? 'prerequisite'
+        : draft.byId.get(slot.id)?.status !== 'open' ? 'not-open' : null
       if (reason) {
         if (this.audit) this.metric('candidate', {
           tier: 'expert', slot: slot.id, shown: false, reason, optionOrder: options.map((o) => o.id), default: options[0]?.id ?? null,
@@ -997,25 +1051,33 @@ export class Core {
       }
       return [{ ...stateCue({ slot, options }, language, depth), key: slot.id, persistent: true }]
     })
+  }
+
+  private expertRequest(chapters: string, cardContext: string, catalog = '') {
+    const system = this.assets.expertSystem!
+    const card = this.card?.stage === 'draft' ? this.card : null
     const prompt = buildPrompt({
       draft: applyDecisions(this.text, this.decisions()),
-      dismissed: [...this.dismissed.map((d) => d.statement), ...this.stateDismissed],
+      dismissed: [...this.dismissed.map((d) => d.statement), ...this.stateDismissed,
+        ...(card ? [...card.dismissed, ...card.chapterDismissed] : [])],
     })
-    const chapters = chapterContext(this.assets.chapters?.filter((chapter) => chapter.profile === profile) ?? [],
-      splitDecisions(this.text).body, () => depth)
-    this.out.push({
-      type: 'request', req: id, kind: 'expert', tier: 'cloud',
+    return {
+      type: 'request', kind: 'expert', tier: 'cloud',
       system: [(this.language === 'en' ? system.replace("in the draft's language", 'in English') : system)
         .replace(/\{\{\s*max_cues\s*\}\}/g, String(MAX_EXPERT_CUES)).trim()],
-      prompt: [prompt, expertPrompt(this.expertCatalog, slots), chapters].filter(Boolean).join('\n\n'), maxTokens: 512,
-    })
+      prompt: [prompt, cardContext, chapters, catalog].filter(Boolean).join('\n\n'),
+      maxTokens: 512,
+    } satisfies Omit<Extract<Effect, { type: 'request' }>, 'req'>
   }
 
   private onExpertReply(chunk: string, done: boolean, ok: boolean): void {
     if (!this.expert) return
     this.expertBuffer += chunk
     if (ok && !done) return
-    const items = ok ? parseExpert(this.expertBuffer, this.text, this.expertCatalog, (key) => this.state.slot(key) !== undefined) : []
+    const card = this.card?.stage === 'draft' ? this.card : null
+    const items = ok ? parseExpert(this.expertBuffer, this.text, this.expertCatalog, (key) => this.state.slot(key) !== undefined)
+      .filter((item) => !card || this.uncoveredChoice(card, item))
+      .slice(0, MAX_EXPERT_CUES) : []
     this.expertReq = null
     this.expert = { ...this.expert, phase: ok ? 'ready' : 'error', items }
     this.expertBuffer = ''
@@ -1061,6 +1123,114 @@ export class Core {
     this.expertBuffer = ''
   }
 
+  // ---- chapter review alongside the card ---------------------------------
+
+  private matchChapterReview(): ProfileChapter[] {
+    if (!this.autoReview || this.mode === 'quiet' || this.afterEnter || this.readSubmittedPrompt || this.stateDraft?.directive === 'delegate' ||
+      !this.assets.expertSystem || !this.assets.chapters || this.manuallyReviewed.get(this.text)) return []
+    const body = splitDecisions(this.text).body
+    if (insertsPinnedArtifact(body)) return []
+    const draft = substantiveChapterDraft(body)
+    if (!draft) return []
+    const own = new Set([...this.prefer, ...this.projectLenses.map((lens) => lens.profile)])
+    if (this.profileSelected) own.add(this.profileName)
+    const chapters = this.assets.chapters.filter((chapter) => own.has(chapter.profile))
+    const [best] = matchChapters(chapters, draft, this.prefer, true)
+    return best ? matchChapters(chapters.filter((chapter) => chapter.profile === best.profile), draft, [], true) : []
+  }
+
+  private startChapterReview(card: Card, matches = this.matchChapterReview()): void {
+    const [best] = matches
+    if (!best || this.chapterReview || card.readFor === this.text && !this.cardHasChoices(card, this.text)) return
+    const { profile } = best
+    const depth = this.depthOf(profile)
+    const cardContext = expertCardContext(card.rows.filter((row) =>
+      card.readFor === this.text || row.origin === 'repo' || row.picked !== null))
+    const request = this.expertRequest(chapterNotes(matches, () => depth), cardContext)
+    const key = JSON.stringify([profile, depth, request.system, request.prompt])
+    const items = this.chapterCache.get(key)
+    const req = items ? null : this.nextReq++
+    this.chapterReview = { profile, req, key, started: this.now, buffer: '', matches, cardContext,
+      ...(items && { result: { items, ms: 0, ok: true, cached: true } as const }) }
+    if (req === null) {
+      this.finishChapterReview(card)
+      return
+    }
+    this.out.push({ ...request, req })
+    this.metric('chapter-review-started', { req, profile, depth, chapters: matches.map((chapter) => chapter.title) })
+  }
+
+  private onChapterReply(review: ChapterReview, chunk: string, done: boolean, ok: boolean): void {
+    if (review.result) return
+    review.buffer += chunk
+    if (ok && !done) return
+    const items = ok ? parseExpert(review.buffer, this.text, [], (key) => this.state.slot(key) !== undefined) : []
+    if (ok) this.chapterCache.set(review.key, items)
+    review.result = { items, ms: this.now - review.started, ok }
+    if (this.card) this.finishChapterReview(this.card)
+  }
+
+  private finishChapterReview(card: Card): void {
+    const review = this.chapterReview
+    if (!review || card.readFor !== this.text) return
+    if (!this.cardHasChoices(card, this.text)) {
+      this.cancelChapterReview()
+      return
+    }
+    if (!review.result) {
+      // An unusually quick card can still inform the prompt. Once the review has
+      // had an idle interval to work, merging is faster than a second round trip.
+      if (this.now - review.started <= this.timing.idleMs && card.rows.length &&
+        review.cardContext !== expertCardContext(card.rows)) {
+        this.cancelChapterReview()
+        this.startChapterReview(card, review.matches)
+      }
+      return
+    }
+    this.chapterReview = null
+    const { profile, req, result: { items, ...result } } = review
+    let rowsAdded = 0
+    let duplicates = 0
+    const remaining = MAX_EXPERT_CUES - card.rows.filter((row) => row.chapter).length
+    for (const item of items) {
+      const choice = expertChoice(item)
+      if (duplicatesCardRow(card.rows, choice)) {
+        duplicates++
+        continue
+      }
+      if (rowsAdded >= remaining || card.chapterDismissed.has(item.key) || card.dismissed.has(item.key)) continue
+      card.rows.push({
+        ...choice, id: this.newId(), label: cutLabel(item.label.toLowerCase()), type: 'one',
+        defaults: [], origin: 'lens', lens: profile, chapter: true, picked: null,
+        ...(item.span && { anchor: this.text.slice(item.span.start, item.span.end) }),
+      })
+      rowsAdded++
+    }
+    this.fixCardFocus()
+    this.metric('chapter-review-finished', { req, ...result, profile, rowsAdded, duplicates })
+  }
+
+  private cancelChapterReview(): void {
+    const review = this.chapterReview
+    if (!review) return
+    this.chapterReview = null
+    if (review.req !== null && !review.result) this.out.push({ type: 'cancel', req: review.req })
+    this.metric('chapter-review-finished', {
+      req: review.req, profile: review.profile, ms: this.now - review.started,
+      cancelled: true, rowsAdded: 0, duplicates: 0,
+    })
+  }
+
+  private dropChapterSuggestions(card: Card): void {
+    card.rows = card.rows.filter((row) => !row.chapter || row.picked !== null)
+    this.fixCardFocus()
+  }
+
+  private uncoveredChoice(card: Card, item: ExpertItem): boolean {
+    return !card.dismissed.has(item.key) && !card.chapterDismissed.has(item.key) &&
+      !duplicatesCardRow(card.rows, expertChoice(item))
+  }
+
   // ---- the card ------------------------------------------------------------
   //
   // Before Enter the card shows how the agent will read the draft, the names it
@@ -1083,7 +1253,7 @@ export class Core {
 
   private newCard(stage: CardStage): Card {
     return {
-      id: this.nextCard++, stage, read: null, kind: null, rows: [], focus: null, dismissed: new Set(),
+      id: this.nextCard++, stage, read: null, kind: null, rows: [], focus: null, dismissed: new Set(), chapterDismissed: new Set(),
       req: null, reqText: '', reqKey: '', reqAt: 0, buffer: '', partialAt: 0, readFor: null, dirty: false, error: false,
       shownAt: null, sketch: null, sketchDue: null, amendDue: null, submittedAt: null, sent: [], fill: null,
     }
@@ -1092,6 +1262,7 @@ export class Core {
   private clearCard(): void {
     const card = this.card
     if (!card) return
+    this.cancelChapterReview()
     if (card.req !== null) this.out.push({ type: 'cancel', req: card.req })
     if (card.sketch && card.sketch.req !== null) this.out.push({ type: 'cancel', req: card.sketch.req })
     if (card === this.turnCard) this.turnCard = null
@@ -1194,6 +1365,7 @@ export class Core {
     const cached = this.cardCache.get(key)
     if (cached) {
       this.applyCard(card, cached, this.text)
+      this.startChapterReview(card)
       return
     }
     const req = this.nextReq++
@@ -1201,6 +1373,7 @@ export class Core {
     this.lastCardAt = this.now
     this.out.push({ type: 'request', req, kind: 'card', tier: 'cloud', system, prompt, maxTokens: CARD_MAX_TOKENS })
     this.metric('card-requested', { req, card: card.id, words: wordCount(this.text), mentions: this.mentions.length })
+    this.startChapterReview(card)
   }
 
   private cardRequest(card: Card): { system: string[]; prompt: string } {
@@ -1226,10 +1399,10 @@ export class Core {
     if (folders.length) lines.push(`Folders that may already do part of this: ${folders.map((f) => `${f.dir}/ (${f.files.join(', ')})`).join('; ')}`)
     const settled = [
       ...this.decisions(false).map(decisionLine),
-      ...card.rows.filter((row) => row.picked !== null).map((row) => decisionLine({ statement: row.statement, option: this.rowText(row, row.picked!) })),
+      ...card.rows.filter((row) => !row.chapter && row.picked !== null).map((row) => decisionLine({ statement: row.statement, option: this.rowText(row, row.picked!) })),
     ]
     if (settled.length) lines.push(`Already decided (no row for these):\n${settled.map((line) => `- ${line}`).join('\n')}`)
-    const open = card.rows.filter((row) => (row.origin === 'model' || row.origin === 'lens') && row.picked === null)
+    const open = card.rows.filter((row) => !row.chapter && (row.origin === 'model' || row.origin === 'lens') && row.picked === null)
     if (open.length) lines.push(`Rows on screen now (keep a key while its choice is still open): ${open.map((row) => row.key).join(', ')}`)
     if (card.dismissed.size) lines.push(`Dismissed by the user (never raise again): ${[...card.dismissed].join(', ')}`)
     if (this.stateDraft?.directive === 'delegate') lines.push('The user leaves the choices to the agent: reply with the read and kind lines only.')
@@ -1315,7 +1488,9 @@ export class Core {
       this.cardCache.set(card.reqKey, parsed)
       this.applyCard(card, parsed, card.reqText)
       this.metric('card-reply', { req, card: card.id, ok, ms: this.now - card.reqAt, rows: parsed.rows.length, kind: parsed.kind, read: parsed.read !== null })
+      this.finishChapterReview(card)
     } else {
+      this.cancelChapterReview()
       card.error = card.readFor === null
       this.metric('card-reply', { req, card: card.id, ok, ms: this.now - card.reqAt })
     }
@@ -1341,8 +1516,7 @@ export class Core {
     // The step-order row pins steps the draft wrote; on a draft with none it would send an order nobody asked for.
     // A row offering the files a name's own row already asks about is that question again.
     const steps = listsSteps(text)
-    const quiet = this.stateDraft?.directive === 'delegate' || card.kind === 'ask' || insertsPinnedArtifact(splitDecisions(text).body)
-    const fresh = quiet ? [] : parsed.rows.filter((row) =>
+    const fresh = !this.cardHasChoices(card, text) ? [] : parsed.rows.filter((row) =>
       !card.dismissed.has(row.key) && (row.key !== STEP_ORDER_KEY || steps) && !asksPlaces(card.rows, row))
     const old = card.rows.filter((row) => row.origin === 'model' || row.origin === 'lens')
     const used = new Set<string>()
@@ -1363,11 +1537,18 @@ export class Core {
     // A choice the person made stands until they dismiss it, whatever a newer reading says.
     for (const row of old) if (!used.has(row.id) && (partial || row.picked !== null)) next.push(row)
     card.rows = [...card.rows.filter((row) => row.origin === 'repo'), ...next]
+    if (!partial && text === this.text && this.expert?.phase === 'ready') {
+      this.expert = { ...this.expert, items: this.expert.items.filter((item) => item.chosen !== undefined || this.uncoveredChoice(card, item)) }
+    }
     this.fixCardFocus()
     // A reading for the draft as it stands means the draft has rested since it was asked: sketch at once.
     if (!partial && this.sketchEnabled && this.assets.sketchSystem && canSketch(card.kind) && text === this.text) {
       card.sketchDue = this.now
     }
+  }
+
+  private cardHasChoices(card: Card, text: string): boolean {
+    return this.stateDraft?.directive !== 'delegate' && card.kind !== 'ask' && !insertsPinnedArtifact(splitDecisions(text).body)
   }
 
   /** Keep catalog choices subject to the local decision state as well as the model's reading. */
@@ -1448,6 +1629,18 @@ export class Core {
     else if (card.sketch && canSketch(card.kind)) card.sketchDue = this.now + SKETCH_DELAY_MS
   }
 
+  private onCardKeep(): void {
+    const card = this.card
+    if (card?.stage !== 'draft') return
+    const focus = card.focus
+    for (const row of card.rows) {
+      if (row.picked === null && !row.hardToUndo && (row.learned ?? row.defaults).length) {
+        this.onCardChange(row.id, (_row, current) => [...current], true)
+      }
+    }
+    card.focus = focus
+  }
+
   private onCardSay(rowId: string, text: string): void {
     const card = this.card
     const row = card?.rows.find((entry) => entry.id === rowId)
@@ -1464,7 +1657,8 @@ export class Core {
     const card = this.card
     const row = card?.rows.find((entry) => entry.id === rowId)
     if (!card || !row) return
-    card.dismissed.add(row.key)
+    const dismissed = row.chapter ? card.chapterDismissed : card.dismissed
+    dismissed.add(row.key)
     card.rows = card.rows.filter((entry) => entry !== row)
     this.fixCardFocus()
     this.metric('card-dismissed', { card: card.id, row: row.key, origin: row.origin, stage: card.stage })
@@ -1477,7 +1671,7 @@ export class Core {
   }
 
   private defaultIsOpen(row: CardRow): boolean {
-    return !this.pickedOnly && row.picked === null && row.hardToUndo === true
+    return row.picked === null && row.hardToUndo === true
   }
 
   /** A finished reading adds learned picks, and adds binding defaults in `all` mode. */
@@ -1502,14 +1696,13 @@ export class Core {
     return out
   }
 
-  private openChoices(plan: boolean, read: boolean): string[] {
+  private openChoices(read: boolean): string[] {
     const card = this.card
     if (card?.stage !== 'draft') return []
-    const leaveOpen = plan && this.openRows
     return card.rows
       .filter((row) => row.picked === null && row.learned === undefined && row.key !== STEP_ORDER_KEY)
-      .filter((row) => row.origin === 'repo' ? leaveOpen && row.key.startsWith('file_')
-        : read && (row.origin === 'model' || row.origin === 'lens') && (leaveOpen || this.defaultIsOpen(row)))
+      .filter((row) => row.origin === 'repo' ? this.openRows && (!this.afterEnter || read)
+        : read && (this.openRows || this.defaultIsOpen(row)))
       .map((row) => openChoiceLine(row))
   }
 
@@ -1592,7 +1785,7 @@ export class Core {
   private sketchPrompt(card: Card, added?: string[]): string {
     const choices = this.pickedOnly
       ? added ?? attachDecisions(this.text, this.decisions(true, this.hasReadingFor(this.text))).added
-      : card.rows.filter((row) => (row.origin !== 'repo' || row.picked !== null) && !this.defaultIsOpen(row)).map((row) =>
+      : card.rows.filter((row) => (row.origin !== 'repo' && !row.chapter || row.picked !== null) && !this.defaultIsOpen(row)).map((row) =>
         decisionLine({ statement: row.statement, option: this.rowText(row, row.picked ?? row.learned ?? row.defaults) }))
     const found = this.mentions.filter((m) => m.status === 'found').slice(0, 8)
     return buildSketchPrompt({ draft: this.text, read: card.read, choices, names: found.map((m) => m.match ?? m.phrase), today: this.today })
@@ -1638,7 +1831,7 @@ export class Core {
         reading: card ? card.req !== null : false, sketch: card?.sketch?.pinned ?? false,
       })
       for (const row of card?.rows ?? []) {
-        if (row.picked !== null && row.origin !== 'repo' && row.type !== 'many') {
+        if (row.picked !== null && !row.chapter && row.origin !== 'repo' && row.type !== 'many') {
           this.out.push({ type: 'learn', key: row.key, label: rowValue(row, row.picked) })
         }
       }
@@ -2165,6 +2358,23 @@ function sameOptions(a: string[], b: string[]): boolean {
   const left = a.map(normalize).sort()
   const right = b.map(normalize).sort()
   return left.every((value, i) => value === right[i])
+}
+
+function expertChoice(item: ExpertItem): { key: string; statement: string; options: string[] } {
+  return { key: item.key, statement: item.statement, options: item.options.map((option) => option.label) }
+}
+
+function duplicatesCardRow(rows: CardRow[], choice: ReturnType<typeof expertChoice>): boolean {
+  return rows.some((row) => sameDecision(row, choice)) || asksPlaces(rows, choice)
+}
+
+function sameDecision(row: CardRow, item: ReturnType<typeof expertChoice>): boolean {
+  if (normalizeTopic(row.key) === normalizeTopic(item.key) ||
+    normalizeTopic(row.statement) === normalizeTopic(item.statement)) return true
+  if (row.type !== 'one') return false
+  if (sameOptions(row.options, item.options) && row.options.some((option) => !/^(?:yes|no|on|off)$/i.test(option.trim()))) return true
+  const lines = (choice: typeof item) => choice.options.map((option) => decisionLine({ statement: choice.statement, option }))
+  return sameOptions(lines(row), lines(item)) || nearExpertDecision(row, item)
 }
 
 type Placed = { start?: number; end?: number; anchor: string }

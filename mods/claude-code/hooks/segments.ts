@@ -42,6 +42,7 @@ export type Action =
   | { type: 'depth' }
   | { type: 'amend'; cue: string; option: number }
   | { type: 'cardRead' }
+  | { type: 'cardKeep' }
   | { type: 'cardFocus'; dir?: 1 | -1; row?: string }
   | { type: 'cardCycle'; row?: string }
   | { type: 'cardSet'; row: string; option: number }
@@ -61,6 +62,7 @@ export type Action =
 export const CHORD_SWAP = 'app:diffFileListDown'
 export const CHORD_NEXT = 'app:diffFileListUp'
 export const CARD_READ_KEY = 'c'
+export const CARD_KEEP_KEY = 'k'
 export const RECEIPT_DIFF_KEY = 'e'
 
 /**

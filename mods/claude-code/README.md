@@ -46,17 +46,26 @@ In the terminal, use **diff** beside a choice or open **Review choices** (also `
 | `ctrl+x tab`, then `x` | Drop the focused row; a newer reading will not bring it back |
 | `ctrl+x tab`, then `s` / `p` | Open or close the sketch / attach it to the prompt |
 | `ctrl+x tab`, then `c` | Read the current draft |
+| `ctrl+x tab`, then `k` | Keep all shown selections. Pick hard-to-undo choices individually |
 | `ctrl+x tab`, then `r` / `d` | Expert review of the draft / change the depth |
 | A number in the empty composer during a turn | Switch the focused agent choice at once |
 | `e` in **Review choices** | Open related edits for the focused receipt choice |
 
 Buttons also take clicks: a chip, a step of a slider, `+N` to open a row, the sketch's title and `✓ goes with the prompt` (or `attach to prompt` once left out).
 
+Automatic chapter review (beta) is off by default, and `/margincue review auto|off` changes it while `/margincue review [profile]` runs a review on demand.
+
 ## Settings
 
-`/margincue mode auto|on|quiet|off`: quiet keeps the card to one line with its open count; off stops everything. `/margincue card on|off` switches the card (the reading, rows and sketch). `/margincue send all|picked|open` sends the whole card by default, just your picks and saved decisions in `picked` mode, or in `open` mode your picks plus the rows you left alone as open questions the agent settles and names (the reading's guesses don't travel; a written step order does). `/margincue read auto|key` reads as you type (default) or waits for `ctrl+x tab`, then `c` in the terminal. `/margincue sketch on|off`, `/margincue refs on|off` and `/margincue blanks on|off` switch the sketch, the `Where things are` line, and the agent's marked choices (from the next session). `/margincue language en|auto` (English by default, or the draft's language). `/margincue profile <name>`, `/margincue depth essentials|standard|research`, `/margincue review [profile]` for the on-demand expert review.
+`/margincue mode auto|on|quiet|off` controls when the card runs. Quiet keeps it to one line. `/margincue card on|off` switches the card. `/margincue read auto|key` reads as you type (default) or waits for `ctrl+x tab`, then `c`. `/margincue sketch on|off`, `/margincue refs on|off` and `/margincue blanks on|off` switch the sketch, the `Where things are` line and the choice marks. Use `/margincue language en|auto`, `/margincue profile <name>`, `/margincue depth essentials|standard|research` and `/margincue review [profile]` to control the review.
 
-In `send all` mode, a hard-to-undo default is marked and goes as an open question for the agent unless you pick an option.
+`/margincue send open|all|picked` sets what goes with the prompt. Every mode sends your picks, saved decisions and written step order.
+
+- `open` (default) sends untouched rows as unmarked questions. Claude settles each one and says what it chose.
+- `all` sends ordinary defaults as decisions.
+- `picked` sends only the decisions above, plus any untouched hard-to-undo questions. Those questions stay open in every mode until you pick an option.
+
+If you used `send all` before this change, run it again to save that preference.
 
 Standing decisions are unchanged: `/margincue state`, `/margincue why <slot>` and `/margincue forget <slot> [scope]`. Project decisions live in `.margincue/decisions.json`; learned picks stay in the mod's own store, never in your repository. `/margincue log <path>` writes a local event log without draft text, and `/margincue ab on|off|status` runs the card and control arms.
 

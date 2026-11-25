@@ -6,7 +6,8 @@ import { spawn } from 'node:child_process'
 import { closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { ReadingMode, SendSetting } from '../../claude-code/core/types'
+import type { ReadingMode, ReviewMode, SendSetting } from '../../claude-code/core/types'
+import { DEFAULT_SEND } from '../../claude-code/core/types'
 import type { UserProfile } from '../../claude-code/hooks/onboarding'
 
 export const HOME = process.env['MARGINCUE_HOME'] ?? join(homedir(), '.margincue')
@@ -23,6 +24,7 @@ export const PATHS = {
 export type Settings = {
   mode?: 'auto' | 'on' | 'quiet' | 'off'
   read?: ReadingMode
+  review?: ReviewMode
   send?: SendSetting
   sketch?: boolean
   refs?: boolean
@@ -65,7 +67,8 @@ export const readSettings = () => readJson<Settings>(PATHS.settings, {})
 export const saveSettings = (settings: Settings) => writeJson(PATHS.settings, settings)
 
 export function sendSetting(settings: Settings): SendSetting {
-  return settings.send === 'picked' || settings.send === 'open' ? settings.send : 'all'
+  // The file only contains a send mode if someone set it.
+  return settings.send === 'all' || settings.send === 'picked' ? settings.send : DEFAULT_SEND
 }
 
 export type Learned = Record<string, { label: string; count: number }>

@@ -11,7 +11,9 @@ import type { DecisionView, StateChange, StateCue, StateLoad } from './state'
 export type Origin = 'type' | 'paste' | 'history' | 'fill' | 'open' | 'restore'
 export type LanguageSetting = 'en' | 'auto'
 export type SendSetting = 'all' | 'picked' | 'open'
+export const DEFAULT_SEND: SendSetting = 'open'
 export type ReadingMode = 'auto' | 'key'
+export type ReviewMode = 'auto' | 'off'
 
 /** One edit: `text` replaced the code units `[start, end)` of the previous draft. */
 export type Splice = { start: number; end: number; text: string }
@@ -48,11 +50,13 @@ export type Event =
       sheet?: boolean
       /** When to read a draft card (default auto). */
       read?: ReadingMode
+      /** Run the chapter review alongside eligible draft cards (default off). */
+      review?: ReviewMode
       /** Draw a sketch of the deliverable under the card (default true). */
       sketch?: boolean
       /** Attach where the draft's names live in the code (default true). */
       refs?: boolean
-      /** Send the full card or only decisions the person made (default all). */
+      /** How untouched choices travel (default open). */
       send?: SendSetting
       /** One line about the person (their work, level per field, what they decide), from the first-run interview. */
       user?: string
@@ -64,12 +68,14 @@ export type Event =
       depths?: Record<string, Depth>
       audit?: boolean
       profile: string
+      /** The default general profile counts as selected only when the person chose it. */
+      profileSelected?: boolean
       timing?: Partial<Timing>
       streaming: boolean
       eagerPlan: boolean
     }
   /** `atEnter`: the host can show the draft's card while holding the prompt at Enter. */
-  | { type: 'draft'; now: number; text: string; origin: Origin; edit?: Splice; cursor?: number; atEnter?: boolean }
+  | { type: 'draft'; now: number; text: string; origin: Origin; edit?: Splice; cursor?: number; atEnter?: boolean; afterEnter?: true }
   | { type: 'timer'; now: number }
   | { type: 'reply'; now: number; req: number; text: string; done: boolean; ok?: boolean }
   | { type: 'pick'; now: number; cue: string; option: number | string | null; cycle?: true }
@@ -93,6 +99,7 @@ export type Event =
   /** Options the person picked before, per row key, with how often. */
   | { type: 'learned'; picks: Record<string, { label: string; count: number }> }
   | { type: 'cardRead'; now: number }
+  | { type: 'cardKeep'; now: number }
   /** alt+up: the next row; a click: that row. */
   | { type: 'cardFocus'; dir?: 1 | -1; row?: string }
   /** alt+down: the focused (or named) row's next value. */

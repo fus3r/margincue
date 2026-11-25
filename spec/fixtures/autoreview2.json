@@ -1,0 +1,331 @@
+{
+  "parser": [
+    {
+      "id": "sd-setup-learning/n:s14",
+      "draft": "Set up point-in-time recovery for the Postgres database.",
+      "reply": "| recovery_tolerance | Accept up to {} data loss | five minutes of writes | near-zero, synchronous replication",
+      "keys": [
+        "recovery_tolerance"
+      ]
+    },
+    {
+      "id": "ml-setup-expert/n:m13",
+      "draft": "Report error bars over 5 training seeds for both architectures.",
+      "reply": "- | comparison_goal | Architectures compared {} | matched controls, fixed budget | each architecture tuned separately\n- over 5 training seeds | selection_rerun | Each seed's selection {} | rerun within each seed | frozen from one run",
+      "keys": [
+        "comparison_goal",
+        "selection_rerun"
+      ]
+    },
+    {
+      "id": "sd-setup-learning/n:s03",
+      "draft": "Make the invite webhook handler idempotent so duplicate deliveries don't create two memberships.",
+      "reply": "- idempotent so duplicate deliveries | duplicate_delivery_response | Duplicate deliveries receive {} | the original success response | a 409 until settled",
+      "keys": [
+        "duplicate_delivery_response"
+      ]
+    },
+    {
+      "id": "sd-setup-expert/n:s17",
+      "draft": "Use a transactional outbox so invite emails go out exactly once.",
+      "reply": "invite emails go out exactly once | new_key | Ambiguous invite sends are resolved {} | by provider message-ID reconciliation | by operator manual review\ninvite emails go out exactly once | new_key | Invite status is recorded {} | after provider acceptance | at outbox commit",
+      "keys": [
+        "ambiguous_invite_sends_are_resolved",
+        "invite_status_is_recorded"
+      ]
+    },
+    {
+      "id": "sd-setup-expert/f:fs05",
+      "draft": "Plan a zero-downtime schema migration to add a non-null team_id column.",
+      "reply": "cutover_rollback is already on the card, so it's skipped. The draft is a single line with no level, and the matched chapter is system-design rollout. The open choice is when operators may promote, roll back, or must repair forward. The catalog has no key for that, so I'll use a new key.\n\n- | new_key | Operators promote or roll back before {} cutover | after canary hold passes | only after backfill verified",
+      "keys": [
+        "operators_promote_or_roll_back_before_cu"
+      ]
+    },
+    {
+      "id": "ml-setup-learning/n:m14",
+      "draft": "Fine-tune the BERT classifier on our support tickets and keep the best checkpoint.",
+      "reply": "| score_output | Predicted scores should be {} | ranked scores only | calibrated probabilities",
+      "keys": [
+        "score_output"
+      ]
+    },
+    {
+      "id": "ml-setup-expert/n:m20",
+      "draft": "Add early stopping to the training loop and log validation loss each epoch.",
+      "reply": "- | new_key | Early stopping serves {} | best performance at fixed budget | isolating architectural effect under controls\n- | new_key | Stopping monitors {} | a held-out validation split | a cross-validation fold",
+      "keys": [
+        "early_stopping_serves",
+        "stopping_monitors"
+      ]
+    },
+    {
+      "id": "sd-setup-learning/n:s10",
+      "draft": "Define an SLO for the dashboard API and alert when we burn the error budget too fast.",
+      "reply": "- | slo_window\n- | alert_on\n- Alert when we burn the error budget too fast | slo_success_or_latency | Success only | Success and under latency threshold",
+      "keys": []
+    }
+  ],
+  "near": [
+    {
+      "id": "I21",
+      "rows": [
+        {
+          "key": "retry_methods",
+          "statement": "Retry {} on failure",
+          "options": [
+            "idempotent methods only",
+            "all methods including POST",
+            "only calls marked retry-safe"
+          ]
+        },
+        {
+          "key": "retry_errors",
+          "statement": "Retry on {}",
+          "options": [
+            "network errors and 5xx",
+            "also 429 honoring Retry-After",
+            "any non-2xx response"
+          ]
+        },
+        {
+          "key": "policy_home",
+          "statement": "Define the policy {}",
+          "options": [
+            "once in lib, reused by every client",
+            "separately in each client"
+          ]
+        },
+        {
+          "key": "attempt_cap",
+          "statement": "Cap attempts at {}",
+          "options": [
+            "1 attempt",
+            "2 attempts",
+            "3 attempts",
+            "4 attempts",
+            "6 attempts",
+            "7 attempts",
+            "8 attempts",
+            "9 attempts",
+            "10 attempts"
+          ]
+        }
+      ],
+      "choice": {
+        "key": "ambiguous_effect_resolution",
+        "statement": "Resolve uncertain retried effects {}",
+        "options": [
+          "callee idempotency-key dedup",
+          "operator reconciliation queue"
+        ]
+      }
+    },
+    {
+      "id": "I34",
+      "rows": [
+        {
+          "key": "ci_method",
+          "statement": "Compute the interval {}",
+          "options": [
+            "by bootstrap resampling of holdout rows",
+            "by DeLong's method for AUC"
+          ]
+        }
+      ],
+      "choice": {
+        "key": "uncertainty_source",
+        "statement": "Interval reflects {} variation",
+        "options": [
+          "holdout rows only",
+          "rerun training and holdout"
+        ]
+      }
+    },
+    {
+      "id": "I39",
+      "rows": [
+        {
+          "key": "limit_scope",
+          "statement": "Limit requests {}",
+          "options": [
+            "per API key",
+            "per client IP",
+            "per API key and IP",
+            "per endpoint"
+          ]
+        },
+        {
+          "key": "limit_action",
+          "statement": "When a client is over the limit, {}",
+          "options": [
+            "return HTTP 429 with a retry hint",
+            "queue the request briefly",
+            "silently drop the request"
+          ]
+        },
+        {
+          "key": "limit_store",
+          "statement": "Keep the request counts {}",
+          "options": [
+            "in Redis, shared across instances",
+            "in process memory per instance",
+            "in the existing database"
+          ]
+        },
+        {
+          "key": "limit_rates",
+          "statement": "Set the default limit to {}",
+          "options": [
+            "100 requests per minute",
+            "1000 requests per minute",
+            "a per-plan limit read from config"
+          ]
+        }
+      ],
+      "choice": {
+        "key": "capacity_fairness",
+        "statement": "Shared capacity favors {}",
+        "options": [
+          "equal share per client",
+          "priority tiers per plan"
+        ]
+      }
+    },
+    {
+      "id": "I57",
+      "rows": [
+        {
+          "key": "retry_scope",
+          "statement": "Apply retries to {}",
+          "options": [
+            "every outgoing HTTP client",
+            "Stripe calls only",
+            "calls to external APIs in lib/payments/",
+            "webhook deliveries"
+          ]
+        },
+        {
+          "key": "retry_safe",
+          "statement": "Retry {}",
+          "options": [
+            "only idempotent requests (GET, PUT, DELETE)",
+            "all requests including POST"
+          ]
+        },
+        {
+          "key": "retry_limits",
+          "statement": "Retry with {}",
+          "options": [
+            "few attempts, short total wait",
+            "moderate attempts with capped backoff",
+            "many attempts, long total wait"
+          ]
+        },
+        {
+          "key": "jitter_style",
+          "statement": "Jitter the delay {}",
+          "options": [
+            "full random between zero and the backoff",
+            "plus or minus a fixed percentage",
+            "equal split between fixed and random"
+          ]
+        }
+      ],
+      "choice": {
+        "key": "idempotency_key_on_retry",
+        "statement": "Retried POST requests carry {}",
+        "options": [
+          "one server-enforced idempotency key",
+          "no idempotency key on retries"
+        ]
+      }
+    },
+    {
+      "id": "I64",
+      "rows": [
+        {
+          "key": "slo_target",
+          "statement": "Set the availability target to {}",
+          "options": [
+            "99.9% over 30 days",
+            "99.5% over 30 days",
+            "99% over 7 days"
+          ]
+        },
+        {
+          "key": "alert_scope",
+          "statement": "Alert on burn for {}",
+          "options": [
+            "all dashboard API routes",
+            "only the heaviest routes",
+            "the activity endpoint only"
+          ]
+        },
+        {
+          "key": "alert_route",
+          "statement": "Send burn alerts {}",
+          "options": [
+            "to the on-call pager for fast burn, ticket for slow burn",
+            "to the on-call pager only",
+            "to a chat channel only"
+          ]
+        },
+        {
+          "key": "slo_measure",
+          "statement": "Count an error as {}",
+          "options": [
+            "any 5xx response",
+            "any 5xx or timeout over 2s",
+            "any non-2xx response"
+          ]
+        }
+      ],
+      "choice": {
+        "key": "service_indicator",
+        "statement": "The primary SLI is {}",
+        "options": [
+          "request success ratio",
+          "latency threshold attainment"
+        ]
+      }
+    },
+    {
+      "id": "I68",
+      "rows": [
+        {
+          "key": "delivery_guarantee",
+          "statement": "Deliver invite emails {}",
+          "options": [
+            "at-least-once with idempotent sends",
+            "exactly once end to end"
+          ]
+        },
+        {
+          "key": "submission_confirmation",
+          "statement": "The submit call succeeds {}",
+          "options": [
+            "after durable enqueue",
+            "after the worker commits"
+          ]
+        },
+        {
+          "key": "cutover_rollback",
+          "statement": "Rollback relies on {}",
+          "options": [
+            "a tested compatibility window",
+            "offline backup restore"
+          ]
+        }
+      ],
+      "choice": {
+        "key": "new_key",
+        "statement": "Ambiguous invite sends are resolved {}",
+        "options": [
+          "by provider message-ID reconciliation",
+          "by operator manual review"
+        ]
+      }
+    }
+  ]
+}

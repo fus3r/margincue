@@ -24,6 +24,8 @@ pub enum Action {
     Dismiss,
     /// Ctrl+] c: read the draft on demand.
     Read,
+    /// Ctrl+] k: keep the choices shown on the card.
+    Keep,
     /// Claimed Enter. `bytes` is how it arrived, to forward it later.
     Enter(EnterKey),
     Up,
@@ -52,6 +54,7 @@ pub struct Claims {
     pub enter: bool,
     pub arrows: bool,
     pub read: bool,
+    pub keep: bool,
 }
 
 #[derive(Default)]
@@ -260,6 +263,7 @@ impl Input {
                 Some(b't') => Some(Action::Toggle),
                 Some(b'd') => Some(Action::Dismiss),
                 Some(b'c') if self.claims.read => Some(Action::Read),
+                Some(b'k') if self.claims.keep => Some(Action::Keep),
                 _ => None,
             };
             if action.is_some() {
@@ -513,6 +517,14 @@ mod tests {
             (vec![], vec![Action::Read])
         );
         assert_eq!(run(&mut input, b"c"), (b"c".to_vec(), vec![]));
+        assert_eq!(run(&mut input, b"\x1dk"), (b"\x1dk".to_vec(), vec![]));
+        input.claims.keep = true;
+        assert_eq!(run(&mut input, b"\x1dk"), (vec![], vec![Action::Keep]));
+        assert_eq!(
+            run(&mut input, b"\x1b[93;5u\x1b[107u\x1b[107;1:3u"),
+            (vec![], vec![Action::Keep])
+        );
+        assert_eq!(run(&mut input, b"k"), (b"k".to_vec(), vec![]));
     }
 
     #[test]

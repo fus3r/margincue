@@ -67,6 +67,18 @@ test('the card never draws wider than the band, at any width or height', () => {
   }
 })
 
+test('card shortcuts stay mounted even when their labels are dropped', () => {
+  for (const columns of [60, 80, 120]) {
+    const card = { ...CARD, pickedOnly: true as const }
+    const rows = layoutBandRows(band(card), columns, 'ctrl+x tab', 6)
+    for (const key of ['r', 'd', 'k', 'x', 's', 'p', '1']) {
+      const bound = rows.flat().filter((s) => s.kind === 'button' && s.hotkey === key)
+      assert.equal(bound.length, 1, `${columns}: ${key}`)
+    }
+    assert.equal(buttons(rows).some((button) => button.hotkey === 'r'), columns === 120)
+  }
+})
+
 test('a label is wrapped onto the row\'s next lines, never cut, in every stage and at every width', () => {
   const long = 'where the sketch should be shown'
   const agentRows = [

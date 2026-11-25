@@ -39,10 +39,10 @@ function reader(card = CARD): Reader {
   }
 }
 
-function harness(cwd = mkdtempSync(join(tmpdir(), 'margincue-project-')), model = reader(), readKey = true, vocabulary = false) {
+function harness(cwd = mkdtempSync(join(tmpdir(), 'margincue-project-')), model = reader(), readKey = true, vocabulary = false, keepKey = false) {
   const out: Down[] = []
   const band = new Band({ cwd, send: (message) => out.push(message), model, vocabulary, turnEveryMs: 20 })
-  band.receive({ t: 'hello', protocol: 1, cols: 110, rows: 40, max: 9, full: true, ...(readKey && { readKey }) })
+  band.receive({ t: 'hello', protocol: 1, cols: 110, rows: 40, max: 9, full: true, readKey, keepKey })
   const last = <T extends Down['t']>(kind: T) => out.filter((m): m is Extract<Down, { t: T }> => m.t === kind).at(-1)
   const lines = () => (last('band')?.lines ?? []).join('\n').replace(/\x1b\[[0-9;:]*m/g, '')
   const draft = (text: string | null, plain = true) => band.receive({ t: 'draft', text, approx: false, end: true, plain })
@@ -101,6 +101,52 @@ test('Enter before the card has read the prompt lets it go as written', () => {
   h.band.close()
 })
 
+test('the live card displays chapter choices with a diamond and keeps the general reading ready', async () => {
+  const settings: Parameters<typeof saveSettings>[0] = { sketch: false, user: { work: ['apps'], levels: { product: 'learning' }, decide: [] } }
+  saveSettings(settings)
+  let finishReview: (() => void) | undefined
+  let reviewCalls = 0
+  const model = reader()
+  const general = model.complete
+  model.complete = async (system, prompt, options) => {
+    if (!prompt.includes('Profile chapters matched to the draft.')) return general(system, prompt, options)
+    reviewCalls++
+    assert.match(prompt, /Concurrent random assignment/)
+    await new Promise<void>((resolve) => {
+      finishReview = resolve
+      options?.signal?.addEventListener('abort', () => resolve(), { once: true })
+    })
+    if (options?.signal?.aborted) return { ok: false, reason: 'cancelled', ms: 0 }
+    const reply = 'choice | | Assignment unit | Randomize by {} | account | workspace\n'
+    options?.onDelta?.(reply)
+    return { ok: true, text: reply, ms: 1 }
+  }
+  const text = 'Plan an A/B test for this feature and tell me what to measure.'
+  const off = harness(undefined, model)
+  try {
+    off.draft(text)
+    await until(() => off.lines().includes('rows exported'))
+    assert.equal(reviewCalls, 0)
+  } finally {
+    off.band.close()
+  }
+  saveSettings({ ...settings, review: 'auto' })
+  const h = harness(undefined, model)
+  try {
+    h.draft(text)
+    await until(() => h.lines().includes('rows exported'))
+    assert.equal(h.last('claims')?.enter, true)
+    assert.doesNotMatch(h.lines(), /◆/)
+    assert.ok(finishReview)
+    finishReview()
+    await until(() => /◆\s+assignment unit/.test(h.lines()))
+    assert.match(h.lines(), /rows exported/)
+  } finally {
+    h.band.close()
+    saveSettings({})
+  }
+})
+
 test('reading on demand marks a hard-to-undo default and sends it open in all mode even with zero decisions', async () => {
   const prompt = 'Add retention settings for inactive teams.'
   saveSettings({ send: 'all', read: 'key', sketch: false })
@@ -128,6 +174,7 @@ test('reading on demand marks a hard-to-undo default and sends it open in all mo
 })
 
 test('a card left as it was goes with the prompt as the plan, with the sketch it drew', async () => {
+  saveSettings({ send: 'all' })
   const h = harness()
   h.draft(PROMPT)
   await until(() => h.lines().includes('rows exported') && h.lines().includes('[Export CSV]'))
@@ -142,10 +189,11 @@ test('a card left as it was goes with the prompt as the plan, with the sketch it
   assert.equal(box.length, 4)
   assert.equal(new Set(box.map((line) => [...line].length)).size, 1, box.join('\n'))
   h.band.close()
+  saveSettings({})
 })
 
-test('open mode sends an untouched card as questions even with no Decisions', async () => {
-  saveSettings({ send: 'open', sketch: false })
+test('the relay sends an untouched card as questions by default', async () => {
+  saveSettings({ sketch: false })
   const h = harness()
   try {
     h.draft(PROMPT)
@@ -158,6 +206,26 @@ test('open mode sends an untouched card as questions even with no Decisions', as
     assert.match(answer.text!, /\n- Export covers … \(all rows \/ the filtered rows\)\?$/)
     assert.doesNotMatch(answer.text!, /Decisions:|\*/)
     assert.equal(JSON.parse(readFileSync(PATHS.composed, 'utf8')).text, `${PROMPT}${answer.text}`)
+  } finally {
+    h.band.close()
+    saveSettings({})
+  }
+})
+
+test('the relay keep key sets the displayed values even when the card has one line', async () => {
+  saveSettings({ sketch: false })
+  const reading = CARD + 'row | format | format | one | Write {} | CSV | TSV\n'
+  const h = harness(undefined, reader(reading), true, false, true)
+  try {
+    h.draft(PROMPT)
+    await until(() => h.last('claims')?.keep === true)
+    assert.match(h.lines(), /ctrl\+\] k keep all/)
+    h.band.receive({ t: 'size', cols: 60, rows: 24, max: 1, full: false })
+    assert.equal(h.last('claims')?.keep, true)
+    h.band.receive({ t: 'key', key: 'keep' })
+    assert.equal(h.last('claims')?.keep, undefined)
+    h.band.receive({ t: 'enter', text: PROMPT, approx: false })
+    assert.deepEqual(h.last('enter'), { t: 'enter', do: 'append', text: '\n\nDecisions:\n- Export covers all rows.\n- Write CSV.' })
   } finally {
     h.band.close()
     saveSettings({})

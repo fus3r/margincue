@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { runInNewContext } from 'node:vm'
 import { LAYOUT_PATHS, layoutProject } from './fixtures/layout-project.ts'
 import './ts-resolve.ts'
 
@@ -23,7 +24,7 @@ process.env['MARGINCUE_ENTRY'] = noReader
 const { parseKeys } = await import('../mods/codex/src/terminal')
 const { Draft } = await import('../mods/codex/src/editor')
 const { decisionsOf, promptHook, stopHook, receiptLine, READING_FIRST } = await import('../mods/codex/src/hooks')
-const { PATHS, saveSettings, sessionSource, turnMessages, writeJson } = await import('../mods/codex/src/store')
+const { PATHS, readSettings, saveSettings, sessionSource, turnMessages, writeJson } = await import('../mods/codex/src/store')
 const { cardConfig } = await import('../mods/codex/src/card-config')
 const { CodexModel } = await import('../mods/codex/src/model')
 const { composeFollowUp } = await import('../mods/codex/src/widget-message')
@@ -299,8 +300,20 @@ test('the desktop hook gates new tasks on the widget and skips its follow-ups; t
   assert.equal(stopped.systemMessage, 'MarginCue · you set 1 · the agent chose 1 — table layout: compact')
 })
 
-test('Codex defaults to send all and automatic reading; the IDE skips its text card in key mode', () => {
-  assert.deepEqual([cardConfig({}).send, cardConfig({}).read], ['all', 'auto'])
+test('Codex settings default to open and preserve a stored all', () => {
+  saveSettings({})
+  assert.deepEqual([cardConfig(readSettings()).send, cardConfig(readSettings()).read], ['open', 'auto'])
+  try {
+    writeFileSync(PATHS.settings, '{"send":"all"}')
+    assert.equal(cardConfig(readSettings()).send, 'all')
+    saveSettings({ ...readSettings(), sketch: false })
+    assert.equal(cardConfig(readSettings()).send, 'all')
+  } finally {
+    saveSettings({})
+  }
+})
+
+test('the IDE skips its default automatic text card in key mode', () => {
   const input = { session_id: 'ide', turn_id: 'ide-1', transcript_path: rollout('ide-1', [], 'codex_vscode'), cwd: home,
     prompt: 'Build a weekly activity report for team owners with a CSV download.' }
   const context = (out: unknown) => (out as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext
@@ -322,25 +335,26 @@ test('Codex defaults to send all and automatic reading; the IDE skips its text c
   }
 })
 
-test('the full-screen composer reads on tab then c and sends the file picked on its card', { timeout: 60000 }, async (t) => {
+test('the full-screen composer reads on tab then c, and k keeps its remaining selections', { timeout: 60000 }, async (t) => {
   const project = layoutProject()
   const draft = join(project, 'draft.txt')
   const prompt = 'Build a footer with a copyright year in `layout.tsx`.'
   writeFileSync(draft, prompt)
   writeFileSync(join(project, 'app-server'), `void import(${JSON.stringify(pathToFileURL(join(here, 'fixtures', 'fake-codex.mjs')).href)})\n`)
   saveSettings({ read: 'key', send: 'picked', sketch: false })
+  const reply = 'read | A copyright year in the footer.\nkind | build\nrow | year | year | one | Show {} | the current year | a fixed year\n'
   const child = spawn(process.execPath, ['--import', tsResolve, launcher, 'compose', draft], {
-    cwd: project, env: { ...process.env, MARGINCUE_CODEX: process.execPath },
+    cwd: project, env: { ...process.env, MARGINCUE_CODEX: process.execPath, FAKE_CODEX_CARD: reply },
   })
   const updates = new EventEmitter()
   let output = ''
+  let stderr = ''
   let finished = false
-  const capture = (text: string) => {
+  child.stdout.setEncoding('utf8').on('data', (text: string) => {
     output += text
     updates.emit('change')
-  }
-  child.stdout.setEncoding('utf8').on('data', capture)
-  child.stderr.setEncoding('utf8').on('data', capture)
+  })
+  child.stderr.setEncoding('utf8').on('data', (text: string) => { stderr += text })
   const closed = once(child, 'close').then(([code]) => {
     finished = true
     updates.emit('change')
@@ -352,20 +366,39 @@ test('the full-screen composer reads on tab then c and sends the file picked on 
     saveSettings({})
   })
 
-  async function waitFor(pattern: RegExp): Promise<void> {
-    while (!pattern.test(output) && !finished) {
+  function screen(): string {
+    const end = output.lastIndexOf('\x1b[J')
+    const start = output.lastIndexOf('\x1b[H', end)
+    if (end < 0 || start < 0) return ''
+    return output.slice(start + 3, end).replace(/\x1b\[[0-9;:]*[Km]/g, '')
+  }
+
+  async function waitFor(...patterns: RegExp[]): Promise<string> {
+    let frame = screen()
+    while (!patterns.every((pattern) => pattern.test(frame)) && !finished) {
       await once(updates, 'change', { signal: t.signal })
+      frame = screen()
     }
-    assert.match(output, pattern)
+    for (const pattern of patterns) assert.match(frame, pattern, stderr || undefined)
+    return frame
   }
   await waitFor(/tab, c to read/)
-  assert.doesNotMatch(output, /You want Draft/)
+  assert.doesNotMatch(output, /A copyright year in the footer/)
   child.stdin.write('\tc')
-  await waitFor(/You want Draft/)
-  await waitFor(/dashboard\/layout\.tsx/)
-  child.stdin.end('2\r')
-  assert.equal(await closed, 0)
-  assert.equal(readFileSync(draft, 'utf8'), `${prompt}\n\nDecisions:\n- "layout.tsx" is the one in app/dashboard/layout.tsx.`)
+  const bothRows = await waitFor(
+    /A copyright year in the footer/,
+    /\? layout\.tsx +app\/layout\.tsx +app\/dashboard\/layout\.tsx/,
+    /\byear +the current year +a fixed year/,
+  )
+  // If the year arrived first, it keeps focus when the file row appears above it.
+  const fileFocused = /^▸ +\? layout\.tsx\b/m
+  if (!fileFocused.test(bothRows)) child.stdin.write('\x1b[A')
+  await waitFor(fileFocused)
+  child.stdin.write('2')
+  await waitFor(/1 set/)
+  child.stdin.end('k\r')
+  assert.equal(await closed, 0, stderr)
+  assert.equal(readFileSync(draft, 'utf8'), `${prompt}\n\nDecisions:\n- "layout.tsx" is the one in app/dashboard/layout.tsx.\n- Show the current year.`)
 })
 
 test('Go ahead from the desktop card reaches the hook as an app message: no second card, and the decisions count', () => {
@@ -403,12 +436,12 @@ test('Go ahead sends the whole plan the card showed: every choice, the note, and
     { id: 'd', label: 'Audit Log', type: 'one', statement: '"Audit Log" is {}', options: ['activityLogs', 'new, to be added'], assumed: [], files: ['activity.ts'] },
   ]
   // Switched choices (an empty pick-any one too) and the ones kept as shown, in the card's order.
-  const message = composeFollowUp(rows, { a: [1], b: [], d: [0] }, '  Include a total.\nUse local time.  ')
+  const message = composeFollowUp(rows, { a: [1], b: [], d: [0] }, '  Include a total.\nUse local time.  ', false, null, 'all')
   assert.deepEqual(message.decisions, ['Weeks start on Sunday.', 'Include none of these.', 'Show 4 wk of history.', '"Audit Log" is activityLogs (activity.ts).'])
   assert.equal(message.text, 'Go ahead with my prompt above.\n\nDecisions:\n- Weeks start on Sunday.\n- Include none of these.\n- Show 4 wk of history.\n- "Audit Log" is activityLogs (activity.ts).\n\nAlso: Include a total. Use local time.')
   assert.deepEqual(decisionsOf(message.text), message.decisions)
   // Nothing switched: the plan as shown still travels; a name the code lacks has no default and stays out.
-  const kept = composeFollowUp(rows, {}, '', false, { title: 'Activity report', lines: ['┌ Report ┐', '│ Mon 4  │', '└────────┘'] })
+  const kept = composeFollowUp(rows, {}, '', false, { title: 'Activity report', lines: ['┌ Report ┐', '│ Mon 4  │', '└────────┘'] }, 'all')
   assert.equal(kept.text, 'Go ahead with my prompt above.\n\nDecisions:\n- Weeks start on Monday.\n- Include sign-ins.\n- Show 4 wk of history.\n\n' +
     'Target output, as sketched (Activity report):\n```text\n┌ Report ┐\n│ Mon 4  │\n└────────┘\n```')
   assert.deepEqual(decisionsOf(kept.text), kept.decisions)
@@ -433,16 +466,72 @@ test('desktop picked and open modes keep explicit picks, saved choices, and writ
   assert.match(picked.text, /Also: Use local time\./)
   assert.doesNotMatch(picked.text, /Include|Audit Log|Open choices/)
 
-  const opened = composeFollowUp(rows, { a: [0] }, '', false, null, 'open')
+  const opened = composeFollowUp(rows, { a: [0] }, '')
   assert.deepEqual(decisionsOf(opened.text), choices)
-  assert.deepEqual(opened.openChoices, ['Include … (any of: invites / sign-ins)?'])
+  assert.deepEqual(opened.openChoices, ['Include … (any of: invites / sign-ins)?', '"Audit Log" is … (activityLogs / new, to be added)?'])
   assert.match(opened.text, /Open choices.*Settle each one yourself[^\n]+\n- Include … \(any of: invites \/ sign-ins\)\?/)
-  assert.doesNotMatch(opened.text, /Audit Log|\*/)
+  assert.doesNotMatch(opened.text, /\*/)
 
   const openOnly = composeFollowUp(rows.slice(0, 1), {}, '', false, null, 'open')
   assert.ok(openOnly.text.startsWith('Go ahead with my prompt above.\n\nOpen choices'))
   assert.deepEqual(decisionsOf(openOnly.text), [])
   assert.equal(composeFollowUp(rows, { a: [0] }, '', true, null, 'open').text, 'Go ahead with my prompt as written.')
+})
+
+test('Keep all in the bundled desktop card sets the shown choices before Go ahead', { timeout: 2000 }, async () => {
+  const html = readFileSync(join(here, '..', 'mods', 'codex', 'dist', 'card.html'), 'utf8')
+  assert.match(html, /<button id="keep"[^>]*type="button"[^>]*>Keep all<\/button>/)
+
+  class Element extends EventTarget {
+    dataset = {}
+    classList = { add() {}, remove() {}, toggle() {}, contains: () => false }
+    children: unknown[] = []
+    value = ''
+    hidden = true
+    disabled = false
+    setAttribute() {}
+    focus() {}
+    getBoundingClientRect() { return { width: 450, height: 200 } }
+    querySelectorAll() { return [] }
+    append(...children: unknown[]) { this.children.push(...children) }
+    replaceChildren(...children: unknown[]) { this.children = children }
+  }
+  const nodes = new Map(Array.from(html.matchAll(/\bid="([^"]+)"/g), ([, id]) => [id, new Element()]))
+  const document = Object.assign(new EventTarget(), {
+    getElementById: (id: string) => nodes.get(id),
+    createElement: () => new Element(),
+    createTextNode: (text: string) => text,
+  })
+  const card: CardOutput = {
+    id: 'keep', prompt: 'Build a weekly retention report.', reading: 'A weekly report.', state: 'done',
+    rows: [
+      { id: 'week', label: 'week', type: 'one', statement: 'Weeks start on {}', options: ['Monday', 'Sunday'], assumed: [0] },
+      { id: 'columns', label: 'columns', type: 'many', statement: 'Include {}', options: ['sign-ins', 'invites'], assumed: [0, 1] },
+      { id: 'purge', label: 'retention', type: 'one', statement: 'Permanently delete data after {}', options: ['30 days', '7 days'], assumed: [0], openOnSend: true },
+    ],
+    missing: [], preview: false, sketch: null,
+  }
+  let receive!: (prompt: string) => void
+  const sent = new Promise<string>((resolve) => { receive = resolve })
+  const window = Object.assign(new EventTarget(), {
+    parent: null as unknown, clearTimeout, openai: {
+      toolOutput: card, sendFollowUpMessage: ({ prompt }: { prompt: string }) => receive(prompt),
+    },
+  })
+  window.parent = window
+  runInNewContext(html.match(/<script>\s*([\s\S]+)<\/script>/)![1]!, {
+    document, window, queueMicrotask, ResizeObserver: class { observe() {} },
+  })
+  await Promise.resolve()
+  const keep = nodes.get('keep')!
+  assert.equal(keep.hidden, false)
+  assert.equal(keep.disabled, false)
+  keep.dispatchEvent(new Event('click'))
+  assert.equal(keep.disabled, true)
+  nodes.get('actions')!.dispatchEvent(new Event('submit', { cancelable: true }))
+  const message = await sent
+  assert.deepEqual(decisionsOf(message), ['Weeks start on Monday.', 'Include sign-ins and invites.'])
+  assert.match(message, /\n- Permanently delete data after … \(7 days \/ 30 days\)\?$/)
 })
 
 test('the bundled MCP command resolves from the plugin directory and initializes', async () => {
@@ -529,9 +618,10 @@ test('the bundled MCP server uses the Desktop runtime to read a grounded card an
     assert.deepEqual([week.options, week.assumed], [['Monday', 'Sunday'], [0]])
     assert.deepEqual(card.missing, [{ phrase: 'Audit Log', candidates: [{ name: 'activityLogs', file: 'activity.ts' }], rowId: card.rows[0]!.id }])
     assert.equal(card.preview, true)
-    // The first preview comes with the card, drawn with Codex's own choices.
+    // The first preview follows the decisions that would go with the prompt.
+    assert.equal(card.send, 'open')
     assert.equal(card.sketchState, 'done')
-    assert.ok(card.sketch!.lines.includes('- Weeks start on Monday.'))
+    assert.ok(!card.sketch!.lines.includes('- Weeks start on Monday.'))
 
     const sketch = (picks: object) => call('tools/call', { name: 'margincue_sketch', arguments: { cardId: card.id, picks } })
     assert.deepEqual((await sketch({})).structuredContent.sketch, card.sketch)
@@ -549,16 +639,15 @@ test('the bundled MCP server uses the Desktop runtime to read a grounded card an
       const retention = await follow(retentionResult.structuredContent.id)
       const purge = retention.rows.find((row) => row.label === 'retention')!
       assert.equal(retention.send, send)
-      assert.equal(purge.openOnSend, send === 'all' ? true : undefined, send)
+      assert.equal(purge.openOnSend, true, send)
       const defaults = send === 'all' ? [weekDecision] : []
       assert.deepEqual(retention.sketch?.lines, ['Weekly activity', ...defaults.map((line) => `- ${line}`)], send)
 
       const untouched = composeFollowUp(retention.rows, {}, '', false, null, retention.send)
-      const questions = send === 'all' ? [purgeQuestion] : send === 'open' ? [purgeQuestion, 'Weeks start on … (Monday / Sunday)?'] : []
+      const questions = send === 'open' ? [purgeQuestion, 'Weeks start on … (Monday / Sunday)?'] : [purgeQuestion]
       assert.deepEqual(decisionsOf(untouched.text), defaults, send)
       assert.deepEqual(untouched.openChoices ?? [], questions, send)
-      if (questions.length) assert.ok(untouched.text.endsWith(questions.map((line) => `- ${line}`).join('\n')), send)
-      else assert.equal(untouched.text, 'Go ahead with my prompt as written.')
+      assert.ok(untouched.text.endsWith(questions.map((line) => `- ${line}`).join('\n')), send)
 
       const confirmed = composeFollowUp(retention.rows, { [purge.id]: [0] }, '', false, null, retention.send)
       assert.deepEqual(decisionsOf(confirmed.text), [purgeDecision, ...defaults], send)
@@ -671,7 +760,7 @@ test('a desktop card streams in: its reading first, then each choice, then its f
     const record = readRecord('card-b')!
     assert.deepEqual([record.state, record.sketchState, record.pid], ['done', 'done', process.pid])
     assert.equal(record.card.reading, 'A weekly activity report with CSV export.')
-    assert.ok(record.sketch!.lines.includes('- Weeks start on Monday.'))
+    assert.deepEqual(record.sketch!.lines, ['Weekly activity'])
   } finally {
     reader.close()
     delete process.env['FAKE_CODEX_PROJECT']

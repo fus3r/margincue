@@ -8,8 +8,9 @@
 import { atom, read } from 'claude-code'
 import type { Elements, EngineInterface, ModelCompleteResult, PromptDecoration, Register, RenderSurface } from 'claude-code'
 
-import { createCore, DEPTHS, isHostCommand, MODES, SCOPES } from '../core/index'
-import type { Assets, Core, Depth, Effect, Event, LanguageSetting, Mode, Origin, ReadingMode, Scope, SendSetting, StateLoad, Timing, View } from '../core/index'
+import { createCore, DEPTHS, isHostCommand, MODES, SCOPES, splitDecisions } from '../core/index'
+import type { Assets, Core, Depth, Effect, Event, LanguageSetting, Mode, Origin, ReadingMode, ReviewMode, Scope, SendSetting, StateLoad, Timing, View } from '../core/index'
+import { DEFAULT_SEND } from '../core/types'
 import type { MargincueBand, MargincueExpert, MargincueReceipt, MargincueRow } from '../types'
 import { BLANK_CLOSE, BLANK_OPEN, parseBlanks, renderBlanks } from '../core/card'
 import type { ParsedBlank } from '../core/card'
@@ -18,7 +19,7 @@ import { ASSETS } from './assets'
 import { DARK, currentOption, layoutBandRows, paletteFor, scopeLabel, thinkingLabel } from './band'
 import type { Action, Palette, Segment } from './band'
 import { layoutReceipt, layoutSent, splitSent } from './card-view'
-import { CARD_READ_KEY, RECEIPT_DIFF_KEY } from './segments'
+import { CARD_KEEP_KEY, CARD_READ_KEY, RECEIPT_DIFF_KEY } from './segments'
 import { openChoiceEdits } from './edit-opener'
 import { finishEdits, recordToolEdit, startEdits } from './turn-edits'
 import type { EditCapture, TurnEdits } from './turn-edits'
@@ -48,15 +49,16 @@ const EAGER_PLAN = false
 
 type Settings = {
   mode: Mode; profile: string; language: LanguageSetting; inline: boolean; sheet: boolean; ab: boolean; depths: Record<string, Depth>
-  read: ReadingMode; sketch: boolean; refs: boolean; blanks: boolean
-  send: SendSetting
+  profileSelected: boolean
+  read: ReadingMode; review: ReviewMode; sketch: boolean; refs: boolean; blanks: boolean
+  send: SendSetting; sendExplicit: boolean
   /** The first-run interview's answers, and whether it ran (or was closed, which is not asked again). */
   user: UserProfile | null; onboarded: 'done' | 'skipped' | null
 }
 const DEFAULTS: Settings = {
-  mode: 'auto', profile: 'general', language: 'en', inline: false, sheet: true, ab: false, depths: {},
-  read: 'auto', sketch: true, refs: true, blanks: true, user: null, onboarded: null,
-  send: 'all',
+  mode: 'auto', profile: 'general', profileSelected: false, language: 'en', inline: false, sheet: true, ab: false, depths: {},
+  read: 'auto', review: 'off', sketch: true, refs: true, blanks: true, user: null, onboarded: null,
+  send: DEFAULT_SEND, sendExplicit: false,
 }
 /** Re-read the project's names after a turn at most this often. */
 const REINDEX_MS = 45000
@@ -183,6 +185,7 @@ function configEvent(): Event {
     language: host.settings.language,
     sheet: host.settings.sheet && host.arm !== 'control',
     read: host.settings.read,
+    review: host.settings.review,
     sketch: host.settings.sketch,
     refs: host.settings.refs,
     send: host.settings.send,
@@ -191,6 +194,7 @@ function configEvent(): Event {
     depths: { ...userDepths(host.settings.user), ...host.settings.depths },
     audit: host.eventLog.active,
     profile: host.settings.profile,
+    profileSelected: host.settings.profileSelected,
     timing: TIMING,
     streaming: false,
     eagerPlan: EAGER_PLAN,
@@ -477,8 +481,7 @@ function decorate(v: View | null, text: string): PromptDecoration[] {
 }
 
 async function saveSettings($: $): Promise<void> {
-  const { mode, profile, language, inline, sheet, ab, depths, read, sketch, refs, blanks, user, onboarded, send } = host.settings
-  await $.store.set('settings', { mode, enabled: mode !== 'off', profile, language, inline, sheet, ab, depths, read, sketch, refs, blanks, user, onboarded, send })
+  await $.store.set('settings', { ...host.settings, enabled: host.settings.mode !== 'off' })
 }
 
 function enqueue(work: () => Promise<void>): Promise<void> {
@@ -593,7 +596,7 @@ type PanelQuestion = {
  */
 async function askAtEnter($: $, text: string): Promise<{ how: Held; addition?: string }> {
   const atEnter = !host.terminal && /desktop/i.test(host.appHost ?? '')
-  run($, { type: 'draft', now: now(), text, origin: 'paste', cursor: text.length, atEnter })
+  run($, { type: 'draft', now: now(), text, origin: 'paste', cursor: text.length, atEnter, afterEnter: true })
   if (host.settings.read === 'key') return { how: 'send' }
   const card = await readAtEnter($)
   if (!card) return { how: 'send' }
@@ -746,17 +749,18 @@ function sketchSvg(lines: readonly string[]): { source: string; height: number }
  * description), and draws nothing of a tree past that: the card keeps under it, the preview only whole.
  */
 function drawGateCard($: $, ui: Elements[RenderSurface], card: NonNullable<MargincueBand['card']>) {
-  const { Box, Text } = ui
+  const { Box, Button, Text } = ui
   // Drawn only in an app, whose table has a vector picture.
   const { Svg } = ui as Elements['desktop']
   const rowsOf = (text: string, cols = 34) => text.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(line.length / cols)), 0)
   const count = card.rows.length
   const yours = card.rows.filter((row) => row.chosen).length
+  const keep = card.rows.some((row) => !row.chosen && !row.openOnSend && row.selected.length)
   const send = card.pickedOnly ? ' · leaves suggested defaults to Claude' : ''
   const foot = `MarginCue \u00b7 ${count} choice${count === 1 ? '' : 's'} Claude would make${yours ? `, ${yours} yours` : ''}${send} \u00b7 to add a note, choose Other below`
   // 48 rows less the frame (border and padding: 4), the dialog's gap (1) and a margin (2); then the reading, the
   // line under it, and a gap between each part.
-  let budget = 48 - 4 - 1 - 2 - (card.read ? rowsOf(card.read) + 1 : 0) - rowsOf(foot) - 1
+  let budget = 48 - 4 - 1 - 2 - (card.read ? rowsOf(card.read) + 1 : 0) - rowsOf(foot) - 1 - (keep ? 2 : 0)
   const shown: MargincueRow[] = []
   for (const row of card.rows) {
     const need = row.origin === 'repo' && !row.chosen ? rowsOf(unmatched(row)) + 1 : 1
@@ -782,6 +786,7 @@ function drawGateCard($: $, ui: Elements[RenderSurface], card: NonNullable<Margi
           <Svg source={sketchSvg(sketch.lines).source} alt={alt} />
         </Box>
       ) : null}
+      {keep ? <Button key="card-keep" plain label="Keep all" onPress={() => act($, { type: 'cardKeep' })} /> : null}
       <Text dimColor>{foot}</Text>
     </Box>
   )
@@ -891,9 +896,10 @@ async function submitted($: $, typed: string, turnId?: string, addition?: string
   const sent = effects.find((fx): fx is SubmitEffect => fx.type === 'submit')
   // As written means exactly as typed: no picks, no standing preference, no sketch.
   const decided = raw ? typed : sent?.text ?? typed
-  // What the person added under "Other" joins the prompt itself, ahead of its Decisions.
-  const at = decided.lastIndexOf('\n\nDecisions:\n')
-  const text = !addition ? decided : at < 0 ? `${decided.replace(/\s+$/, '')}\n\n${addition}` : `${decided.slice(0, at)}\n\n${addition}${decided.slice(at)}`
+  // What the person added under "Other" joins the prompt, ahead of any choices or sketch.
+  const head = splitDecisions(typed).body.trimEnd()
+  const rest = decided.slice(head.length)
+  const text = addition ? `${head ? `${head}\n\n` : ''}${addition}${rest.trim() ? rest : ''}` : decided
   if (amendable) host.turn = { id: null, text }
   return { text, amendable }
 }
@@ -927,7 +933,8 @@ function act($: $, action: Action): void | Promise<void> {
   if (action.type === 'cardRead') {
     flushClear($)
     if (!host.shell) run($, { type: 'cardRead', now: now() })
-  } else if (action.type === 'cardFocus') run($, { type: 'cardFocus', dir: action.dir, row: action.row })
+  } else if (action.type === 'cardKeep') run($, { type: 'cardKeep', now: t })
+  else if (action.type === 'cardFocus') run($, { type: 'cardFocus', dir: action.dir, row: action.row })
   else if (action.type === 'cardCycle') run($, { type: 'cardCycle', now: t, row: action.row })
   else if (action.type === 'cardSet') run($, { type: 'cardSet', now: t, row: action.row, option: action.option })
   else if (action.type === 'cardDismiss') run($, { type: 'cardDismiss', now: t, row: action.row })
@@ -1222,15 +1229,20 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
     ...DEFAULTS,
     mode: stored?.mode && MODES.includes(stored.mode) ? stored.mode : stored?.enabled === false ? 'off' : DEFAULTS.mode,
     profile: stored?.profile && Object.hasOwn(host.assets.profiles, stored.profile) ? stored.profile : DEFAULTS.profile,
+    profileSelected: stored?.profileSelected === true && Object.hasOwn(host.assets.profiles, stored.profile ?? ''),
     language: stored?.language === 'auto' ? 'auto' : DEFAULTS.language,
     inline: stored?.inline === true,
     sheet: stored?.sheet !== false,
     ab: stored?.ab === true,
     read: stored?.read === 'key' ? 'key' : DEFAULTS.read,
+    review: stored?.review === 'auto' ? 'auto' : DEFAULTS.review,
     sketch: stored?.sketch !== false,
     refs: stored?.refs !== false,
     blanks: stored?.blanks !== false,
-    send: stored?.send === 'picked' || stored?.send === 'open' ? stored.send : DEFAULTS.send,
+    // Older settings saved the default "all" in the same field as an explicit choice.
+    send: stored?.send === 'picked' || stored?.send === 'open' || stored?.send === 'all' && stored.sendExplicit === true
+      ? stored.send : DEFAULT_SEND,
+    sendExplicit: stored?.sendExplicit === true,
     user: readUser(stored?.user),
     onboarded: stored?.onboarded === 'done' || stored?.onboarded === 'skipped' ? stored.onboarded : null,
     depths: Object.fromEntries(Object.keys(host.assets.profiles).flatMap((profile) => {
@@ -1258,7 +1270,7 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
   await $.command.register({
     name: 'margincue',
     description: 'MarginCue card, sketch, blanks, decisions, expert review and session status',
-    argumentHint: '[setup [reset]|state|mode|language en|auto|card on|off|read auto|key|sketch on|off|refs on|off|blanks on|off|send all|picked|open|ab on|off|status|review [profile]|edits|profile|status]',
+    argumentHint: '[setup [reset]|state|mode|language en|auto|card on|off|read auto|key|sketch on|off|refs on|off|blanks on|off|send all|picked|open|ab on|off|status|review [auto|off|profile]|edits|profile|status]',
     immediate: true,
   })
   await reopen($)
@@ -1367,6 +1379,7 @@ ${slot.source}` : 'Use /margincue why <slot>.')
         if (!Object.hasOwn(host.assets.profiles, arg)) return done(`No profile named "${arg}". Available profiles are ${names}.`)
         const previousProfile = settings.profile
         settings.profile = arg
+        settings.profileSelected = true
         log($, 'profile-changed', { previousProfile })
         run($, configEvent())
         await saveSettings($)
@@ -1449,12 +1462,21 @@ ${slot.source}` : 'Use /margincue why <slot>.')
         if (!send) return done(`MarginCue send is ${settings.send}.`)
         if (send !== 'all' && send !== 'picked' && send !== 'open') return done('Use /margincue send all|picked|open.')
         settings.send = send
+        settings.sendExplicit = true
         run($, configEvent())
         await saveSettings($)
         return done(`MarginCue send is ${send}.`)
       }
-      case 'review':
+      case 'review': {
+        const setting = arg.toLowerCase()
+        if (setting === 'auto' || setting === 'off') {
+          settings.review = setting
+          run($, configEvent())
+          await saveSettings($)
+          return done(`MarginCue automatic review is ${setting}.`)
+        }
         return done(await review($, arg || settings.profile, true))
+      }
       case 'edits': {
         const receipt = [...host.receipts.values()].reverse().find((item) => item.edits)
         if (!enabled() || !host.terminal || !receipt) return done('No receipt with edits to review.')
@@ -1476,7 +1498,7 @@ ${slot.source}` : 'Use /margincue why <slot>.')
         const { stats } = host
         const med = (list: number[]) => list.length ? `${median(list)} ms` : '–'
         return done([
-          `MarginCue is ${settings.mode} · profile ${settings.profile} · language ${settings.language} · depth ${currentDepth()} · card ${settings.sheet ? 'on' : 'off'} · read ${settings.read} · sketch ${settings.sketch ? 'on' : 'off'} · refs ${settings.refs ? 'on' : 'off'} · blanks ${settings.blanks ? 'on' : 'off'}`,
+          `MarginCue is ${settings.mode} · profile ${settings.profile} · language ${settings.language} · depth ${currentDepth()} · card ${settings.sheet ? 'on' : 'off'} · read ${settings.read} · review ${settings.review} · sketch ${settings.sketch ? 'on' : 'off'} · refs ${settings.refs ? 'on' : 'off'} · blanks ${settings.blanks ? 'on' : 'off'}`,
           `This session: ${stats.requests} model calls, ${stats.failures} failed · median first ${med(stats.first)} · median reply ${med(stats.full)}`,
           `${stats.submits} prompts sent, ${stats.attached} with decisions attached.`,
           `Project index: ${host.indexing ? 'reading…' : host.indexed ? 'ready' : 'none (not a git repository, or off)'}.`,
@@ -1484,7 +1506,7 @@ ${slot.source}` : 'Use /margincue why <slot>.')
           host.settings.user ? `You: ${describeUser(host.settings.user)} (/margincue setup changes this.)`
             : 'Run /margincue setup to set your level and the kinds of choices you make.',
           'On the card, alt+↑ moves to the next row and alt+↓ changes its value, without leaving the prompt.',
-          `ctrl+x tab focuses the card: ${CARD_READ_KEY} reads the draft, a number picks, x drops the row, s opens or closes the sketch, p attaches it to the prompt.`,
+          `ctrl+x tab focuses the card: ${CARD_READ_KEY} reads, r reviews, ${CARD_KEEP_KEY} keeps all, a number picks, x drops, s shows the sketch, p attaches it.`,
           'During a turn the card lists the choices the agent marked; switch one and it reaches the agent at its next step.',
           'After the turn, switching one writes the follow-up prompt into the composer.',
           'Use /margincue card|sketch|refs|blanks on|off, and /margincue ab on|off|status for the trial.',

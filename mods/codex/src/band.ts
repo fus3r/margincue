@@ -18,7 +18,7 @@ import type { Effect, Event, View } from '../../claude-code/core/index'
 import { ASSETS } from '../../claude-code/hooks/assets'
 import { layoutCard } from '../../claude-code/hooks/card-view'
 import { collectVocabulary } from '../../claude-code/hooks/repo-index'
-import { DARK } from '../../claude-code/hooks/segments'
+import { CARD_KEEP_KEY, DARK } from '../../claude-code/hooks/segments'
 import type { Action, Segment, Style } from '../../claude-code/hooks/segments'
 import type { MargincueCard } from '../../claude-code/types'
 import { cardConfig } from './card-config'
@@ -35,10 +35,10 @@ export const PROTOCOL = 1
 
 /** Relay to MarginCue. */
 export type Up =
-  | { t: 'hello'; protocol: number; cols: number; rows: number; max: number; full: boolean; readKey?: boolean }
+  | { t: 'hello'; protocol: number; cols: number; rows: number; max: number; full: boolean; readKey?: boolean; keepKey?: boolean }
   | { t: 'size'; cols: number; rows: number; max: number; full: boolean }
   | { t: 'draft'; text: string | null; approx: boolean; end: boolean; plain: boolean }
-  | { t: 'key'; key: 'up' | 'down' | 'read' }
+  | { t: 'key'; key: 'up' | 'down' | 'read' | 'keep' }
   | { t: 'click'; x: number; y: number }
   | { t: 'enter'; text: string; approx: boolean }
   | { t: 'wrote'; id: number; ok: boolean }
@@ -48,7 +48,7 @@ export type Up =
 /** MarginCue to the relay. */
 export type Down =
   | { t: 'band'; lines: string[] }
-  | { t: 'claims'; enter: boolean; arrows: boolean; read?: boolean }
+  | { t: 'claims'; enter: boolean; arrows: boolean; read?: boolean; keep?: boolean }
   | { t: 'enter'; do: 'pass' | 'append' | 'replace'; text?: string }
   | { t: 'write'; id: number; text: string; expect?: string }
 
@@ -93,6 +93,7 @@ export class Band {
   private coreText = ''
   private on = true
   private readKey = false
+  private keepKey = false
   /** The draft the card was hidden for (ctrl+] d), until it changes. */
   private dismissed: string | null = null
   private agent: Agent | null = null
@@ -152,6 +153,7 @@ export class Band {
     switch (message.t) {
       case 'hello':
         this.readKey = message.readKey === true
+        this.keepKey = message.keepKey === true
         this.size = { cols: message.cols, rows: message.rows, max: message.max, full: message.full }
         break
       case 'size':
@@ -300,9 +302,13 @@ export class Band {
     this.send(answer)
   }
 
-  private onKey(key: 'up' | 'down' | 'read'): void {
+  private onKey(key: 'up' | 'down' | 'read' | 'keep'): void {
     if (key === 'read') {
       if (this.on && this.draft.plain && this.shownCard()?.awaitingRead) this.run({ type: 'cardRead', now: now() })
+      return
+    }
+    if (key === 'keep') {
+      if (this.on && this.draft.plain && this.shownCard()?.stage === 'draft') this.act({ type: 'cardKeep' })
       return
     }
     const agent = this.shownAgent()
@@ -328,6 +334,7 @@ export class Band {
     if (action.type === 'cardFocus') this.run({ type: 'cardFocus', ...(action.dir && { dir: action.dir }), ...(action.row && { row: action.row }) })
     else if (action.type === 'cardCycle') this.run({ type: 'cardCycle', now: t, ...(action.row && { row: action.row }) })
     else if (action.type === 'cardSet') this.run({ type: 'cardSet', now: t, row: action.row, option: action.option })
+    else if (action.type === 'cardKeep') this.run({ type: 'cardKeep', now: t })
     else if (action.type === 'cardDismiss') this.run({ type: 'cardDismiss', now: t, row: action.row })
     else if (action.type === 'sketch') this.run({ type: 'sketch', now: t, action: action.action })
   }
@@ -409,7 +416,10 @@ export class Band {
       if (card) {
         // Until its first rows arrive the card is one line; then it takes its room in one step.
         const budget = full && (card.rows.length || (card.read && !card.reading)) ? max : 1
-        lines = layoutCard(card, cols, budget, { chords: true, extra: [], palette: P, sketchKey: 'ctrl+g', readHint: this.readHint() })
+        lines = layoutCard(card, cols, budget, {
+          chords: true, extra: [], palette: P, sketchKey: 'ctrl+g', readHint: this.readHint(),
+          keepHint: this.keepKey ? `ctrl+] ${CARD_KEEP_KEY}` : undefined,
+        })
           .slice(0, budget)
           .map((line, y) => drawLine(line, cols, y, this.hits, this.frame))
         if (!this.shownAgent()) this.mark(this.coreText)
@@ -425,16 +435,19 @@ export class Band {
     this.emit({ t: 'band', lines })
     const decisions = this.view?.decisions.length ?? 0
     const agentShown = Boolean(this.shownAgent())
-    // An indexed file question can go with the prompt as soon as its candidates are known.
-    const openFile = this.sendOpen && card?.rows.some((row) => row.origin === 'repo' && row.key.startsWith('file_') && !row.chosen)
-    const plan = card?.stage === 'draft' && (openFile || !card.reading && !card.awaitingRead)
+    // A question about a name can go with the prompt as soon as its candidates are known.
+    const openName = this.sendOpen && card?.rows.some((row) => row.origin === 'repo' && !row.chosen)
+    const plan = card?.stage === 'draft' && (openName || !card.reading && !card.awaitingRead)
     const hidden = this.dismissed !== null && this.dismissed === this.draft.text
     const read = this.readKey && this.readOnDemand && this.on && this.draft.plain
+    const keep = this.keepKey && this.draft.plain && card?.stage === 'draft' &&
+      card.rows.some((row) => !row.chosen && !row.openOnSend && row.selected.length)
     this.emit({
       t: 'claims',
       enter: this.on && !agentShown && !hidden && (decisions > 0 || plan) && Boolean(this.draft.text?.trim()),
       arrows: this.on && Boolean(card?.rows.length),
       ...(read && { read }),
+      ...(keep && { keep }),
     })
     this.spin(Boolean(card?.reading || card?.sketch?.drawing))
   }

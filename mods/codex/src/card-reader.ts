@@ -67,7 +67,7 @@ export class CardReader {
     const model = this.warm(cwd)
     const core = createCore(ASSETS, { readSubmittedPrompt: true })
     const currentCard = () => cardOf(core, seed, config.sketch !== false, config.refs !== false)
-    core.handle({ ...config, read: 'key', send: seed.send ?? 'all', sketch: false })
+    core.handle({ ...config, read: 'key', send: seed.send, sketch: false })
     core.handle({ type: 'learned', picks: readLearned(cwd) })
     const indexBy = started + INDEX_MS
     core.handle({ type: 'vocabulary', vocab: await before(vocabulary(cwd, indexBy), indexBy) })
@@ -113,7 +113,7 @@ export class CardReader {
   /** Draws the preview for the card with these choices (none: as Codex would decide them). */
   async sketch(source: CardSource, picks: Selections): Promise<ParsedSketch | null> {
     const { card, cwd, names, today } = source
-    const { decisions: choices } = cardPlan(card.rows, picks, card.send ?? 'all')
+    const { decisions: choices } = cardPlan(card.rows, picks, card.send)
     const prompt = buildSketchPrompt({ draft: card.prompt, read: card.reading, choices, names, today })
     const system = ASSETS.sketchSystem!.replace('{language}', 'in English')
     // The lightest model often answers that there is nothing to draw; the default one draws.

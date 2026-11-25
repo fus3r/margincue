@@ -9,6 +9,7 @@
      pencil's dotted underline (solid once they are yours), and a name the code lacks gets a squiggle. */
   :root {
     color-scheme: light;
+    background-color: #ffffff;
     --line: rgba(13, 13, 13, 0.1);
     --ink: #0d0d0d;
     --ink-2: #5d5d5d;
@@ -28,6 +29,7 @@
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       color-scheme: dark;
+      background-color: #212121;
       --line: rgba(255, 255, 255, 0.1); --ink: #ececec; --ink-2: #a8a8a8; --ink-3: #989898; --pencil: #7cb1ff;
       --pencil-wash: rgba(124, 177, 255, 0.14); --squiggle: #e3a54e; --squiggle-wash: rgba(227, 165, 78, 0.14);
       --wash: rgba(255, 255, 255, 0.06); --inset: rgba(255, 255, 255, 0.035); --rule: rgba(255, 255, 255, 0.28);
@@ -37,6 +39,7 @@
   }
   :root[data-theme="dark"] {
     color-scheme: dark;
+    background-color: #212121;
     --line: rgba(255, 255, 255, 0.1); --ink: #ececec; --ink-2: #a8a8a8; --ink-3: #989898; --pencil: #7cb1ff;
     --pencil-wash: rgba(124, 177, 255, 0.14); --squiggle: #e3a54e; --squiggle-wash: rgba(227, 165, 78, 0.14);
     --wash: rgba(255, 255, 255, 0.06); --inset: rgba(255, 255, 255, 0.035); --rule: rgba(255, 255, 255, 0.28);
@@ -218,6 +221,7 @@
       <form id="actions" class="actions">
         <input id="note" class="note" type="text" placeholder="Add a note for Codex" aria-label="Add a note for Codex" autocomplete="off">
         <button id="read" class="quiet" type="button" hidden>Read prompt</button>
+        <button id="keep" class="quiet" type="button" hidden>Keep all</button>
         <button id="as-written" class="quiet" type="button">Use as written</button>
         <button id="go" class="go" type="submit">Go ahead</button>
       </form>
@@ -254,7 +258,7 @@
     const options = row.options.map((option) => option.trim()).filter((option) => option !== "");
     if (!options.length) return `${head}?`;
     if (row.type === "range") {
-      return `${head} (${options.length > 4 ? `between ${options[0]} and ${options.at(-1)}` : options.join(" / ")})?`;
+      return `${head} (${options.join(" / ")})?`;
     }
     const sorted = [...options].sort((a, b) => a.localeCompare(b, "en", { numeric: true, sensitivity: "base" }));
     return `${head} (${row.type === "many" ? "any of: " : ""}${sorted.join(" / ")})?`;
@@ -276,8 +280,11 @@
   }
   var BLANK = new RegExp(`${BLANK_OPEN}([^${BLANK_OPEN}${BLANK_CLOSE}\\n]{1,280})${BLANK_CLOSE}`, "g");
 
+  // ../claude-code/core/types.ts
+  var DEFAULT_SEND = "open";
+
   // src/version.ts
-  var VERSION = "0.4.25";
+  var VERSION = "0.4.26";
 
   // src/widget-bridge.ts
   var legacy = () => window.openai;
@@ -404,17 +411,17 @@
     const value = rowValue(row, selected2);
     return decisionLine({ statement: row.statement, option: file ? `${value} (${file})` : value });
   }
-  function cardPlan(rows, picks2, send2) {
+  function cardPlan(rows, picks2, send2 = DEFAULT_SEND) {
     const decisions = [];
     const openChoices = [];
     for (const row of rows) {
       const repo = row.origin === "repo" || row.files !== void 0;
       const order = row.key === STEP_ORDER_KEY;
-      const defaultIsOpen = send2 === "all" && row.openOnSend;
+      const defaultIsOpen = row.openOnSend;
       const assumed = !repo && row.assumed.length && (row.learned || order || send2 === "all" && !defaultIsOpen) ? row.assumed : void 0;
       const selected2 = picks2[row.id] ?? assumed;
       if (selected2 !== void 0) decisions.push(choiceLine(row, selected2));
-      else if (defaultIsOpen || send2 === "open" && !order && (!repo || row.key?.startsWith("file_"))) openChoices.push(openChoiceLine(row));
+      else if (defaultIsOpen || send2 === "open" && !order) openChoices.push(openChoiceLine(row));
     }
     return { decisions, openChoices };
   }
@@ -424,7 +431,7 @@
 ${sketch.lines.join("\n")}
 \`\`\``;
   }
-  function composeFollowUp(rows, picks2, note2, asWritten2 = false, sketch = null, send2 = "all", fileReferences = []) {
+  function composeFollowUp(rows, picks2, note2, asWritten2 = false, sketch = null, send2 = DEFAULT_SEND, fileReferences = []) {
     if (asWritten2) return { text: AS_WRITTEN, decisions: [], extra: "" };
     const { decisions, openChoices } = cardPlan(rows, picks2, send2);
     const unresolved = fileReferences.filter((ref) => ref.rowId === void 0 || picks2[ref.rowId] === void 0);
@@ -455,6 +462,7 @@ ${decisions.map((line) => `- ${line}`).join("\n")}`] : [],
   var form = byId("actions");
   var note = byId("note");
   var readButton = byId("read");
+  var keepButton = byId("keep");
   var goButton = byId("go");
   var asWritten = byId("as-written");
   var errorMessage = byId("send-error");
@@ -482,6 +490,7 @@ ${decisions.map((line) => `- ${line}`).join("\n")}`] : [],
   var missingFor = (row) => card?.missing.find((missing) => missing.rowId === row.id);
   var stillReading = () => card?.state === "reading";
   var picksKey = () => JSON.stringify(Object.keys(picks).sort().map((id) => [id, picks[id]]));
+  var keepableRows = () => (card?.rows ?? []).filter((row) => !row.openOnSend && row.assumed.length);
   function listText(items) {
     if (!items.length) return "none";
     return items.length === 1 ? items[0] : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
@@ -566,7 +575,10 @@ ${decisions.map((line) => `- ${line}`).join("\n")}`] : [],
   function updateActions() {
     readButton.hidden = card?.state !== "waiting";
     readButton.disabled = startingRead || sending || sent;
-    const send2 = card?.send ?? "all";
+    const keepable = keepableRows();
+    keepButton.hidden = !keepable.length;
+    keepButton.disabled = sending || sent || keepable.every((row) => picks[row.id] !== void 0);
+    const send2 = card?.send ?? DEFAULT_SEND;
     goButton.title = send2 === "open" ? "Send your decisions and let Codex answer the open choices." : send2 === "picked" ? "Send your picks, saved choices, and written step order." : "Send the shown decisions, your note, and the preview. Codex settles open questions.";
     asWritten.title = "Codex starts with your prompt alone: it makes these choices itself.";
   }
@@ -622,7 +634,7 @@ ${decisions.map((line) => `- ${line}`).join("\n")}`] : [],
   function choose(index) {
     if (!open) return;
     const { row } = open;
-    const assumedBinds = (card?.send ?? "all") === "all" && !row.openOnSend;
+    const assumedBinds = (card?.send ?? DEFAULT_SEND) === "all" && !row.openOnSend;
     if (index < 0) delete picks[row.id];
     else if (row.type === "many") {
       const next = toggleSelection(row, selected(row), index);
@@ -896,6 +908,15 @@ ${decisions.map((line) => `- ${line}`).join("\n")}`] : [],
   });
   asWritten.addEventListener("click", () => void send(true));
   readButton.addEventListener("click", () => void startReading());
+  keepButton.addEventListener("click", () => {
+    var _a;
+    if (keepButton.disabled) return;
+    for (const row of keepableRows()) picks[_a = row.id] ?? (picks[_a] = [...row.assumed]);
+    closeMenu();
+    renderPlan();
+    schedulePreview(350);
+    fit();
+  });
   var bridge = connectWidget(showOutput);
   new ResizeObserver(() => fit()).observe(root);
 })();

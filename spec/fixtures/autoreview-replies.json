@@ -1,0 +1,72 @@
+[
+  {
+    "probe": "n:s04",
+    "profile": "system-design",
+    "depth": "essentials",
+    "draft": "Write a schema migration that splits users.name into first_name and last_name without downtime.",
+    "reply": "cutover_rollback | Splitting users.name without downtime leaves rollback unsettled.\n\nStale-reader risk: old code may still read `name` after cutover.",
+    "key": "cutover_rollback",
+    "statement": "After the switch, going back uses {}",
+    "options": [
+      "a period with both formats",
+      "a backup restore with downtime"
+    ],
+    "anchor": null
+  },
+  {
+    "probe": "n:s04",
+    "profile": "system-design",
+    "depth": "research",
+    "draft": "Write a schema migration that splits users.name into first_name and last_name without downtime.",
+    "reply": "cutover_rollback | Rollback relies on {} | a tested compatibility window | offline backup restore",
+    "key": "cutover_rollback",
+    "statement": "Rollback relies on {}",
+    "options": [
+      "a tested compatibility window",
+      "offline backup restore"
+    ],
+    "anchor": null
+  },
+  {
+    "probe": "n:s06",
+    "profile": "system-design",
+    "depth": "research",
+    "draft": "Add a read-through cache for team lookups and invalidate it when a member changes.",
+    "reply": "freshness_window\nInteractive reads use {} | synchronous origin reads | a 30-second bounded cache",
+    "key": "freshness_window",
+    "statement": "Interactive reads use {}",
+    "options": [
+      "synchronous origin reads",
+      "a 30-second bounded cache"
+    ],
+    "anchor": null
+  },
+  {
+    "probe": "n:s10",
+    "profile": "system-design",
+    "depth": "research",
+    "draft": "Define an SLO for the dashboard API and alert when we burn the error budget too fast.",
+    "reply": "service_indicator | service_indicator\nDefine an SLO for the dashboard API | request success ratio | latency threshold attainment",
+    "key": "service_indicator",
+    "statement": "The primary SLI is {}",
+    "options": [
+      "request success ratio",
+      "latency threshold attainment"
+    ],
+    "anchor": null
+  },
+  {
+    "probe": "n:s18",
+    "profile": "system-design",
+    "depth": "research",
+    "draft": "Shed load on the public API when the queue backlog passes 10k jobs.",
+    "reply": "overload_priority | Shed load on the public API when the queue backlog passes 10k jobs.",
+    "key": "overload_priority",
+    "statement": "Overload scheduling uses {}",
+    "options": [
+      "interactive class priority",
+      "FIFO across classes"
+    ],
+    "anchor": "Shed load on the public API when the queue backlog passes 10k jobs."
+  }
+]

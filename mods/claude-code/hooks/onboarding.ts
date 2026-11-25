@@ -88,7 +88,7 @@ export async function interview(ask: Ask): Promise<UserProfile> {
     options: WORK.map((w) => w.label), header: 'Your work', multiSelect: true,
   }), WORK)
   const levels: Record<string, Level> = {}
-  const profiles = ['general', ...preferredProfiles({ work: work.keys })]
+  const profiles = new Set(['general', ...preferredProfiles({ work: work.keys })])
   for (const profile of profiles) {
     const field = LEVELS[profile]!
     const level = levelOf(await ask(field.question, { options: field.options.map(([label]) => label), header: field.header }), field.options)
@@ -112,7 +112,10 @@ export function userDepths(user: UserProfile | null | undefined): Record<string,
 
 /** Profiles the person works in: a project needs less evidence to call for one of these. */
 export function preferredProfiles(user: Pick<UserProfile, 'work'>): string[] {
-  return WORK.flatMap((w) => 'profile' in w && user.work.includes(w.key) ? [w.profile] : [])
+  return [
+    ...WORK.flatMap((w) => 'profile' in w && user.work.includes(w.key) ? [w.profile] : []),
+    ...(user.work.includes('tooling') ? ['general'] : []),
+  ]
 }
 
 /** A stored profile, checked before use: anything malformed reads as not set up. */

@@ -1,5 +1,6 @@
 import { sameSelection, toggleSelection } from '../../claude-code/core/card'
 import type { ParsedSketch } from '../../claude-code/core/card'
+import { DEFAULT_SEND } from '../../claude-code/core/types'
 import { connectWidget } from './widget-bridge'
 import { composeFollowUp } from './widget-message'
 import type { CardOutput, FollowUp, Selections, WidgetRow } from './widget-message'
@@ -19,6 +20,7 @@ const drawing = byId('drawing')
 const form = byId<HTMLFormElement>('actions')
 const note = byId<HTMLInputElement>('note')
 const readButton = byId<HTMLButtonElement>('read')
+const keepButton = byId<HTMLButtonElement>('keep')
 const goButton = byId<HTMLButtonElement>('go')
 const asWritten = byId<HTMLButtonElement>('as-written')
 const errorMessage = byId('send-error')
@@ -51,6 +53,7 @@ const selected = (row: WidgetRow) => picks[row.id] ?? row.assumed
 const missingFor = (row: WidgetRow) => card?.missing.find((missing) => missing.rowId === row.id)
 const stillReading = () => card?.state === 'reading'
 const picksKey = () => JSON.stringify(Object.keys(picks).sort().map((id) => [id, picks[id]]))
+const keepableRows = () => (card?.rows ?? []).filter((row) => !row.openOnSend && row.assumed.length)
 
 function listText(items: string[]): string {
   if (!items.length) return 'none'
@@ -143,7 +146,10 @@ function renderPlan(): void {
 function updateActions(): void {
   readButton.hidden = card?.state !== 'waiting'
   readButton.disabled = startingRead || sending || sent
-  const send = card?.send ?? 'all'
+  const keepable = keepableRows()
+  keepButton.hidden = !keepable.length
+  keepButton.disabled = sending || sent || keepable.every((row) => picks[row.id] !== undefined)
+  const send = card?.send ?? DEFAULT_SEND
   goButton.title = send === 'open' ? 'Send your decisions and let Codex answer the open choices.'
     : send === 'picked' ? 'Send your picks, saved choices, and written step order.'
     : 'Send the shown decisions, your note, and the preview. Codex settles open questions.'
@@ -206,7 +212,7 @@ function renderMenu(): void {
 function choose(index: number): void {
   if (!open) return
   const { row } = open
-  const assumedBinds = (card?.send ?? 'all') === 'all' && !row.openOnSend
+  const assumedBinds = (card?.send ?? DEFAULT_SEND) === 'all' && !row.openOnSend
   if (index < 0) delete picks[row.id]
   else if (row.type === 'many') {
     const next = toggleSelection(row, selected(row), index)
@@ -507,5 +513,13 @@ form.addEventListener('submit', (event) => {
 })
 asWritten.addEventListener('click', () => void send(true))
 readButton.addEventListener('click', () => void startReading())
+keepButton.addEventListener('click', () => {
+  if (keepButton.disabled) return
+  for (const row of keepableRows()) picks[row.id] ??= [...row.assumed]
+  closeMenu()
+  renderPlan()
+  schedulePreview(350)
+  fit()
+})
 const bridge = connectWidget(showOutput)
 new ResizeObserver(() => fit()).observe(root)
