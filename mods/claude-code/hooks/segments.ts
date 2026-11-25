@@ -2,6 +2,8 @@
 // so a layout can be measured and tested without a surface. register.tsx turns
 // segments into Text and Button elements.
 
+import { cells } from '../core/frame'
+
 /** A theme key (`success`, `suggestion`, …), which follows the person's theme, or a raw colour. */
 export type Color = string
 
@@ -145,15 +147,7 @@ export function segmentsWidth(segments: Segment[]): number {
   return n
 }
 
-/** Approximate terminal cells: wide CJK and emoji count two. */
-export function cells(text: string): number {
-  let n = 0
-  for (const ch of text) {
-    const code = ch.codePointAt(0) ?? 0
-    n += code >= 0x1100 && (code <= 0x115f || (code >= 0x2e80 && code <= 0xa4cf) || (code >= 0xac00 && code <= 0xd7a3) || (code >= 0xf900 && code <= 0xfaff) || (code >= 0xfe30 && code <= 0xfe4f) || (code >= 0xff00 && code <= 0xff60) || (code >= 0x1f300 && code <= 0x1faff)) ? 2 : 1
-  }
-  return n
-}
+export { cells } from '../core/frame'
 
 /** Words of `value` in lines: the first at most `first` cells, the others `rest`; the last line ends in an ellipsis when cut. */
 export function wrapLines(value: string, first: number, rest: number, most: number): string[] {

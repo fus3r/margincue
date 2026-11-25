@@ -21,6 +21,7 @@
 
 import { joinList, sameSelection } from '../core/card'
 import { splitDecisions } from '../core/decisions'
+import { closesFrame, tidySketch } from '../core/frame'
 import type { MargincueCard, MargincueReceipt, MargincueRow } from '../types'
 import { CHORD_NEXT, CHORD_SWAP, DARK, cells, segmentsWidth, text, truncate, wrapLines } from './segments'
 import type { Color, Palette, Segment, Style } from './segments'
@@ -443,42 +444,9 @@ function captionLine(sketch: NonNullable<MargincueCard['sketch']>, P: Palette, w
   ]
 }
 
-const LEFT = '│┃║├┝┠╟╞┌┍┎┏╔╒╓╭└┕┖┗╚╘╙╰'
-const RIGHT = '│┃║┤┥┨╢╡┐┑┒┓╗╕╖╮┘┙┚┛╝╛╜╯'
-const SIDE = '│┃║'
-const RULE = /[─━═]/
 const BOX = /[─-╿]+/g
 
-/**
- * A sketch drawn in a frame, its right edge put straight: a model cannot count
- * cells, so the lines of one box end at different columns. Every framed line
- * is padded to the widest (rules with their own line character, text with
- * spaces, one cell clear of the edge). Lines outside the frame are kept as is.
- */
-export function tidySketch(lines: string[]): string[] {
-  // A side line the model left open ("│ Team owners  [Download CSV]") still belongs to the frame.
-  const closed = (t: string[]) => RIGHT.includes(t.at(-1)!)
-  const framed = lines.map((line) => {
-    const t = [...line.trim()]
-    return t.length >= 2 && LEFT.includes(t[0]!) && (closed(t) || SIDE.includes(t[0]!))
-  })
-  if (framed.filter(Boolean).length < 2) return lines
-  const indent = Math.min(...lines.filter((_, i) => framed[i]).map((line) => line.length - line.trimStart().length))
-  const parts = lines.map((line, i) => {
-    if (!framed[i]) return null
-    const t = [...line.trim()]
-    const side = SIDE.includes(t[0]!)
-    const shut = closed(t)
-    return { left: t[0]!, right: shut ? t.at(-1)! : t[0]!, body: (shut ? t.slice(1, -1) : t.slice(1)).join('').replace(/\s+$/, ''), side }
-  })
-  const inner = Math.max(...parts.map((part) => part ? cells(part.body) + (part.side ? 1 : 0) : 0))
-  return lines.map((line, i) => {
-    const part = parts[i]
-    if (!part) return line
-    const fill = part.side ? ' ' : (RULE.exec(part.body)?.[0] ?? '─')
-    return `${' '.repeat(indent)}${part.left}${part.body}${fill.repeat(Math.max(0, inner - cells(part.body)))}${part.right}`
-  })
-}
+export { tidySketch }
 
 /** Up to `most` lines of a sketch; one that does not fit keeps its first lines and its last (often a frame's bottom). */
 function pictureLines(drawing: string[], P: Palette, words: Words, most: number, key = 'ctrl+x tab, s'): Line[] {
@@ -498,8 +466,7 @@ function pictureLines(drawing: string[], P: Palette, words: Words, most: number,
   const head = drawing.slice(0, most - 2)
   const last = drawing.at(-1)!
   const gone = drawing.length - head.length - 1
-  const t = [...last.trim()]
-  const boxed = t.length >= 2 && LEFT.includes(t[0]!) && RIGHT.includes(t.at(-1)!)
+  const boxed = closesFrame(last)
   const note = `⋯ ${words.lines(gone)} · ${key}`
   if (!boxed) return [...head.map(draw), [text(note, { dim: true, italic: true })], draw(last)]
   const indent = last.length - last.trimStart().length

@@ -748,6 +748,47 @@ function parseExpert(reply, draft, catalog, reserved) {
   return out;
 }
 
+// ../claude-code/core/frame.ts
+function cells(text2) {
+  let n = 0;
+  for (const ch of text2) {
+    const code = ch.codePointAt(0) ?? 0;
+    n += code >= 4352 && (code <= 4447 || code >= 11904 && code <= 42191 || code >= 44032 && code <= 55203 || code >= 63744 && code <= 64255 || code >= 65072 && code <= 65103 || code >= 65280 && code <= 65376 || code >= 127744 && code <= 129791) ? 2 : 1;
+  }
+  return n;
+}
+var LEFT = "\u2502\u2503\u2551\u251C\u251D\u2520\u255F\u255E\u250C\u250D\u250E\u250F\u2554\u2552\u2553\u256D\u2514\u2515\u2516\u2517\u255A\u2558\u2559\u2570";
+var RIGHT = "\u2502\u2503\u2551\u2524\u2525\u2528\u2562\u2561\u2510\u2511\u2512\u2513\u2557\u2555\u2556\u256E\u2518\u2519\u251A\u251B\u255D\u255B\u255C\u256F";
+var SIDE = "\u2502\u2503\u2551";
+var RULE = /[─━═]/;
+function closesFrame(line) {
+  const t = [...line.trim()];
+  return t.length >= 2 && LEFT.includes(t[0]) && RIGHT.includes(t.at(-1));
+}
+function tidySketch(lines) {
+  const closed = (t) => RIGHT.includes(t.at(-1));
+  const framed = lines.map((line) => {
+    const t = [...line.trim()];
+    return t.length >= 2 && LEFT.includes(t[0]) && (closed(t) || SIDE.includes(t[0]));
+  });
+  if (framed.filter(Boolean).length < 2) return lines;
+  const indent = Math.min(...lines.filter((_, i) => framed[i]).map((line) => line.length - line.trimStart().length));
+  const parts = lines.map((line, i) => {
+    if (!framed[i]) return null;
+    const t = [...line.trim()];
+    const side = SIDE.includes(t[0]);
+    const shut = closed(t);
+    return { left: t[0], right: shut ? t.at(-1) : t[0], body: (shut ? t.slice(1, -1) : t.slice(1)).join("").replace(/\s+$/, ""), side };
+  });
+  const inner = Math.max(...parts.map((part) => part ? cells(part.body) + (part.side ? 1 : 0) : 0));
+  return lines.map((line, i) => {
+    const part = parts[i];
+    if (!part) return line;
+    const fill = part.side ? " " : RULE.exec(part.body)?.[0] ?? "\u2500";
+    return `${" ".repeat(indent)}${part.left}${part.body}${fill.repeat(Math.max(0, inner - cells(part.body)))}${part.right}`;
+  });
+}
+
 // ../claude-code/core/lru.ts
 var Lru = class {
   entries = /* @__PURE__ */ new Map();
@@ -3359,7 +3400,7 @@ ${prompt}`;
 ${this.sketchPrompt(card)}`) return null;
     return `Target output, as sketched (${sketch.title}):
 \`\`\`text
-${sketch.lines.join("\n")}
+${tidySketch(sketch.lines).join("\n")}
 \`\`\``;
   }
   // ---- after Enter: the agent's own choices, then the receipt ----------------------
@@ -9303,14 +9344,6 @@ function segmentsWidth(segments) {
   }
   return n;
 }
-function cells(text2) {
-  let n = 0;
-  for (const ch of text2) {
-    const code = ch.codePointAt(0) ?? 0;
-    n += code >= 4352 && (code <= 4447 || code >= 11904 && code <= 42191 || code >= 44032 && code <= 55203 || code >= 63744 && code <= 64255 || code >= 65072 && code <= 65103 || code >= 65280 && code <= 65376 || code >= 127744 && code <= 129791) ? 2 : 1;
-  }
-  return n;
-}
 function wrapLines(value, first, rest, most) {
   const words = value.split(/\s+/).filter(Boolean);
   const lines = [];
@@ -9717,34 +9750,7 @@ function captionLine(sketch, P3, words, width, note = "", named = false) {
     ...pin ? [text("   "), pin] : []
   ];
 }
-var LEFT = "\u2502\u2503\u2551\u251C\u251D\u2520\u255F\u255E\u250C\u250D\u250E\u250F\u2554\u2552\u2553\u256D\u2514\u2515\u2516\u2517\u255A\u2558\u2559\u2570";
-var RIGHT = "\u2502\u2503\u2551\u2524\u2525\u2528\u2562\u2561\u2510\u2511\u2512\u2513\u2557\u2555\u2556\u256E\u2518\u2519\u251A\u251B\u255D\u255B\u255C\u256F";
-var SIDE = "\u2502\u2503\u2551";
-var RULE = /[─━═]/;
 var BOX = /[─-╿]+/g;
-function tidySketch(lines) {
-  const closed = (t) => RIGHT.includes(t.at(-1));
-  const framed = lines.map((line) => {
-    const t = [...line.trim()];
-    return t.length >= 2 && LEFT.includes(t[0]) && (closed(t) || SIDE.includes(t[0]));
-  });
-  if (framed.filter(Boolean).length < 2) return lines;
-  const indent = Math.min(...lines.filter((_, i) => framed[i]).map((line) => line.length - line.trimStart().length));
-  const parts = lines.map((line, i) => {
-    if (!framed[i]) return null;
-    const t = [...line.trim()];
-    const side = SIDE.includes(t[0]);
-    const shut = closed(t);
-    return { left: t[0], right: shut ? t.at(-1) : t[0], body: (shut ? t.slice(1, -1) : t.slice(1)).join("").replace(/\s+$/, ""), side };
-  });
-  const inner = Math.max(...parts.map((part) => part ? cells(part.body) + (part.side ? 1 : 0) : 0));
-  return lines.map((line, i) => {
-    const part = parts[i];
-    if (!part) return line;
-    const fill = part.side ? " " : RULE.exec(part.body)?.[0] ?? "\u2500";
-    return `${" ".repeat(indent)}${part.left}${part.body}${fill.repeat(Math.max(0, inner - cells(part.body)))}${part.right}`;
-  });
-}
 function pictureLines(drawing, P3, words, most, key = "ctrl+x tab, s") {
   const draw = (line) => {
     const out = [];
@@ -9762,8 +9768,7 @@ function pictureLines(drawing, P3, words, most, key = "ctrl+x tab, s") {
   const head = drawing.slice(0, most - 2);
   const last = drawing.at(-1);
   const gone = drawing.length - head.length - 1;
-  const t = [...last.trim()];
-  const boxed = t.length >= 2 && LEFT.includes(t[0]) && RIGHT.includes(t.at(-1));
+  const boxed = closesFrame(last);
   const note = `\u22EF ${words.lines(gone)} \xB7 ${key}`;
   if (!boxed) return [...head.map(draw), [text(note, { dim: true, italic: true })], draw(last)];
   const indent = last.length - last.trimStart().length;
@@ -10077,7 +10082,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.15";
+var VERSION = "0.4.16";
 
 // src/model.ts
 var LIGHT = [/luna/i, /mini/i, /nano/i, /lite/i, /small/i, /flash/i, /terra/i];

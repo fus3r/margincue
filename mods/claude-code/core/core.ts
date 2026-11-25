@@ -5,6 +5,7 @@ import { DecisionDraft, DecisionState, decisionFor, eligibleSlot, stateCue } fro
 import type { SlotResult, StateChange } from './state'
 import type { Depth, Language, Mode, Rigor, Scope } from './bundle'
 import { expertPrompt, MAX_EXPERT_CUES, parseExpert } from './expert'
+import { tidySketch } from './frame'
 import { Lru } from './lru'
 import { normalize, parseReply } from './parse'
 import { parseProfile } from './profile'
@@ -1493,7 +1494,8 @@ export class Core {
     const sketch = card?.sketch
     if (!plan || !card || !sketch?.lines.length || !sketch.pinned) return null
     if (sketch.req !== null || sketch.key !== `${this.language}\n${this.sketchPrompt(card)}`) return null
-    return `Target output, as sketched (${sketch.title}):\n\`\`\`text\n${sketch.lines.join('\n')}\n\`\`\``
+    // The box as the card drew it: straight, though the model drew it unevenly.
+    return `Target output, as sketched (${sketch.title}):\n\`\`\`text\n${tidySketch(sketch.lines).join('\n')}\n\`\`\``
   }
 
   // ---- after Enter: the agent's own choices, then the receipt ----------------------

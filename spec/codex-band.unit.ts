@@ -30,7 +30,7 @@ function reader(): Reader {
     problem: null,
     start: async () => 'gpt-6-luna',
     async complete(system, _prompt, options) {
-      const reply = system.includes('Draw what the finished result will look like') ? 'title | Report\n- [Export CSV]\n' : CARD
+      const reply = system.includes('Draw what the finished result will look like') ? 'title | Report\n┌ Report ────────┐\n│ [Export CSV] │\n│ 12 rows      │\n└───────────────┘\n' : CARD
       options?.onDelta?.(reply)
       return { ok: true, text: reply, ms: 1 }
     },
@@ -110,6 +110,10 @@ test('a card left as it was goes with the prompt as the plan, with the sketch it
   assert.equal(answer.do, 'append')
   assert.match(answer.text ?? '', /^\n\nDecisions:\n- Export covers all rows\./)
   assert.match(answer.text ?? '', /\[Export CSV\]/)
+  // The box goes as the card drew it: straight, though the model drew it unevenly.
+  const box = (answer.text ?? '').split('\n').filter((line) => /^[┌│└]/.test(line))
+  assert.equal(box.length, 4)
+  assert.equal(new Set(box.map((line) => [...line].length)).size, 1, box.join('\n'))
   h.band.close()
 })
 
