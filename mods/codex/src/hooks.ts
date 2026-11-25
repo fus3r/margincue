@@ -2,6 +2,7 @@
 // the choices it makes for the person, as in Claude Code. When the turn stops: the receipt.
 
 import { parseBlanks } from '../../claude-code/core/card'
+import { FILE_REFERENCES_HEADING } from '../../claude-code/core/decisions'
 import { startsSomethingNew } from '../../claude-code/core/kickoff'
 import { ASSETS } from '../../claude-code/hooks/assets'
 import { startCard } from './card-store'
@@ -19,7 +20,7 @@ export function decisionsOf(prompt: string): string[] {
   if (at < 0) return []
   const lines = prompt.slice(at + '\nDecisions:\n'.length).split('\n')
   const end = lines.findIndex((line) => !line.startsWith('- '))
-  return lines.slice(0, end < 0 ? lines.length : end).map((line) => line.slice(2).trim())
+  return lines.slice(0, end < 0 ? lines.length : end).map((line) => line.slice(2).trim()).filter((line) => !line.startsWith(FILE_REFERENCES_HEADING))
 }
 
 /**

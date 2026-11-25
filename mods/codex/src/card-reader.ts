@@ -66,6 +66,7 @@ export class CardReader {
     const config = cardConfig(settings)
     const model = this.warm(cwd)
     const core = createCore(ASSETS, { readSubmittedPrompt: true })
+    const currentCard = () => cardOf(core, id, prompt, config.sketch !== false, config.refs !== false)
     core.handle({ ...config, sketch: false })
     core.handle({ type: 'learned', picks: readLearned(cwd) })
     const indexBy = started + INDEX_MS
@@ -92,7 +93,7 @@ export class CardReader {
           reply(rest.slice(0, end + 1), false)
           rest = rest.slice(end + 1)
           given = true
-          onUpdate?.(cardOf(core, id, prompt, config.sketch !== false))
+          onUpdate?.(currentCard())
         },
       })
       const outcome = await before(reading, started + READ_MS)
@@ -102,7 +103,7 @@ export class CardReader {
       else reply('', true, given)
     }
 
-    const card = cardOf(core, id, prompt, config.sketch !== false)
+    const card = currentCard()
     const view = core.currentView().card
     const names = (view?.mentions ?? []).filter((mention) => mention.status === 'found').slice(0, 8).map((mention) => mention.match ?? mention.phrase)
     return { card, cwd, names, today: config.today, kind: view?.kind ?? null }
@@ -111,7 +112,7 @@ export class CardReader {
   /** Draws the preview for the card with these choices (none: as Codex would decide them). */
   async sketch(source: CardSource, picks: Selections): Promise<ParsedSketch | null> {
     const { card, cwd, names, today } = source
-    const choices = card.rows.filter((row) => !row.files || picks[row.id] !== undefined)
+    const choices = card.rows.filter((row) => row.assumed.length > 0 || picks[row.id] !== undefined)
       .map((row) => choiceLine(row, picks[row.id] ?? row.assumed))
     const prompt = buildSketchPrompt({ draft: card.prompt, read: card.reading, choices, names, today })
     const system = ASSETS.sketchSystem!.replace('{language}', 'in English')
@@ -123,7 +124,7 @@ export class CardReader {
   }
 }
 
-function cardOf(core: ReturnType<typeof createCore>, id: string, prompt: string, sketchOn: boolean): WidgetCard {
+function cardOf(core: ReturnType<typeof createCore>, id: string, prompt: string, sketchOn: boolean, refsOn: boolean): WidgetCard {
   const view = core.currentView().card
   const missing = (view?.mentions ?? []).filter((mention) => mention.status === 'missing').map((mention) => {
     const row = view?.rows.find((row) => row.origin === 'repo' && row.statement === `"${mention.phrase}" is {}`)
@@ -133,8 +134,13 @@ function cardOf(core: ReturnType<typeof createCore>, id: string, prompt: string,
     const mention = missing.find((name) => name.rowId === id)
     return { id, label, type, statement, options, assumed: selected, ...(mention && { files: mention.candidates.map((candidate) => candidate.file) }) }
   })
+  const fileReferences = refsOn ? (view?.mentions ?? []).flatMap((mention) => {
+    if (!mention.places?.length) return []
+    const row = view?.rows.find((row) => row.origin === 'repo' && row.key.startsWith('file_') && row.start === mention.start)
+    return [{ phrase: mention.phrase, files: mention.places, ...(row && { rowId: row.id }) }]
+  }) : []
   const preview = sketchOn && Boolean(ASSETS.sketchSystem) && canSketch(view?.kind ?? null)
-  return { id, prompt, reading: view?.read ?? null, rows, missing, preview, sketch: null }
+  return { id, prompt, reading: view?.read ?? null, rows, missing, preview, sketch: null, ...(fileReferences.length && { fileReferences }) }
 }
 
 /** The picks a widget sent, if every one names a row and options it has. */

@@ -16,6 +16,8 @@ export type ParsedRow = {
   statement: string
   options: string[]
   defaults: number[]
+  /** Original labels for matching saved picks when a range's wording is adjusted. */
+  originalOptions?: string[]
   unit?: string
   anchor?: string
 }
@@ -109,10 +111,10 @@ function parseRow(fields: string[]): ParsedRow | null {
     if (![value, min, max].every((n) => Number.isFinite(n))) return null
     const steps = numberSteps(value!, min!, max!)
     if (steps.length < 2) return null
-    return {
+    return rangeWithUnits({
       ...base, type: 'range', options: steps.map((step) => formatNumber(step, unit)),
       defaults: [Math.max(0, steps.indexOf(clamp(value!, min!, max!)))], ...(unit && { unit }),
-    }
+    })
   }
 
   const starred: number[] = []
@@ -134,7 +136,47 @@ function parseRow(fields: string[]): ParsedRow | null {
   const defaults = type === 'many'
     ? (starred.length ? starred : options.map((_, i) => i))
     : [starred[0] ?? 0]
-  return { ...base, type, options, defaults }
+  const row = { ...base, type, options, defaults }
+  return type === 'range' ? rangeWithUnits(row) : row
+}
+
+const QUANTITY = /^[+-]?(?:\d+(?:[.,]\d+)*|\.\d+)(?:e[+-]?\d+)?/i
+const UNIT_WORDS = /^[\p{L}%°×][\p{L}\p{M}\d/%°×-]*(?: [\p{L}%°×][\p{L}\p{M}\d/%°×-]*)*/u
+const unitWords = (text: string): string[] => text.trimStart().match(UNIT_WORDS)?.[0].split(' ') ?? []
+
+function singularUnit(word: string): string {
+  if (!/^(?=[A-Za-z]*[aeiou])[A-Z]?[a-z]{3,}$/.test(word) || /(?:ss|us|is)$/.test(word)) return word
+  if (/[^aeiou]ies$/.test(word)) return `${word.slice(0, -3)}y`
+  if (/(?:sses|shes|ches|xes|zzes)$/.test(word)) return word.slice(0, -2)
+  return word.replace(/s$/, '')
+}
+
+/** Put a unit shared by the slot's suffix and its options into the options once. */
+function rangeWithUnits(row: ParsedRow): ParsedRow {
+  const after = row.statement.indexOf('{}') + 2
+  const tail = row.statement.slice(after)
+  const units = unitWords(tail)
+  const key = (word: string) => singularUnit(word).toLowerCase()
+  const overlaps = row.options.map((option) => {
+    const amount = option.match(QUANTITY)?.[0]
+    if (!amount) return 0
+    const words = unitWords(option.slice(amount.length))
+    for (let n = Math.min(words.length, units.length); n > 0; n--) {
+      if (words.slice(-n).every((word, i) => key(word) === key(units[i]!))) return n
+    }
+    return 0
+  })
+  const moved = Math.max(...overlaps)
+  const statement = moved ? row.statement.slice(0, after) + tail.trimStart().slice(units.slice(0, moved).join(' ').length) : row.statement
+  const options = row.options.map((option, i) => {
+    const rest = units.slice(overlaps[i], moved).join(' ')
+    const value = rest ? option + (overlaps[i] || tail.startsWith(' ') ? ' ' : '') + rest : option
+    const amount = value.match(QUANTITY)?.[0]
+    if (!amount || Number(amount.replace(/,/g, '')) !== 1) return value
+    const unit = value.slice(amount.length).replace(/\b[A-Za-z][a-z]+\b(?=\s*(?:$|[.,!?/]|per\b))/, singularUnit)
+    return amount + unit
+  })
+  return { ...row, statement, options, ...(options.some((option, i) => option !== row.options[i]) && { originalOptions: row.options }) }
 }
 
 /** About nine steps between min and max, rounded to readable values, the default among them. */
@@ -259,6 +301,15 @@ export function toggleSelection(row: Pick<ParsedRow, 'type'>, selected: number[]
 // ---- sketch -----------------------------------------------------------------
 
 export type ParsedSketch = { title: string; lines: string[] }
+
+/** Fall back to clear requests when a finished reading omitted its kind. */
+export function deriveCardKind(draft: string): CardKind | null {
+  const text = draft.trim()
+  if (/^(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:build|add|create|make)\s+\S/i.test(text)) return 'build'
+  if (text.endsWith('?') || /^(?:how|what|why|where|when|who|which)\s/i.test(text)) return 'ask'
+  if (/^(?:(?:i|we)\s+(?:want|need)\s+)?(?:a\s+)?new(?:\s+[\w-]+){0,4}\s+page\b/i.test(text)) return 'build'
+  return null
+}
 
 /** A sketch draws what it can know: something new, or an analysis. A change to existing code or screens it has not seen is not drawn. */
 export function canSketch(kind: CardKind | null): boolean {

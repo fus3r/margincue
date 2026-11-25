@@ -67,7 +67,8 @@ export type Event =
       streaming: boolean
       eagerPlan: boolean
     }
-  | { type: 'draft'; now: number; text: string; origin: Origin; edit?: Splice; cursor?: number }
+  /** `atEnter`: the host can show the draft's card while holding the prompt at Enter. */
+  | { type: 'draft'; now: number; text: string; origin: Origin; edit?: Splice; cursor?: number; atEnter?: boolean }
   | { type: 'timer'; now: number }
   | { type: 'reply'; now: number; req: number; text: string; done: boolean; ok?: boolean }
   | { type: 'pick'; now: number; cue: string; option: number | string | null; cycle?: true }
@@ -216,6 +217,8 @@ export type Effect =
       system: string[]
       prompt: string
       maxTokens: number
+      /** The sketch is for a card shown at Enter. */
+      atEnter?: true
     }
   | { type: 'cancel'; req: number }
   | { type: 'timer'; at: number | null }

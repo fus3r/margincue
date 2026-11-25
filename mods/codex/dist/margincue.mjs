@@ -346,6 +346,13 @@ function spliceFits(before2, after, edit) {
 }
 
 // ../claude-code/core/decisions.ts
+var FILE_REFERENCES_HEADING = "Where things are:";
+function fileReferenceDecision(refs) {
+  return {
+    statement: `${FILE_REFERENCES_HEADING} {}`,
+    option: refs.map(({ phrase, files }) => `${phrase} (${files.join(" or ")})`).join(", ")
+  };
+}
 function fillStatement(statement, option) {
   const at = statement.indexOf("{}");
   if (at === -1) return `${statement} ${option}`.trim();
@@ -1081,13 +1088,13 @@ function parseRow(fields) {
     if (![value, min, max].every((n) => Number.isFinite(n))) return null;
     const steps = numberSteps(value, min, max);
     if (steps.length < 2) return null;
-    return {
+    return rangeWithUnits({
       ...base,
       type: "range",
       options: steps.map((step) => formatNumber(step, unit)),
       defaults: [Math.max(0, steps.indexOf(clamp(value, min, max)))],
       ...unit && { unit }
-    };
+    });
   }
   const starred = [];
   const options2 = [];
@@ -1102,7 +1109,43 @@ function parseRow(fields) {
   const most = type === "one" ? 5 : 7;
   if (options2.length < 2 || options2.length > most) return null;
   const defaults = type === "many" ? starred.length ? starred : options2.map((_, i) => i) : [starred[0] ?? 0];
-  return { ...base, type, options: options2, defaults };
+  const row = { ...base, type, options: options2, defaults };
+  return type === "range" ? rangeWithUnits(row) : row;
+}
+var QUANTITY = /^[+-]?(?:\d+(?:[.,]\d+)*|\.\d+)(?:e[+-]?\d+)?/i;
+var UNIT_WORDS = /^[\p{L}%°×][\p{L}\p{M}\d/%°×-]*(?: [\p{L}%°×][\p{L}\p{M}\d/%°×-]*)*/u;
+var unitWords = (text2) => text2.trimStart().match(UNIT_WORDS)?.[0].split(" ") ?? [];
+function singularUnit(word) {
+  if (!/^(?=[A-Za-z]*[aeiou])[A-Z]?[a-z]{3,}$/.test(word) || /(?:ss|us|is)$/.test(word)) return word;
+  if (/[^aeiou]ies$/.test(word)) return `${word.slice(0, -3)}y`;
+  if (/(?:sses|shes|ches|xes|zzes)$/.test(word)) return word.slice(0, -2);
+  return word.replace(/s$/, "");
+}
+function rangeWithUnits(row) {
+  const after = row.statement.indexOf("{}") + 2;
+  const tail = row.statement.slice(after);
+  const units = unitWords(tail);
+  const key = (word) => singularUnit(word).toLowerCase();
+  const overlaps = row.options.map((option) => {
+    const amount = option.match(QUANTITY)?.[0];
+    if (!amount) return 0;
+    const words = unitWords(option.slice(amount.length));
+    for (let n = Math.min(words.length, units.length); n > 0; n--) {
+      if (words.slice(-n).every((word, i) => key(word) === key(units[i]))) return n;
+    }
+    return 0;
+  });
+  const moved = Math.max(...overlaps);
+  const statement = moved ? row.statement.slice(0, after) + tail.trimStart().slice(units.slice(0, moved).join(" ").length) : row.statement;
+  const options2 = row.options.map((option, i) => {
+    const rest = units.slice(overlaps[i], moved).join(" ");
+    const value = rest ? option + (overlaps[i] || tail.startsWith(" ") ? " " : "") + rest : option;
+    const amount = value.match(QUANTITY)?.[0];
+    if (!amount || Number(amount.replace(/,/g, "")) !== 1) return value;
+    const unit = value.slice(amount.length).replace(/\b[A-Za-z][a-z]+\b(?=\s*(?:$|[.,!?/]|per\b))/, singularUnit);
+    return amount + unit;
+  });
+  return { ...row, statement, options: options2, ...options2.some((option, i) => option !== row.options[i]) && { originalOptions: row.options } };
 }
 function numberSteps(value, min, max) {
   if (!(min < max)) return [];
@@ -1184,6 +1227,13 @@ function cycleSelection(row, selected, dir = 1) {
 function toggleSelection(row, selected, i) {
   if (row.type !== "many") return [i];
   return selected.includes(i) ? selected.filter((j) => j !== i) : [...selected, i].sort((a, b) => a - b);
+}
+function deriveCardKind(draft) {
+  const text2 = draft.trim();
+  if (/^(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:build|add|create|make)\s+\S/i.test(text2)) return "build";
+  if (text2.endsWith("?") || /^(?:how|what|why|where|when|who|which)\s/i.test(text2)) return "ask";
+  if (/^(?:(?:i|we)\s+(?:want|need)\s+)?(?:a\s+)?new(?:\s+[\w-]+){0,4}\s+page\b/i.test(text2)) return "build";
+  return null;
 }
 function canSketch(kind) {
   return kind === "build" || kind === "explore";
@@ -1570,8 +1620,9 @@ function candidates(text2) {
   }
   return out.sort((a, b) => a.start - b.start);
 }
-function where(index, entries) {
-  const sorted = [...entries].sort((a, b) => WHERE_RANK[index.vocab.entries[a].kind] - WHERE_RANK[index.vocab.entries[b].kind]);
+function where(index, entries, phrase) {
+  const rank = (i) => (index.vocab.entries[i].name === phrase ? 0 : 3) + WHERE_RANK[index.vocab.entries[i].kind];
+  const sorted = [...entries].sort((a, b) => rank(a) - rank(b));
   const files = [];
   for (const i of sorted) {
     for (const f of index.vocab.entries[i].files) {
@@ -1723,8 +1774,37 @@ function lookPath(index, phrase) {
     return dir ? [dir.slice(0, dir.indexOf(path) + path.length - 1)] : [];
   }
   const base = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
-  const files = (index.byBase.get(base) ?? []).map((i) => index.vocab.files[i]).filter((file) => !path.includes("/") || file.toLowerCase().endsWith(path.toLowerCase()));
-  return files.slice(0, 2);
+  return (index.byBase.get(base) ?? []).map((i) => index.vocab.files[i]).filter((file) => !path.includes("/") || file.toLowerCase().endsWith(path.toLowerCase()));
+}
+function definedIn(index, entries, phrase) {
+  const exact = entries.filter((i) => index.vocab.entries[i].name === phrase);
+  const pool = exact.length ? exact : entries;
+  const best = Math.min(...pool.map((i) => WHERE_RANK[index.vocab.entries[i].kind]));
+  const files = pool.filter((i) => WHERE_RANK[index.vocab.entries[i].kind] === best).flatMap((i) => index.vocab.entries[i].files.map((f) => index.vocab.files[f]));
+  return [...new Set(files)];
+}
+var MOST_PLACES = 4;
+var TESTISH = /(?:^|\/)(?:tests?|specs?|__tests__|__mocks__|mocks?|fixtures?|examples?|e2e|stories)(?:\/|$)|\.(?:test|spec|stories|e2e)\.[a-z]+$/i;
+var TALKS_TESTS = /\b(?:tests?|specs?|fixtures?|mocks?|examples?|stories)\b/i;
+function settle(mention, files, elsewhere, text2) {
+  const narrow = (from, keep) => {
+    const kept = from.filter(keep);
+    return kept.length ? kept : from;
+  };
+  let left = TALKS_TESTS.test(text2) ? files : narrow(files, (file) => !TESTISH.test(file));
+  left = narrow(left, (file) => elsewhere.has(file));
+  const parts = (file) => new Set(file.split("/").flatMap((part) => nameTokens(part.replace(/\.[^.]+$/, ""))));
+  const shared = left.map(parts).reduce((a, b) => new Set([...a].filter((t) => b.has(t))));
+  const own = new Set(nameTokens(mention.phrase));
+  const words = new Set(nameTokens(text2).filter((t) => !shared.has(t) && !own.has(t) && !VAGUE.has(t) && !COMMON.has(t)));
+  left = narrow(left, (file) => [...parts(file)].some((t) => words.has(t)));
+  if (left.length === 1) {
+    mention.files = [left[0], ...mention.files.filter((file) => file !== left[0])].slice(0, 2);
+    return;
+  }
+  left.sort((a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b));
+  mention.files = left.slice(0, 2);
+  mention.places = left.length <= MOST_PLACES ? left : [];
 }
 var NAMED_HERE = /\b(?:named|called|new|create|creating|add|adding|introduce|introducing)\s+(?:(?:a|an|the)\s+)?(?:new\s+)?[`'"\u2018\u201C]?$/i;
 var RENAMED_TO = /\b(?:rename|renamed|renaming|change|changed|changing|move|moved|moving|turn|turned|convert|converted)\b[^.!?\n]{0,60}?\b(?:to|into|as)\s+(?:(?:a|an|the)\s+)?[`'"\u2018\u201C]?$/i;
@@ -1733,6 +1813,7 @@ function ground(text2, index) {
   if (!index || !text2.trim()) return [];
   const out = [];
   const seen = /* @__PURE__ */ new Set();
+  const spread = /* @__PURE__ */ new Map();
   for (const c of candidates(text2)) {
     const key = nameKey(c.phrase);
     if (key.length < 2 || seen.has(key)) continue;
@@ -1740,7 +1821,9 @@ function ground(text2, index) {
       const files = lookPath(index, c.phrase);
       if (files.length) {
         seen.add(key);
-        out.push({ phrase: c.phrase, start: c.start, end: c.end, status: "found", match: c.phrase, kind: "path", as: c.strength === "code" ? "code" : "word", files, near: [] });
+        const mention = { phrase: c.phrase, start: c.start, end: c.end, status: "found", match: c.phrase, kind: "path", as: c.strength === "code" ? "code" : "word", files: files.slice(0, 2), near: [] };
+        out.push(mention);
+        if (c.strength === "code" && files.length > 1) spread.set(mention, files);
         continue;
       }
     }
@@ -1750,8 +1833,11 @@ function ground(text2, index) {
     const as = c.strength === "code" || c.strength === "ident" ? "code" : c.strength === "word" || c.strength === "prose" ? "word" : "name";
     if (usable.length) {
       seen.add(key);
-      const { match, kind, files } = where(index, usable);
-      out.push({ phrase: c.phrase, start: c.start, end: c.end, status: "found", match, kind, as, files, near: [] });
+      const { match, kind, files } = where(index, usable, c.phrase);
+      const mention = { phrase: c.phrase, start: c.start, end: c.end, status: "found", match, kind, as, files, near: [] };
+      out.push(mention);
+      const all = as === "code" ? definedIn(index, usable, c.phrase) : [];
+      if (all.length > 1) spread.set(mention, all);
       continue;
     }
     const multi = c.phrase.trim().split(/\s+/).length >= 2;
@@ -1764,6 +1850,8 @@ function ground(text2, index) {
     seen.add(key);
     out.push({ phrase: c.phrase, start: c.start, end: c.end, status: "missing", as, files: [], near });
   }
+  const elsewhere = new Set(out.filter((m) => m.status === "found" && !spread.has(m) && (m.as === "code" || m.files.length === 1)).flatMap((m) => m.files.slice(0, 1)));
+  for (const [mention, files] of spread) settle(mention, files, elsewhere, text2);
   return out;
 }
 var FOLDER_STOP = new Set(`this that with from have will your what when them they then than into just only also
@@ -2206,6 +2294,7 @@ var Core = class {
   turnRunning = false;
   now = 0;
   text = "";
+  atEnter = false;
   cursor = 0;
   textAt = 0;
   /** When the person last acted without editing (a pick, accept all, switching on): latency counts from here too. */
@@ -2242,7 +2331,7 @@ var Core = class {
         this.onConfig(event);
         break;
       case "draft":
-        this.onDraft(event.text, event.origin, event.edit, event.cursor);
+        this.onDraft(event.text, event.origin, event.edit, event.cursor, event.atEnter === true);
         break;
       case "timer":
         this.onTimer();
@@ -2486,10 +2575,11 @@ var Core = class {
       this.schedule("open", null);
     }
   }
-  onDraft(text2, origin, edit, cursor) {
+  onDraft(text2, origin, edit, cursor, atEnter) {
     const before2 = this.text;
     this.cursor = cursor === void 0 ? text2.length : Math.max(0, Math.min(text2.length, cursor));
     if (text2 === before2 && origin === "type") return;
+    this.atEnter = atEnter;
     const splice = edit !== void 0 && spliceFits(before2, text2, edit) ? edit : diffSplice(before2, text2);
     this.text = text2;
     if (text2 !== before2) {
@@ -2729,6 +2819,7 @@ ${target}` : asked;
     this.clearExpert();
     this.reviewAt = null;
     this.text = "";
+    this.atEnter = false;
     this.cursor = 0;
     this.textAt = this.now;
     this.cues = [];
@@ -3062,32 +3153,35 @@ ${expertPrompt(this.expertCatalog, slots)}`,
       return { ...mention, status: "found", match: near.name, files: near.file ? [near.file] : [] };
     });
   }
-  /** A name the draft uses that the code lacks becomes a row: which of the code's names it means. */
+  /**
+   * A name the draft uses that the code lacks becomes a row: which of the code's names it means. So does a name
+   * the code has in several files when the draft does not say which: which file it means.
+   */
   syncRepoRows() {
     const card = this.card;
     const rows = [];
     for (const mention of this.mentions) {
-      if (mention.status !== "missing" || !mention.near.length || rows.length >= 2) continue;
-      const key = `name_${nameKey(mention.phrase)}`.slice(0, 40);
+      const places = mention.status === "found" ? mention.places ?? [] : [];
+      if (rows.length >= 2 || places.length < 2 && (mention.status !== "missing" || !mention.near.length)) continue;
+      const key = `${places.length ? "file" : "name"}_${nameKey(mention.phrase)}`.slice(0, 40);
       if (card.dismissed.has(key)) continue;
-      const options2 = [...mention.near.map((near) => near.name), "new, to be added"];
-      const hints = [...mention.near.map((near) => near.file), ""];
+      const options2 = places.length ? places : [...mention.near.map((near) => near.name), "new, to be added"];
       const old = card.rows.find((row) => row.origin === "repo" && row.key === key);
       rows.push(old && sameOptions(old.options, options2) ? old : {
         id: old?.id ?? this.newId(),
         key,
         label: cutLabel(mention.phrase),
         type: "one",
-        statement: `"${mention.phrase}" is {}`,
+        statement: places.length ? `"${mention.phrase}" is the one in {}` : `"${mention.phrase}" is {}`,
         options: options2,
-        hints,
+        ...!places.length && { hints: [...mention.near.map((near) => near.file), ""] },
         defaults: [],
         origin: "repo",
         picked: null,
         anchor: mention.phrase
       });
     }
-    card.rows = [...rows, ...card.rows.filter((row) => row.origin !== "repo")];
+    card.rows = [...rows, ...card.rows.filter((row) => row.origin !== "repo" && (row.picked !== null || !asksPlaces(rows, row)))];
     this.fixCardFocus();
   }
   scheduleCard(origin, splice) {
@@ -3144,8 +3238,10 @@ ${this.index.vocab.map}`);
 [\u2026]
 ${this.text.slice(-DRAFT_MAX * 0.3)}` : this.text;
     const lines = ["Draft:", "<<<", draft, ">>>"];
-    const found = this.mentions.filter((m) => m.status === "found").slice(0, 8);
-    if (found.length) lines.push(`In the code: ${found.map((m) => `${m.phrase} (${m.files[0] ?? m.match})`).join("; ")}`);
+    const several = this.mentions.filter((m) => m.status === "found" && (m.places?.length ?? 0) > 1);
+    const found = this.mentions.filter((m) => m.status === "found" && !several.includes(m)).slice(0, 8);
+    if (found.length) lines.push(`In the code: ${found.map((m) => `${m.phrase} (${m.places ? "in many files" : m.files[0] ?? m.match})`).join("; ")}`);
+    if (several.length) lines.push(`In several files, which one is asked about separately (no row for this): ${several.map((m) => `${m.phrase} (${m.places.join(", ")})`).join("; ")}`);
     const missing = this.mentions.filter((m) => m.status === "missing");
     if (missing.length) lines.push(`Not found in the code, asked about separately (no row for these): ${missing.map((m) => `"${m.phrase}"`).join(", ")}`);
     const folders2 = this.index ? relatedFolders(this.text, this.index) : [];
@@ -3241,11 +3337,14 @@ ${lines.join("\n")}` : "";
   /** `partial`: part of a streamed reading. Rows it has not reached yet stay, and no sketch is asked for until it ends. */
   applyCard(card, parsed, text2, partial = false) {
     card.read = parsed.read ?? card.read;
-    card.kind = parsed.kind ?? card.kind;
+    if (!partial && this.atEnter && text2 === this.text && parsed.kind === null && (parsed.read || parsed.rows.length)) {
+      card.kind = deriveCardKind(text2);
+      if (card.kind !== null) this.metric("card-kind-derived", { card: card.id, kind: card.kind });
+    } else card.kind = parsed.kind ?? card.kind;
     if (!partial) card.readFor = text2;
     card.error = false;
     const steps = listsSteps(text2);
-    const fresh = this.stateDraft?.directive === "delegate" || card.kind === "ask" ? [] : parsed.rows.filter((row) => !card.dismissed.has(row.key) && (row.key !== STEP_ORDER_KEY || steps));
+    const fresh = this.stateDraft?.directive === "delegate" || card.kind === "ask" ? [] : parsed.rows.filter((row) => !card.dismissed.has(row.key) && (row.key !== STEP_ORDER_KEY || steps) && !asksPlaces(card.rows, row));
     const old = card.rows.filter((row) => row.origin === "model" || row.origin === "lens");
     const used = /* @__PURE__ */ new Set();
     const next = [];
@@ -3284,7 +3383,9 @@ ${lines.join("\n")}` : "";
   withLearned(row) {
     const habit = this.learned[row.key];
     if (!habit || habit.count < LEARNED_AFTER || row.type === "many") return row;
-    const at = row.options.findIndex((option) => normalize(option) === normalize(habit.label));
+    const label = normalize(habit.label);
+    const current = row.options.findIndex((option) => normalize(option) === label);
+    const at = current !== -1 ? current : row.originalOptions?.findIndex((option) => normalize(option) === label) ?? -1;
     return at === -1 ? row : { ...row, learned: [at] };
   }
   rowText(row, selected) {
@@ -3372,8 +3473,9 @@ ${lines.join("\n")}` : "";
     const card = this.card;
     const out = card.rows.filter((row) => row.picked !== null || whole && row.origin !== "repo" && (row.learned !== void 0 || !this.pickedOnly && row.defaults.length > 0 || row.key === STEP_ORDER_KEY && row.defaults.length > 0)).map((row) => ({ statement: row.statement, option: row.said ?? this.rowText(row, row.picked ?? row.learned ?? row.defaults) }));
     if (this.refsEnabled) {
-      const refs = this.mentions.filter((m) => m.status === "found" && m.files.length > 0 && m.as === "code").slice(0, REFS_MAX);
-      if (refs.length) out.push({ statement: "Where things are: {}", option: refs.map((m) => `${m.phrase} (${m.files[0]})`).join(", ") });
+      const picked = new Set(card.rows.filter((row) => row.origin === "repo" && row.picked !== null).map((row) => row.anchor));
+      const refs = this.mentions.filter((m) => m.status === "found" && m.files.length > 0 && m.as === "code" && !(m.places && (m.places.length < 2 || picked.has(m.phrase)))).slice(0, REFS_MAX);
+      if (refs.length) out.push(fileReferenceDecision(refs.map((m) => ({ phrase: m.phrase, files: m.places ?? m.files.slice(0, 1) }))));
     }
     return out;
   }
@@ -3471,7 +3573,8 @@ ${prompt}`;
       tier: "cloud",
       maxTokens: SKETCH_MAX_TOKENS,
       prompt,
-      system: [system.replace("{language}", english ? "in English" : "in the draft's language")]
+      system: [system.replace("{language}", english ? "in English" : "in the draft's language")],
+      ...this.atEnter && { atEnter: true }
     });
     this.metric("sketch-requested", { req, card: card.id });
   }
@@ -3529,7 +3632,7 @@ ${tidySketch(sketch.lines).join("\n")}
     }
     if (this.turnRunning) {
       if (this.card?.stage === "draft") this.clearCard();
-      this.pendingSent.push(...added.filter((line) => !line.startsWith("Where things are:")));
+      this.pendingSent.push(...added.filter((line) => !line.startsWith(FILE_REFERENCES_HEADING)));
       if (this.turnCard) this.card = this.turnCard;
       return;
     }
@@ -3538,7 +3641,7 @@ ${tidySketch(sketch.lines).join("\n")}
     if (!this.turnRunning) return;
     this.card = this.turnCard = this.newCard("turn");
     this.card.submittedAt = this.now;
-    this.card.sent = added.filter((line) => !line.startsWith("Where things are:"));
+    this.card.sent = added.filter((line) => !line.startsWith(FILE_REFERENCES_HEADING));
   }
   onBlank(label, choice, alternatives) {
     if (!this.enabled || this.sheetEnabled !== true || !this.turnRunning) return;
@@ -4005,6 +4108,9 @@ function isHostCommand(text2) {
 }
 function completesClause(splice, clauses) {
   return (clauses ? /[,.?!:;\n][)"'”’»\]]*[ \t]*$/ : /[.?!\n]$/).test(splice.text);
+}
+function asksPlaces(rows, row) {
+  return rows.some((repo) => repo.origin === "repo" && repo.key.startsWith("file_") && new Set(row.options.map((option) => repo.options.filter((path) => option.includes(path)).sort((a, b) => b.length - a.length)[0]).filter(Boolean)).size >= 2);
 }
 function sameOptions(a, b) {
   if (a.length !== b.length) return false;
@@ -10214,7 +10320,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.21";
+var VERSION = "0.4.22";
 var MIN_CODEX = "0.171";
 function tooOld(output2) {
   const match = /codex-cli (\d+)\.(\d+)\.(\d+)/.exec(output2);
@@ -11281,7 +11387,7 @@ function readRecord(id) {
   if (!isCardId(id)) return null;
   try {
     const record = JSON.parse(readFileSync3(fileOf(id), "utf8"));
-    return record?.id === id ? settle(record) : null;
+    return record?.id === id ? settle2(record) : null;
   } catch {
     return null;
   }
@@ -11308,7 +11414,7 @@ async function waitForRecord(id, after, ms) {
     await new Promise((resolve2) => setTimeout(resolve2, POLL_MS));
   }
 }
-function settle(record) {
+function settle2(record) {
   if (record.pid === void 0 || record.state !== "reading" && record.sketchState !== "drawing" || alive(record.pid)) return record;
   if (record.state === "reading") record.state = "failed";
   if (record.sketchState === "drawing") record.sketchState = "failed";
@@ -11386,7 +11492,7 @@ function decisionsOf(prompt) {
   if (at < 0) return [];
   const lines = prompt.slice(at + "\nDecisions:\n".length).split("\n");
   const end = lines.findIndex((line) => !line.startsWith("- "));
-  return lines.slice(0, end < 0 ? lines.length : end).map((line) => line.slice(2).trim());
+  return lines.slice(0, end < 0 ? lines.length : end).map((line) => line.slice(2).trim()).filter((line) => !line.startsWith(FILE_REFERENCES_HEADING));
 }
 var READING_FIRST = [
   "# MarginCue's card (the user did not see it before sending)",
@@ -11555,6 +11661,7 @@ var CardReader = class {
     const config = cardConfig(settings);
     const model = this.warm(cwd);
     const core = createCore(ASSETS, { readSubmittedPrompt: true });
+    const currentCard = () => cardOf(core, id, prompt, config.sketch !== false, config.refs !== false);
     core.handle({ ...config, sketch: false });
     core.handle({ type: "learned", picks: readLearned(cwd) });
     const indexBy = started + INDEX_MS;
@@ -11577,7 +11684,7 @@ var CardReader = class {
           reply(rest.slice(0, end + 1), false);
           rest = rest.slice(end + 1);
           given = true;
-          onUpdate?.(cardOf(core, id, prompt, config.sketch !== false));
+          onUpdate?.(currentCard());
         }
       });
       const outcome = await before(reading, started + READ_MS);
@@ -11586,7 +11693,7 @@ var CardReader = class {
       if (outcome?.ok) reply(rest, true);
       else reply("", true, given);
     }
-    const card = cardOf(core, id, prompt, config.sketch !== false);
+    const card = currentCard();
     const view = core.currentView().card;
     const names = (view?.mentions ?? []).filter((mention) => mention.status === "found").slice(0, 8).map((mention) => mention.match ?? mention.phrase);
     return { card, cwd, names, today: config.today, kind: view?.kind ?? null };
@@ -11594,7 +11701,7 @@ var CardReader = class {
   /** Draws the preview for the card with these choices (none: as Codex would decide them). */
   async sketch(source, picks2) {
     const { card, cwd, names, today } = source;
-    const choices = card.rows.filter((row) => !row.files || picks2[row.id] !== void 0).map((row) => choiceLine(row, picks2[row.id] ?? row.assumed));
+    const choices = card.rows.filter((row) => row.assumed.length > 0 || picks2[row.id] !== void 0).map((row) => choiceLine(row, picks2[row.id] ?? row.assumed));
     const prompt = buildSketchPrompt({ draft: card.prompt, read: card.reading, choices, names, today });
     const system = ASSETS.sketchSystem.replace("{language}", "in English");
     const reply = await before(this.warm(cwd).complete(system, prompt, { strong: true }), Date.now() + SKETCH_MS);
@@ -11603,7 +11710,7 @@ var CardReader = class {
     return sketch && { title: sketch.title, lines: tidySketch(sketch.lines) };
   }
 };
-function cardOf(core, id, prompt, sketchOn) {
+function cardOf(core, id, prompt, sketchOn, refsOn) {
   const view = core.currentView().card;
   const missing = (view?.mentions ?? []).filter((mention) => mention.status === "missing").map((mention) => {
     const row = view?.rows.find((row2) => row2.origin === "repo" && row2.statement === `"${mention.phrase}" is {}`);
@@ -11613,8 +11720,13 @@ function cardOf(core, id, prompt, sketchOn) {
     const mention = missing.find((name) => name.rowId === id2);
     return { id: id2, label, type, statement, options: options2, assumed: selected, ...mention && { files: mention.candidates.map((candidate) => candidate.file) } };
   });
+  const fileReferences = refsOn ? (view?.mentions ?? []).flatMap((mention) => {
+    if (!mention.places?.length) return [];
+    const row = view?.rows.find((row2) => row2.origin === "repo" && row2.key.startsWith("file_") && row2.start === mention.start);
+    return [{ phrase: mention.phrase, files: mention.places, ...row && { rowId: row.id } }];
+  }) : [];
   const preview = sketchOn && Boolean(ASSETS.sketchSystem) && canSketch(view?.kind ?? null);
-  return { id, prompt, reading: view?.read ?? null, rows, missing, preview, sketch: null };
+  return { id, prompt, reading: view?.read ?? null, rows, missing, preview, sketch: null, ...fileReferences.length && { fileReferences } };
 }
 function validPicks(rows, value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;

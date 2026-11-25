@@ -28,6 +28,11 @@ export type Mention = {
   as: 'code' | 'name' | 'word'
   /** Up to two files, definitions first. */
   files: string[]
+  /**
+   * A name written as code that the code has in several files, when nothing else in the draft says which: the
+   * files it may mean (two to four), or none when it is in more files than one question can offer.
+   */
+  places?: string[]
   /** For a missing name: the closest names the code does have. */
   near: { name: string; file: string }[]
 }
@@ -185,8 +190,10 @@ function candidates(text: string): Candidate[] {
   return out.sort((a, b) => a.start - b.start)
 }
 
-function where(index: GroundIndex, entries: number[]): { match: string; kind: EntryKind; files: string[] } {
-  const sorted = [...entries].sort((a, b) => WHERE_RANK[index.vocab.entries[a]!.kind] - WHERE_RANK[index.vocab.entries[b]!.kind])
+/** The draft's own spelling first (`inviteTeamMember` is not `InviteTeamMember`), then definitions first. */
+function where(index: GroundIndex, entries: number[], phrase: string): { match: string; kind: EntryKind; files: string[] } {
+  const rank = (i: number) => (index.vocab.entries[i]!.name === phrase ? 0 : 3) + WHERE_RANK[index.vocab.entries[i]!.kind]
+  const sorted = [...entries].sort((a, b) => rank(a) - rank(b))
   const files: string[] = []
   for (const i of sorted) {
     for (const f of index.vocab.entries[i]!.files) {
@@ -269,9 +276,49 @@ function lookPath(index: GroundIndex, phrase: string): string[] {
     return dir ? [dir.slice(0, dir.indexOf(path) + path.length - 1)] : []
   }
   const base = path.slice(path.lastIndexOf('/') + 1).toLowerCase()
-  const files = (index.byBase.get(base) ?? []).map((i) => index.vocab.files[i]!)
+  return (index.byBase.get(base) ?? []).map((i) => index.vocab.files[i]!)
     .filter((file) => !path.includes('/') || file.toLowerCase().endsWith(path.toLowerCase()))
-  return files.slice(0, 2)
+}
+
+/** Every file a name may mean: the draft's own spelling when the code has it, then its strongest kind of entry. */
+function definedIn(index: GroundIndex, entries: number[], phrase: string): string[] {
+  const exact = entries.filter((i) => index.vocab.entries[i]!.name === phrase)
+  const pool = exact.length ? exact : entries
+  const best = Math.min(...pool.map((i) => WHERE_RANK[index.vocab.entries[i]!.kind]))
+  const files = pool.filter((i) => WHERE_RANK[index.vocab.entries[i]!.kind] === best)
+    .flatMap((i) => index.vocab.entries[i]!.files.map((f) => index.vocab.files[f]!))
+  return [...new Set(files)]
+}
+
+/** More files than this and a name says too little to ask which: the app's question panel takes four options. */
+const MOST_PLACES = 4
+const TESTISH = /(?:^|\/)(?:tests?|specs?|__tests__|__mocks__|mocks?|fixtures?|examples?|e2e|stories)(?:\/|$)|\.(?:test|spec|stories|e2e)\.[a-z]+$/i
+const TALKS_TESTS = /\b(?:tests?|specs?|fixtures?|mocks?|examples?|stories)\b/i
+
+/**
+ * Which of several files a name written as code means, as far as the draft says: another name it uses that lives
+ * in one of them, or a word only some of their paths have ("the payments actions.ts"). A test or example copy is
+ * not what a draft means unless it speaks of one. One file left: the name points there. Several: `places`.
+ */
+function settle(mention: Mention, files: string[], elsewhere: Set<string>, text: string): void {
+  const narrow = (from: string[], keep: (file: string) => boolean) => {
+    const kept = from.filter(keep)
+    return kept.length ? kept : from
+  }
+  let left = TALKS_TESTS.test(text) ? files : narrow(files, (file) => !TESTISH.test(file))
+  left = narrow(left, (file) => elsewhere.has(file))
+  const parts = (file: string) => new Set(file.split('/').flatMap((part) => nameTokens(part.replace(/\.[^.]+$/, ''))))
+  const shared = left.map(parts).reduce((a, b) => new Set([...a].filter((t) => b.has(t))))
+  const own = new Set(nameTokens(mention.phrase))
+  const words = new Set(nameTokens(text).filter((t) => !shared.has(t) && !own.has(t) && !VAGUE.has(t) && !COMMON.has(t)))
+  left = narrow(left, (file) => [...parts(file)].some((t) => words.has(t)))
+  if (left.length === 1) {
+    mention.files = [left[0]!, ...mention.files.filter((file) => file !== left[0])].slice(0, 2)
+    return
+  }
+  left.sort((a, b) => a.split('/').length - b.split('/').length || a.localeCompare(b))
+  mention.files = left.slice(0, 2)
+  mention.places = left.length <= MOST_PLACES ? left : []
 }
 
 /**
@@ -287,6 +334,8 @@ export function ground(text: string, index: GroundIndex | null): Mention[] {
   if (!index || !text.trim()) return []
   const out: Mention[] = []
   const seen = new Set<string>()
+  /** Names written as code that the code has in several files, settled once every name is known. */
+  const spread = new Map<Mention, string[]>()
   for (const c of candidates(text)) {
     const key = nameKey(c.phrase)
     if (key.length < 2 || seen.has(key)) continue
@@ -294,7 +343,9 @@ export function ground(text: string, index: GroundIndex | null): Mention[] {
       const files = lookPath(index, c.phrase)
       if (files.length) {
         seen.add(key)
-        out.push({ phrase: c.phrase, start: c.start, end: c.end, status: 'found', match: c.phrase, kind: 'path', as: c.strength === 'code' ? 'code' : 'word', files, near: [] })
+        const mention: Mention = { phrase: c.phrase, start: c.start, end: c.end, status: 'found', match: c.phrase, kind: 'path', as: c.strength === 'code' ? 'code' : 'word', files: files.slice(0, 2), near: [] }
+        out.push(mention)
+        if (c.strength === 'code' && files.length > 1) spread.set(mention, files)
         continue
       }
     }
@@ -309,8 +360,11 @@ export function ground(text: string, index: GroundIndex | null): Mention[] {
     const as = c.strength === 'code' || c.strength === 'ident' ? 'code' : c.strength === 'word' || c.strength === 'prose' ? 'word' : 'name'
     if (usable.length) {
       seen.add(key)
-      const { match, kind, files } = where(index, usable)
-      out.push({ phrase: c.phrase, start: c.start, end: c.end, status: 'found', match, kind, as, files, near: [] })
+      const { match, kind, files } = where(index, usable, c.phrase)
+      const mention: Mention = { phrase: c.phrase, start: c.start, end: c.end, status: 'found', match, kind, as, files, near: [] }
+      out.push(mention)
+      const all = as === 'code' ? definedIn(index, usable, c.phrase) : []
+      if (all.length > 1) spread.set(mention, all)
       continue
     }
     const multi = c.phrase.trim().split(/\s+/).length >= 2
@@ -325,6 +379,10 @@ export function ground(text: string, index: GroundIndex | null): Mention[] {
     seen.add(key)
     out.push({ phrase: c.phrase, start: c.start, end: c.end, status: 'missing', as, files: [], near })
   }
+  // Only a resolved name can point another name at a file.
+  const elsewhere = new Set(out.filter((m) => m.status === 'found' && !spread.has(m) && (m.as === 'code' || m.files.length === 1))
+    .flatMap((m) => m.files.slice(0, 1)))
+  for (const [mention, files] of spread) settle(mention, files, elsewhere, text)
   return out
 }
 

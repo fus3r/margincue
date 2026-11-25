@@ -6,7 +6,7 @@
 // band above the prompt; the `submit` effect rewrites the sent text.
 
 import { atom, read } from 'claude-code'
-import type { Elements, EngineInterface, PromptDecoration, Register, RenderSurface } from 'claude-code'
+import type { Elements, EngineInterface, ModelCompleteResult, PromptDecoration, Register, RenderSurface } from 'claude-code'
 
 import { createCore, DEPTHS, isHostCommand, MODES, SCOPES } from '../core/index'
 import type { Assets, Core, Depth, Effect, Event, LanguageSetting, Mode, Origin, ReadingMode, Scope, SendSetting, StateLoad, Timing, View } from '../core/index'
@@ -35,6 +35,7 @@ const MODEL = 'haiku'
 /** Measured (bench/latency/claude-mod.md): `low` keeps the model from thinking first. */
 const EFFORT = 'low' as const
 const TIMEOUT_MS = 8000
+const DESKTOP_SKETCH_TIMEOUT_MS = 20000
 /** How long a `clear` of the box waits for the prompt.submit that usually follows it. */
 const CLEAR_GRACE_MS = 1500
 /** Timing the core gets from this host. */
@@ -206,7 +207,7 @@ function run($: $, event: Event, paint = true): Effect[] {
     if (paint) repaint($)
   }
   for (const fx of effects) {
-    if (fx.type === 'request') request($, fx)
+    if (fx.type === 'request') void request($, fx)
     else if (fx.type === 'cancel') {
       host.inflight.get(fx.req)?.abort()
       host.inflight.delete(fx.req)
@@ -265,39 +266,40 @@ function repaint($: $): void {
   void $.prompt.paint({ text: view.text, decorations: decorate(view, view.text) }).catch(() => {})
 }
 
-function request($: $, fx: RequestEffect): void {
+async function request($: $, fx: RequestEffect): Promise<void> {
   const abort = new AbortController()
   host.inflight.set(fx.req, abort)
-  host.stats.requests++
-  const requestedAt = now()
-  log($, 'request', { req: fx.req, tier: fx.kind === 'full' || fx.kind === 'plan' ? 'cloud' : fx.kind })
+  const atEnter = fx.kind === 'sketch' && fx.atEnter === true
+  const attempts = atEnter ? 2 : 1
+  const timeoutMs = atEnter ? DESKTOP_SKETCH_TIMEOUT_MS : TIMEOUT_MS
   // The fixed system text is the same on every call: mark its end for the prompt cache.
   const system = fx.system.map((text, i) => (i === fx.system.length - 1 ? { text, cache: true as const } : { text }))
-  void $.model
-    .complete(
-      { model: MODEL, system, prompt: fx.prompt, maxTokens: fx.maxTokens, effort: EFFORT, timeoutMs: TIMEOUT_MS },
-      { signal: abort.signal },
-    )
-    .then((r) => {
-      if (abort.signal.aborted) return
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    host.stats.requests++
+    const requestedAt = now()
+    log($, 'request', { req: fx.req, tier: fx.kind === 'full' || fx.kind === 'plan' ? 'cloud' : fx.kind })
+    let reply: ModelCompleteResult | undefined
+    try {
+      reply = await $.model.complete(
+        { model: MODEL, system, prompt: fx.prompt, maxTokens: fx.maxTokens, effort: EFFORT, timeoutMs },
+        { signal: abort.signal },
+      )
+    } catch {
+      // The engine can reject a completion it refuses to send.
+    }
+    if (abort.signal.aborted) return
+    if (reply?.isAnswered) {
       host.inflight.delete(fx.req)
-      if (r.isAnswered) {
-        run($, { type: 'reply', now: now(), req: fx.req, text: r.text, done: true })
-        return
-      }
-      host.stats.failures++
-      log($, 'request-failed', { req: fx.req, reason: r.reason, ms: Math.round(now() - requestedAt) })
-      run($, { type: 'reply', now: now(), req: fx.req, text: '', done: true, ok: false })
-    })
-    .catch(() => {
-      if (!abort.signal.aborted) failed($, fx.req)
-    })
-}
-
-function failed($: $, req: number): void {
-  host.inflight.delete(req)
-  host.stats.failures++
-  run($, { type: 'reply', now: now(), req, text: '', done: true, ok: false })
+      run($, { type: 'reply', now: now(), req: fx.req, text: reply.text, done: true })
+      return
+    }
+    host.stats.failures++
+    const reason = reply?.reason ?? 'rejected'
+    if (reply || atEnter) log($, 'request-failed', { req: fx.req, reason, ms: Math.round(now() - requestedAt) })
+    if (attempt < attempts) metric($, { type: 'metric', name: 'sketch-retry', req: fx.req, reason })
+  }
+  host.inflight.delete(fx.req)
+  run($, { type: 'reply', now: now(), req: fx.req, text: '', done: true, ok: false })
 }
 
 function metric($: $, fx: MetricEffect): void {
@@ -582,7 +584,8 @@ type PanelQuestion = {
  * own time. Closing it stops the questions; what is set so far goes. Nothing open: the prompt goes once read.
  */
 async function askAtEnter($: $, text: string): Promise<{ how: Held; addition?: string }> {
-  run($, { type: 'draft', now: now(), text, origin: 'paste', cursor: text.length })
+  const atEnter = !host.terminal && /desktop/i.test(host.appHost ?? '')
+  run($, { type: 'draft', now: now(), text, origin: 'paste', cursor: text.length, atEnter })
   if (host.settings.read === 'key') return { how: 'send' }
   const card = await readAtEnter($)
   if (!card) return { how: 'send' }
@@ -639,7 +642,7 @@ async function gateAtEnter($: $): Promise<{ how: Held; addition?: string }> {
 
 /** A choice's name on its chip: the card's label, acronyms kept whole. */
 function chipName(row: MargincueRow): string {
-  if (row.origin === 'repo') return `${quotedName(row)} is`
+  if (row.origin === 'repo') return `${quotedName(row)} is${inSeveral(row) ? ' in' : ''}`
   const words = row.label.split(' ').map((word) => /^(csv|api|ui|url|id|ids|db|sql|pdf|json|ux)$/i.test(word) ? word.toUpperCase() : word)
   const name = words.join(' ')
   return name.charAt(0).toUpperCase() + name.slice(1)
@@ -651,8 +654,13 @@ function chipSummary(row: MargincueRow): string {
   return set.length === 0 ? 'nothing more' : set.length === 1 ? set[0]! : `${set[0]} +${set.length - 1}`
 }
 
-/** A name the code lacks, as the card writes it: "Audit Log" in curly quotes. */
-const quotedName = (row: MargincueRow) => row.statement.replace(/\s+is\s+\{\}\s*$/, '').replace(/^"(.*)"$/, '\u201c$1\u201d')
+/** A name the code lacks or has in several files, as the card writes it: "Audit Log" in curly quotes. */
+const quotedName = (row: MargincueRow) => row.statement.replace(/\s+is\s+(?:the one in\s+)?\{\}\s*$/, '').replace(/^"(.*)"$/, '\u201c$1\u201d')
+/** A name the code has in several files (the other names the index asks about are ones it lacks). */
+const inSeveral = (row: MargincueRow) => row.origin === 'repo' && row.key.startsWith('file_')
+/** What an unanswered name says above its menu. */
+const unmatched = (row: MargincueRow) =>
+  inSeveral(row) ? `${quotedName(row)} is in ${row.options.length} files` : `No match for ${quotedName(row)} in your code`
 
 /**
  * One choice in an app: its name, then the app's own dropdown with the value in force; the menu opens where it is
@@ -667,7 +675,7 @@ function choiceChip($: $, ui: Elements[RenderSurface], row: MargincueRow) {
     const items = [{ key: `card-${row.id}-none`, value: 'none', label: 'Choose a match\u2026' }, ...options.map((i) => ({ key: `card-${row.id}-${i}`, value: String(i), label: row.options[i]! }))]
     return (
       <Box key={`row-${row.id}`} flexDirection="row" flexWrap="wrap" columnGap={1} alignItems="center">
-        <Text color="warning">{`No match for ${quotedName(row)} in your code`}</Text>
+        <Text color="warning">{unmatched(row)}</Text>
         <Select key={`card-${row.id}`} value="none" options={items}
           onSelect={(value) => value === 'none' ? undefined : act($, { type: 'cardSet', row: row.id, option: Number(value) })} />
       </Box>
@@ -743,7 +751,7 @@ function drawGateCard($: $, ui: Elements[RenderSurface], card: NonNullable<Margi
   let budget = 48 - 4 - 1 - 2 - (card.read ? rowsOf(card.read) + 1 : 0) - rowsOf(foot) - 1
   const shown: MargincueRow[] = []
   for (const row of card.rows) {
-    const need = row.origin === 'repo' && !row.chosen ? rowsOf(`No match for ${quotedName(row)} in your code`) + 1 : 1
+    const need = row.origin === 'repo' && !row.chosen ? rowsOf(unmatched(row)) + 1 : 1
     if (need + 1 > budget) break
     budget -= need + 1
     shown.push(row)
@@ -810,7 +818,7 @@ function panelQuestions(card: NonNullable<View['card']>): PanelQuestion[] {
     const labels = indexes.map((i) => `${row.options[i]}${row.origin !== 'repo' && row.selected.includes(i) ? mark : ''}`)
     if (new Set(labels).size < 2 || new Set(labels).size !== labels.length) continue
     const repo = row.origin === 'repo'
-    const name = repo ? row.statement.replace(/\s+is\s+\{\}\s*$/, '') : ''
+    const name = repo ? row.statement.replace(/\s+is\s+(?:the one in\s+)?\{\}\s*$/, '') : ''
     // The app shows the question alone, not its header chip: a choice's label leads its question.
     const label = row.label.charAt(0).toUpperCase() + row.label.slice(1)
     const ask = row.statement.replace('{}', '…').replace(/[.:]?\s*$/, '')
@@ -819,7 +827,7 @@ function panelQuestions(card: NonNullable<View['card']>): PanelQuestion[] {
     let common = 0
     while (common < said!.length && common < named!.length && said![common] === named![common]) common++
     const echoes = common >= 3 && common >= Math.min(said!.length, named!.length) - 1
-    const question = repo ? `${name} isn't in your code. Which do you mean?`
+    const question = repo ? `${name} ${inSeveral(row) ? `is in ${row.options.length} files` : "isn't in your code"}. Which do you mean?`
       : echoes ? `${ask}?` : `${label}: ${ask.charAt(0).toLowerCase()}${ask.slice(1)}?`
     if (out.some((entry) => entry.question === question)) continue
     const header = (repo ? name.replace(/["“”]/g, '') : label).slice(0, 12)

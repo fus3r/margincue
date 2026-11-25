@@ -1,5 +1,14 @@
 import type { Decision } from './types'
 
+export const FILE_REFERENCES_HEADING = 'Where things are:'
+
+export function fileReferenceDecision(refs: { phrase: string; files: string[] }[]): Decision {
+  return {
+    statement: `${FILE_REFERENCES_HEADING} {}`,
+    option: refs.map(({ phrase, files }) => `${phrase} (${files.join(' or ')})`).join(', '),
+  }
+}
+
 // The Decisions block at the end of a prompt:
 //
 //   Add an export button to the dashboard.

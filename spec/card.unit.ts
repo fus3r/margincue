@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import './ts-resolve.ts'
 import type { Effect, Event, View } from '../mods/claude-code/core/index'
 
-const { createCore } = await import('../mods/claude-code/core/index')
+const { createCore, fillStatement } = await import('../mods/claude-code/core/index')
 const card = await import('../mods/claude-code/core/card')
 const grounding = await import('../mods/claude-code/core/grounding')
 const { ASSETS } = await import('../mods/claude-code/hooks/assets')
@@ -44,6 +44,20 @@ test('card replies parse into typed rows and skip what is malformed', () => {
   assert.equal(parsed.rows[1]!.options[parsed.rows[1]!.defaults[0]!], '100000 rows')
 })
 
+test('a missing card kind falls back to clear build requests or questions', () => {
+  for (const draft of [
+    'Build a dashboard export tool.',
+    'Add a CSV export to the dashboard.',
+    'Please create an export dialog.',
+    'Could you make a CSV export?',
+    'A new account settings page for team owners.',
+  ]) assert.equal(card.deriveCardKind(draft), 'build', draft)
+  assert.equal(card.deriveCardKind('How do I create a new settings page?'), 'ask')
+  assert.equal(card.deriveCardKind('Is the new settings page live?'), 'ask')
+  assert.equal(card.deriveCardKind('Fix the title on the new settings page.'), null)
+  assert.equal(card.canSketch(null), false)
+})
+
 test('an anchor written into the last option is taken out of it', () => {
   const row = card.parseCard('row | source | source | one | Use {} | existing play logs | new event logging | both @play logs').rows[0]!
   assert.deepEqual(row.options, ['existing play logs', 'new event logging', 'both'])
@@ -64,6 +78,51 @@ test('number rows become readable steps that include the default', () => {
   assert.deepEqual(card.numberSteps(1, 1, 1), [])
   assert.equal(card.formatNumber(30, '%'), '30%')
   assert.equal(card.formatNumber(2.5, 's'), '2.5 s')
+})
+
+const REQUEST_RANGE = 'row | rate_limit | limit | range | Allow each client {} requests per minute | 1 requests | 100 requests* | 1000 requests'
+
+test('the rate-limit card uses the unit once, even if it was in both the statement and the options', () => {
+  const row = card.parseCard(REQUEST_RANGE).rows[0]!
+  assert.deepEqual(row.options, ['1 request', '100 requests', '1000 requests'])
+  assert.deepEqual(row.defaults, [1])
+  assert.deepEqual(row.options.map((value) => fillStatement(row.statement, value)), [
+    'Allow each client 1 request per minute',
+    'Allow each client 100 requests per minute',
+    'Allow each client 1000 requests per minute',
+  ])
+})
+
+test('range units stay readable with bare options, longer units and compact symbols', () => {
+  for (const [type, statement, values, expected] of [
+    ['range', 'Allow each client {} requests per minute', '1 request per minute | 100', ['Allow each client 1 request per minute', 'Allow each client 100 requests per minute']],
+    ['num', 'Allow each client {} requests per minute', '100 | 1 | 100 | requests', ['Allow each client 1 request per minute', 'Allow each client 100 requests per minute']],
+    ['range', 'Set opacity to {}%.', '25% | 75', ['Set opacity to 25%.', 'Set opacity to 75%.']],
+    ['range', 'Set the delay to {}.', '1 ms | 100 ms', ['Set the delay to 1 ms.', 'Set the delay to 100 ms.']],
+  ] as const) {
+    const row = card.parseCard(`row | range_test | limit | ${type} | ${statement} | ${values}`).rows[0]!
+    assert.deepEqual([row.options[0]!, row.options.at(-1)!].map((value) => fillStatement(row.statement, value)), expected)
+  }
+})
+
+test('the rate-limit decision is worded the same on the card, in the prompt and on the receipt', () => {
+  const text = 'Add a per-client rate limit to the API.'
+  for (const [option, line] of [[0, 'Allow each client 1 request per minute.'], [1, 'Allow each client 100 requests per minute.']] as const) {
+    const core = createCore(ASSETS)
+    core.handle(config())
+    core.handle({ type: 'learned', picks: { rate_limit: { label: '1 requests', count: 2 } } })
+    const [req] = requests(core.handle({ type: 'draft', now: 100, text, origin: 'paste' }))
+    const card = lastView(core.handle({ type: 'reply', now: 200, req: req!.req, text: REQUEST_RANGE, done: true }))!.card!
+    const row = card.rows[0]!
+    assert.deepEqual(row.selected, [0])
+    assert.equal(row.learned, true)
+    const picked = lastView(core.handle({ type: 'cardSet', now: 300, row: row.id, option }))!
+    assert.deepEqual(picked.decisions, [line])
+    const sent = core.handle({ type: 'submit', now: 400, text }).find((effect) => effect.type === 'submit')!
+    assert.equal(sent.text, `${text}\n\nDecisions:\n- ${line}`)
+    const end = lastView(core.handle({ type: 'endAmendment', now: 500 }))!
+    assert.deepEqual(end.receipt?.yours, [line])
+  }
 })
 
 test('values, cycling and toggling follow the row type', () => {
@@ -615,4 +674,104 @@ test('picked mode keeps the written step order, which comes from the draft and n
   core.handle({ type: 'reply', now: 200, req: req!.req, text: reading, done: true })
   const sent = core.handle({ type: 'submit', now: 300, text }).find((e) => e.type === 'submit')!
   assert.deepEqual(sent.decisions, ['Do the steps in written order, from step 1.'])
+})
+
+/** A Next.js app with the same file and function names in several folders. */
+const twins = grounding.indexVocabulary(grounding.buildVocabulary({
+  files: ['app/layout.tsx', 'app/(dashboard)/layout.tsx', 'app/(dashboard)/dashboard/layout.tsx', 'app/(login)/actions.ts',
+    'lib/payments/actions.ts', 'app/(dashboard)/dashboard/page.tsx', 'app/(dashboard)/pricing/page.tsx', 'app/(login)/sign-in/page.tsx',
+    'app/(login)/sign-up/page.tsx', 'app/(dashboard)/page.tsx', 'lib/format.ts', 'tests/format.test.ts'],
+  declarations: [
+    'app/(login)/actions.ts:52:export const signUp', 'app/(login)/actions.ts:399:export const inviteTeamMember',
+    'app/(dashboard)/dashboard/page.tsx:190:function InviteTeamMember', 'lib/format.ts:1:export function formatDate',
+    'tests/format.test.ts:3:function formatDate',
+  ].join('\n'),
+  names: '',
+}))
+const where = (text: string) => grounding.ground(text, twins).filter((m) => m.as === 'code').map((m) => [m.phrase, m.places ?? m.files[0]])
+
+test('a name written as code that the code has in several files asks which one, unless the draft says', () => {
+  // Nothing says which layout: all three, the shallowest first.
+  assert.deepEqual(where('Add a footer with the copyright year to `layout.tsx`.'),
+    [['layout.tsx', ['app/layout.tsx', 'app/(dashboard)/layout.tsx', 'app/(dashboard)/dashboard/layout.tsx']]])
+  // A word only some of their paths have narrows them; one left is where the name points.
+  assert.deepEqual(where('Add a footer to the dashboard `layout.tsx`.'),
+    [['layout.tsx', ['app/(dashboard)/layout.tsx', 'app/(dashboard)/dashboard/layout.tsx']]])
+  assert.deepEqual(where('In the payments `actions.ts`, log each checkout.'), [['actions.ts', 'lib/payments/actions.ts']])
+  // Another name of the draft that lives in one of them settles it.
+  assert.deepEqual(where('In `actions.ts`, make signUp also record the user agent.'),
+    [['actions.ts', 'app/(login)/actions.ts'], ['signUp', 'app/(login)/actions.ts']])
+  // The draft's own spelling is the code's own name: the action, not the component of the same words.
+  assert.deepEqual(where('Make `inviteTeamMember` send an email.'), [['inviteTeamMember', 'app/(login)/actions.ts']])
+  assert.deepEqual(where('Show a spinner in `InviteTeamMember`.'), [['InviteTeamMember', 'app/(dashboard)/dashboard/page.tsx']])
+  // A test's copy is not what a draft means, unless it speaks of tests.
+  assert.deepEqual(where('Make `formatDate` show the weekday.'), [['formatDate', 'lib/format.ts']])
+  assert.deepEqual(where('Make `formatDate` in the tests use UTC.'), [['formatDate', ['lib/format.ts', 'tests/format.test.ts']]])
+  // In more files than one question can offer: no question, and no file named.
+  assert.deepEqual(where('Add a loading skeleton to `page.tsx`.'), [['page.tsx', []]])
+  // A plain word never asks: what it may mean is the reading's to raise.
+  assert.deepEqual(grounding.ground('Add a footer with the copyright year to the layout.', twins).filter((m) => m.places), [])
+})
+
+test('a row asks which file a name in several files means; the pick travels as a decision, never a guess', () => {
+  const core = createCore(ASSETS)
+  core.handle(config())
+  core.handle({ type: 'vocabulary', vocab: twins.vocab })
+  const text = 'Add a footer with the copyright year to `layout.tsx`.'
+  const effects = core.handle({ type: 'draft', now: 100, text, origin: 'paste' })
+  const row = lastView(effects)!.card!.rows.find((r) => r.origin === 'repo')!
+  assert.deepEqual([row.key, row.label, row.statement, row.options, row.selected], ['file_layouttsx', 'layout.tsx',
+    '"layout.tsx" is the one in {}', ['app/layout.tsx', 'app/(dashboard)/layout.tsx', 'app/(dashboard)/dashboard/layout.tsx'], []])
+  // The reading is told the files and that the question is already asked, so it adds no row of its own for it.
+  const prompt = requests(effects)[0]!.prompt
+  assert.ok(prompt.includes('In several files, which one is asked about separately (no row for this): layout.tsx (app/layout.tsx, app/(dashboard)/layout.tsx, app/(dashboard)/dashboard/layout.tsx)'), prompt)
+  assert.ok(!prompt.includes('In the code:'), prompt)
+  // Left alone, the prompt names every file it may be, not one picked for it.
+  const sent = (draft: string) => core.handle({ type: 'submit', now: 300, text: draft }).find((e): e is Extract<Effect, { type: 'submit' }> => e.type === 'submit')!.decisions
+  assert.deepEqual(sent(text), ['Where things are: layout.tsx (app/layout.tsx or app/(dashboard)/layout.tsx or app/(dashboard)/dashboard/layout.tsx).'])
+  core.handle({ type: 'draft', now: 400, text, origin: 'paste' })
+  const again = core.currentView().card!.rows.find((r) => r.origin === 'repo')!
+  core.handle({ type: 'cardSet', now: 500, row: again.id, option: 1 })
+  assert.deepEqual(sent(text), ['"layout.tsx" is the one in app/(dashboard)/layout.tsx.'])
+  // Silent where the draft settles it, and where a name is in too many files to ask about (nor pointed at).
+  for (const [draft, refs] of [
+    ['In `actions.ts`, make signUp also record the user agent.', ['Where things are: actions.ts (app/(login)/actions.ts), signUp (app/(login)/actions.ts).']],
+    ['Add a loading skeleton to `page.tsx`.', []],
+  ] as const) {
+    const view = lastView(core.handle({ type: 'draft', now: 600, text: draft, origin: 'paste' }))!
+    assert.deepEqual(view.card!.rows.filter((r) => r.origin === 'repo'), [], draft)
+    assert.deepEqual(sent(draft), refs, draft)
+  }
+})
+
+test('ambiguous names do not narrow each other to the first files in the index', () => {
+  const files = Array.from({ length: 5 }, (_, i) => `area-${i}/seats.ts`)
+  const index = grounding.indexVocabulary(grounding.buildVocabulary({
+    files,
+    declarations: files.flatMap((file) => [`${file}:1:export function listSeats`, `${file}:2:export function loadSeats`]).join('\n'),
+    names: '',
+  }))
+  const mentions = grounding.ground('Add tracing to `listSeats` and `loadSeats`.', index)
+  assert.deepEqual(mentions.map(({ phrase, places }) => [phrase, places]), [['listSeats', []], ['loadSeats', []]])
+})
+
+test("a reading's row offering the same files as a name's own row is that question again, and is left out", () => {
+  const text = 'Add a footer with the copyright year to `layout.tsx`.'
+  // A reading that asked anyway, as one did in a trial run.
+  const reading = [
+    'read | You want a copyright-year footer added to a layout file.',
+    'kind | change',
+    'row | footer_layout | layout | one | Add the footer to {} | app/layout.tsx, the root layout | app/(dashboard)/layout.tsx, the dashboard shell | app/(dashboard)/dashboard/layout.tsx, the dashboard page layout | @layout.tsx',
+    'row | footer_year | year | one | Show the year {} | the current year, computed at render | a fixed year typed in the code | @copyright year',
+  ].join('\n')
+  const vocabulary = { type: 'vocabulary', vocab: twins.vocab } as const
+  for (const lateIndex of [false, true]) {
+    const core = createCore(ASSETS)
+    core.handle(config())
+    if (!lateIndex) core.handle(vocabulary)
+    const [req] = requests(core.handle({ type: 'draft', now: 100, text, origin: 'paste' }))
+    core.handle({ type: 'reply', now: 200, req: req!.req, text: reading, done: true })
+    if (lateIndex) core.handle(vocabulary)
+    assert.deepEqual(core.currentView().card!.rows.map((row) => row.key), ['file_layouttsx', 'footer_year'])
+  }
 })

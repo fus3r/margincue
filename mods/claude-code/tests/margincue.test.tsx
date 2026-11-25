@@ -1,6 +1,6 @@
 // `claude plugin test mods/claude-code`: the mod's hooks against the engine's
 // own test kit. Every hook the test registers with `on` stands for the engine.
-import type { On, PromptChangeInput, PromptChangeResult, PromptEditInput, PromptEditResult } from 'claude-code'
+import type { ModelCompleteInput, ModelCompleteResult, On, PromptChangeInput, PromptChangeResult, PromptEditInput, PromptEditResult } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { MountSelectTarget, TestBody } from 'claude-code/testing'
 import { ASSETS } from '../hooks/assets'
@@ -45,6 +45,7 @@ function replies(card = CARD, sketch = SKETCH, other = REPLY) {
 }
 
 type Engine = On
+type ModelFailure = (request: ModelCompleteInput) => ModelCompleteResult | undefined | Promise<ModelCompleteResult | undefined>
 
 /** The composer's events, which the kit raises like any other though its `$` types do not list them. */
 type Composer = {
@@ -57,7 +58,7 @@ const composer = ($: { prompt: unknown }) => $.prompt as Composer
 function world(on: Engine, reply: string | ((prompt: string, system: string) => Promise<string>) = REPLY,
   options: { git?: (args: string) => string | undefined; env?: Record<string, string>; submitted?: { text: string; origin: string }[]
     /** The model call failing: its result in place of a reply, or a throw or a promise that never settles. */
-    failure?: () => unknown } = {}) {
+    failure?: ModelFailure } = {}) {
   const clock = mock.clock(on, { now: 1000 })
   const store = new Map<string, unknown>()
   const files = new Map<string, string>()
@@ -128,7 +129,8 @@ function world(on: Engine, reply: string | ((prompt: string, system: string) => 
   })
   on('model.complete', async (_, e) => {
     calls.push(e.prompt)
-    if (options.failure) return { value: await options.failure() as never }
+    const failure = await options.failure?.(e)
+    if (failure) return { value: failure }
     const text = typeof reply === 'string' ? reply : await reply(e.prompt, e.system ?? '')
     return { value: { isAnswered: true as const, text, usage: USAGE } }
   })
@@ -456,16 +458,17 @@ async function pick(ui: { select: (target: MountSelectTarget) => Promise<unknown
 type ChipProps = { label?: string; value?: string; options?: { label?: string }[] }
 
 /** A desktop session as the app starts one, with a prompt sent at Enter and its dialog open. */
-async function desktopAtEnter($: Parameters<TestBody>[0], on: Engine, card = CARD) {
-  const { clock } = world(on, replies(card), { env: { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' } })
+async function desktopAtEnter($: Parameters<TestBody>[0], on: Engine, card = CARD, options: { failure?: ModelFailure; logPath?: string } = {}) {
+  const { clock, files } = world(on, replies(card), { env: { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' }, failure: options.failure })
   const gate = heldPanel(on)
   await $.session.start({ cwd: '/', surface: null, isInteractive: false })
+  if (options.logPath) await $.command.run({ ...cli, command: 'margincue', args: `log ${options.logPath}` })
   await clock.settle()
   const pending = $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
   await clock.settle()
   await clock.advance(1000)
   const ui = await $.ui.mount({ ...DIALOG, props: { tool: 'AskUserQuestion', questions: gate.asked } })
-  return { clock, gate, pending, ui }
+  return { clock, files, gate, pending, ui }
 }
 
 test('in the desktop app MarginCue draws its own card above Claude\'s dialog; Go ahead sends its plan', async ($, on) => {
@@ -501,6 +504,45 @@ test('the card keeps within the 48 rows the app allows there: the preview joins 
   gate.answer(null)
   await pending
   await ui.unmount()
+})
+
+test('a desktop sketch that times out while the dialog is open draws its preview on one retry', async ($, on) => {
+  const logPath = '/project/test-log.jsonl'
+  const timeouts: (number | undefined)[] = []
+  let timeOut = () => {}
+  const first = new Promise<ModelCompleteResult>((resolve) => { timeOut = () => resolve(FAILURES['timed out']) })
+  const { clock, files, gate, pending, ui } = await desktopAtEnter($, on, CARD, {
+    logPath,
+    failure: (request) => {
+      if (!request.system?.includes('Draw what the finished result')) return
+      timeouts.push(request.timeoutMs)
+      if (timeouts.length === 1) return first
+    },
+  })
+  expect(timeouts).toEqual([20000])
+  expect(await ui.find({ key: 'card-c1' })).toBeDefined()
+  expect(await ui.find({ type: 'Svg' })).toBeUndefined()
+  timeOut()
+  await clock.settle()
+  expect(timeouts).toEqual([20000, 20000])
+  expect(await ui.find({ type: 'Text', text: /Preview · Export dialog/ })).toBeDefined()
+  gate.answer(null)
+  await pending
+  await ui.unmount()
+  await $.command.run({ ...cli, command: 'margincue', args: 'log off' })
+  expect(files.get(logPath)).toMatch(/"event":"sketch-retry"[^\n]*"reason":"aborted"/)
+})
+
+test('a desktop reading without a kind still draws a preview for a build request', async ($, on) => {
+  const logPath = '/project/test-log.jsonl'
+  const { clock, files, gate, pending, ui } = await desktopAtEnter($, on, CARD.replace('kind | build\n', ''), { logPath })
+  await clock.advance(5000)
+  expect(await ui.find({ type: 'Text', text: /Preview · Export dialog/ })).toBeDefined()
+  gate.answer(null)
+  await pending
+  await ui.unmount()
+  await $.command.run({ ...cli, command: 'margincue', args: 'log off' })
+  expect(files.get(logPath)).toMatch(/"event":"card-kind-derived"[^\n]*"kind":"build"/)
 })
 
 test('a preview the size of a page sketch fits in the card, and the app takes the card', async ($, on) => {
@@ -1311,4 +1353,47 @@ test('Enter on each first-run question takes its first option and finishes the i
   await clock.advance(2000)
   expect(asked.map((question) => question.header)).toEqual(['Your work', 'You decide'])
   expect(store.get('settings')).toMatchObject({ onboarded: 'done', user: { work: ['apps'], decide: ['scope'] } })
+})
+
+const TWIN_LAYOUTS = ['app/layout.tsx', 'app/(dashboard)/layout.tsx', 'lib/utils.ts']
+const FOOTER = 'Add a footer with the copyright year to `layout.tsx`.'
+
+test('a name the code has in several files reads as a choice of file on the card; the pick goes as a decision', async ($, on) => {
+  const { clock } = world(on, replies(), {
+    env: { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' },
+    git: (args) => args.includes('ls-files') ? TWIN_LAYOUTS.join('\n') : '',
+  })
+  const gate = heldPanel(on)
+  await $.session.start({ cwd: '/project', surface: null, isInteractive: false })
+  await clock.settle()
+  const pending = $.prompt.submit({ text: FOOTER, origin: { kind: 'composer' }, wait: false })
+  await clock.settle()
+  await clock.advance(1000)
+  const ui = await $.ui.mount({ ...DIALOG, props: { tool: 'AskUserQuestion', questions: gate.asked } })
+  expect(await ui.find({ type: 'Text', text: /^“layout\.tsx” is in 2 files$/ })).toBeDefined()
+  const chip = async () => (await ui.find({ key: 'card-c1' }))?.props as ChipProps
+  expect((await chip()).options?.map((option) => option.label)).toEqual(['Choose a match…', 'app/layout.tsx', 'app/(dashboard)/layout.tsx'])
+  await pick(ui, 'c1', 1)
+  expect((await chip()).label).toBe('“layout.tsx” is in')
+  gate.answer('Go ahead with this plan')
+  const sent = (await pending).text
+  expect(sent).toContain('\n- "layout.tsx" is the one in app/(dashboard)/layout.tsx.')
+  expect(sent).not.toContain('Where things are')
+  await ui.unmount()
+})
+
+test('one question at a time: a name in several files is asked as which file it means', async ($, on) => {
+  const { clock } = world(on, replies(), { git: (args) => args.includes('ls-files') ? TWIN_LAYOUTS.join('\n') : '' })
+  const asked = panel(on, (question) => question.header === 'layout.tsx' ? 'app/layout.tsx' : null)
+  on('prompt.compose', () => ({ sections: [] }))
+  on('session.attach', (_, e) => ({ clientId: e.clientId }))
+  await $.session.start({ cwd: '/project', surface: null, isInteractive: false })
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  await clock.settle()
+  const pending = $.prompt.submit({ text: FOOTER, origin: { kind: 'sdk' }, wait: false })
+  await clock.settle()
+  await clock.advance(1000)
+  expect(asked[0]?.question).toBe('"layout.tsx" is in 2 files. Which do you mean?')
+  expect(asked[0]?.options.map((option) => option.label)).toEqual(['app/layout.tsx', 'app/(dashboard)/layout.tsx'])
+  expect((await pending).text).toBe(`${FOOTER}\n\nDecisions:\n- "layout.tsx" is the one in app/layout.tsx.`)
 })

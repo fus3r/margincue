@@ -67,7 +67,7 @@ function mark(row: WidgetRow, text: string, unknown = false): HTMLButtonElement 
   const button = element('button', `mark${yours ? ' yours' : ''}${unknown ? ' unknown' : ''}`, text)
   button.type = 'button'
   button.dataset.row = row.id
-  button.title = yours ? 'Your choice. Click to change it.' : 'Codex would choose this. Click to change it.'
+  button.title = unknown ? text : yours ? 'Your choice. Click to change it.' : 'Codex would choose this. Click to change it.'
   button.setAttribute('aria-haspopup', 'listbox')
   button.setAttribute('aria-expanded', String(open?.row.id === row.id))
   button.addEventListener('click', (event) => {
@@ -107,6 +107,10 @@ function renderPlan(): void {
       sentences.push(picks[row.id] === undefined
         ? sentence([`${name} isn’t in your code: `, mark(row, 'pick a match', true), '.'], row.id)
         : sentence([`For ${name}, use `, mark(row, valueOf(row)), '.'], row.id))
+      continue
+    }
+    if (row.type === 'one' && !selected(row).length) {
+      sentences.push(sentence([`? ${row.label} `, mark(row, 'pick a file', true)], row.id))
       continue
     }
     const at = row.statement.indexOf('{}')
@@ -435,7 +439,7 @@ async function send(asWrittenOnly: boolean): Promise<void> {
   // Going ahead before the card has arrived is going ahead as written, with the note if there is one.
   // The preview goes as the target only when it shows these very choices, not while it is redrawn for them.
   const target = shownKey === picksKey() && !preview.hidden && !preview.classList.contains('stale') ? shownSketch : null
-  const message = composeFollowUp(card?.rows ?? [], picks, note.value, asWrittenOnly, target)
+  const message = composeFollowUp(card?.rows ?? [], picks, note.value, asWrittenOnly, target, card?.fileReferences)
   sending = true
   closeMenu()
   goButton.disabled = asWritten.disabled = note.disabled = true

@@ -1,6 +1,6 @@
 {
   "name": "margincue",
-  "version": "0.4.21",
+  "version": "0.4.22",
   "description": "See how your coding agent will read a prompt before you send it, and switch the choices it makes while it works.",
   "license": "MIT",
   "type": "module",

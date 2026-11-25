@@ -1,6 +1,6 @@
 import { rowValue } from '../../claude-code/core/card'
 import type { ParsedSketch } from '../../claude-code/core/card'
-import { decisionLine } from '../../claude-code/core/decisions'
+import { decisionLine, fileReferenceDecision } from '../../claude-code/core/decisions'
 import type { CardRowView } from '../../claude-code/core/types'
 
 export type WidgetRow = Pick<CardRowView, 'id' | 'label' | 'type' | 'statement' | 'options'> & {
@@ -14,6 +14,7 @@ export type WidgetCard = {
   reading: string | null
   rows: WidgetRow[]
   missing: { phrase: string; candidates: { name: string; file: string }[]; rowId?: string }[]
+  fileReferences?: { phrase: string; files: string[]; rowId?: string }[]
   preview: boolean
   sketch: ParsedSketch | null
 }
@@ -51,13 +52,16 @@ export function targetLines(sketch: ParsedSketch): string {
  * every choice, switched or kept as shown (a name the code lacks has no default: only a pick of it travels), the
  * note, and the preview when it was drawn for exactly these choices. As written sends the prompt alone.
  */
-export function composeFollowUp(rows: WidgetRow[], picks: Selections, note: string, asWritten = false, sketch: ParsedSketch | null = null): FollowUp {
+export function composeFollowUp(rows: WidgetRow[], picks: Selections, note: string, asWritten = false, sketch: ParsedSketch | null = null,
+  fileReferences: WidgetCard['fileReferences'] = []): FollowUp {
   if (asWritten) return { text: AS_WRITTEN, decisions: [], extra: '' }
   const decisions = rows.flatMap((row) => {
     const picked = picks[row.id]
     if (picked) return [choiceLine(row, picked)]
     return !row.files && row.assumed.length ? [choiceLine(row, row.assumed)] : []
   })
+  const unresolved = fileReferences.filter((ref) => ref.rowId === undefined || picks[ref.rowId] === undefined)
+  if (unresolved.length) decisions.push(decisionLine(fileReferenceDecision(unresolved)))
   const extra = note.trim().replace(/\s*[\r\n]+\s*/g, ' ')
   const target = sketch?.lines.length ? targetLines(sketch) : null
   const text = decisions.length || extra || target ? [

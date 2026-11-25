@@ -355,6 +355,12 @@ test('the bundled MCP server uses the Desktop runtime to read a grounded card an
   const plugin = join(here, '..', 'mods', 'codex')
   const project = mkdtempSync(join(tmpdir(), 'margincue-project-'))
   writeFileSync(join(project, 'activity.ts'), 'export const activityLogs = []\n')
+  const layouts = ['app/layout.tsx', 'app/dashboard/layout.tsx']
+  for (const layout of layouts) {
+    const path = join(project, layout)
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, 'export default function Layout() {}\n')
+  }
   const fake = join(here, 'fixtures', 'fake-codex.mjs')
   // Node acts as the bundled CLI, loading this file when the reader passes "app-server".
   writeFileSync(join(project, 'app-server'), `void import(${JSON.stringify(pathToFileURL(fake).href)})\n`)
@@ -431,6 +437,19 @@ test('the bundled MCP server uses the Desktop runtime to read a grounded card an
 
     const brief = await call('tools/call', { name: 'margincue_card', arguments: { prompt: 'Build an app', cwd: project } })
     assert.ok((await follow(brief.structuredContent.id)).reading)
+
+    const layoutResult = await call('tools/call', { name: 'margincue_card', arguments: { prompt: 'Build a footer in `layout.tsx`.', cwd: project } })
+    const layoutCard = await follow(layoutResult.structuredContent.id)
+    const layout = layoutCard.rows.find((row) => row.label === 'layout.tsx')!
+    assert.deepEqual([layout.options, layout.assumed], [layouts, []])
+    assert.deepEqual(layoutCard.fileReferences, [{ phrase: 'layout.tsx', files: layouts, rowId: layout.id }])
+    assert.ok(layoutCard.sketch)
+    assert.ok(layoutCard.sketch.lines.every((line) => !line.includes('layout.tsx')))
+    const open = composeFollowUp(layoutCard.rows, {}, '', false, null, layoutCard.fileReferences)
+    assert.ok(open.decisions.includes('Where things are: layout.tsx (app/layout.tsx or app/dashboard/layout.tsx).'))
+    assert.ok(decisionsOf(open.text).every((line) => !line.startsWith('Where things are:')))
+    const picked = composeFollowUp(layoutCard.rows, { [layout.id]: [1] }, '', false, null, layoutCard.fileReferences)
+    assert.deepEqual(picked.decisions.filter((line) => line.includes('layout.tsx')), ['"layout.tsx" is the one in app/dashboard/layout.tsx.'])
 
     // A card the hook started is opened by its id alone.
     writeRecord({

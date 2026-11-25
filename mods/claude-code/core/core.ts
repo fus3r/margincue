@@ -1,6 +1,6 @@
 import { diffSplice, resolveAnchor, shiftSpan, spliceFits } from './anchor'
 import type { Span } from './anchor'
-import { applyDecisions, attachDecisions, decisionLine } from './decisions'
+import { applyDecisions, attachDecisions, decisionLine, FILE_REFERENCES_HEADING, fileReferenceDecision } from './decisions'
 import { DecisionDraft, DecisionState, decisionFor, eligibleSlot, stateCue } from './state'
 import type { SlotResult, StateChange } from './state'
 import type { Depth, Language, Mode, Rigor, Scope } from './bundle'
@@ -10,7 +10,7 @@ import { Lru } from './lru'
 import { normalize, parseReply } from './parse'
 import { parseProfile } from './profile'
 import { buildPrompt, buildSystem, isTerminated, lastSentenceStart } from './request'
-import { buildSketchPrompt, canSketch, CARD_MAX_TOKENS, cycleSelection, listsSteps, openChoiceLine, parseCard, parseSketch, rowValue, sameSelection, SKETCH_MAX_TOKENS, STEP_ORDER_KEY, toggleSelection } from './card'
+import { buildSketchPrompt, canSketch, CARD_MAX_TOKENS, cycleSelection, deriveCardKind, listsSteps, openChoiceLine, parseCard, parseSketch, rowValue, sameSelection, SKETCH_MAX_TOKENS, STEP_ORDER_KEY, toggleSelection } from './card'
 import type { CardKind, ParsedCard, ParsedRow, ParsedSketch, RowType } from './card'
 import { ground, indexVocabulary, nameKey, relatedFolders } from './grounding'
 import type { GroundIndex, Mention } from './grounding'
@@ -87,6 +87,7 @@ type CardRow = {
   statement: string
   options: string[]
   defaults: number[]
+  originalOptions?: string[]
   unit?: string
   anchor?: string
   /** Repo rows: the file behind each option, attached with the pick. */
@@ -238,6 +239,7 @@ export class Core {
 
   private now = 0
   private text = ''
+  private atEnter = false
   private cursor = 0
   private textAt = 0
   /** When the person last acted without editing (a pick, accept all, switching on): latency counts from here too. */
@@ -278,7 +280,7 @@ export class Core {
         this.onConfig(event)
         break
       case 'draft':
-        this.onDraft(event.text, event.origin, event.edit, event.cursor)
+        this.onDraft(event.text, event.origin, event.edit, event.cursor, event.atEnter === true)
         break
       case 'timer':
         this.onTimer()
@@ -531,10 +533,11 @@ export class Core {
     }
   }
 
-  private onDraft(text: string, origin: Origin, edit: Splice | undefined, cursor: number | undefined): void {
+  private onDraft(text: string, origin: Origin, edit: Splice | undefined, cursor: number | undefined, atEnter: boolean): void {
     const before = this.text
     this.cursor = cursor === undefined ? text.length : Math.max(0, Math.min(text.length, cursor))
     if (text === before && origin === 'type') return
+    this.atEnter = atEnter
     const splice = edit !== undefined && spliceFits(before, text, edit) ? edit : diffSplice(before, text)
     this.text = text
     if (text !== before) {
@@ -789,6 +792,7 @@ export class Core {
     this.clearExpert()
     this.reviewAt = null
     this.text = ''
+    this.atEnter = false
     this.cursor = 0
     this.textAt = this.now
     this.cues = []
@@ -1108,24 +1112,28 @@ export class Core {
     })
   }
 
-  /** A name the draft uses that the code lacks becomes a row: which of the code's names it means. */
+  /**
+   * A name the draft uses that the code lacks becomes a row: which of the code's names it means. So does a name
+   * the code has in several files when the draft does not say which: which file it means.
+   */
   private syncRepoRows(): void {
     const card = this.card!
     const rows: CardRow[] = []
     for (const mention of this.mentions) {
-      if (mention.status !== 'missing' || !mention.near.length || rows.length >= 2) continue
-      const key = `name_${nameKey(mention.phrase)}`.slice(0, 40)
+      const places = mention.status === 'found' ? mention.places ?? [] : []
+      if (rows.length >= 2 || places.length < 2 && (mention.status !== 'missing' || !mention.near.length)) continue
+      const key = `${places.length ? 'file' : 'name'}_${nameKey(mention.phrase)}`.slice(0, 40)
       if (card.dismissed.has(key)) continue
-      const options = [...mention.near.map((near) => near.name), 'new, to be added']
-      const hints = [...mention.near.map((near) => near.file), '']
+      const options = places.length ? places : [...mention.near.map((near) => near.name), 'new, to be added']
       const old = card.rows.find((row) => row.origin === 'repo' && row.key === key)
       rows.push(old && sameOptions(old.options, options) ? old : {
         id: old?.id ?? this.newId(), key, label: cutLabel(mention.phrase), type: 'one',
-        statement: `"${mention.phrase}" is {}`, options, hints, defaults: [], origin: 'repo', picked: null,
-        anchor: mention.phrase,
+        statement: places.length ? `"${mention.phrase}" is the one in {}` : `"${mention.phrase}" is {}`, options,
+        ...(!places.length && { hints: [...mention.near.map((near) => near.file), ''] }),
+        defaults: [], origin: 'repo', picked: null, anchor: mention.phrase,
       })
     }
-    card.rows = [...rows, ...card.rows.filter((row) => row.origin !== 'repo')]
+    card.rows = [...rows, ...card.rows.filter((row) => row.origin !== 'repo' && (row.picked !== null || !asksPlaces(rows, row)))]
     this.fixCardFocus()
   }
 
@@ -1180,8 +1188,10 @@ export class Core {
     // A pasted wall of text is read from its start and its end: that is where requests and their limits sit.
     const draft = this.text.length > DRAFT_MAX ? `${this.text.slice(0, DRAFT_MAX * 0.7)}\n[…]\n${this.text.slice(-DRAFT_MAX * 0.3)}` : this.text
     const lines = ['Draft:', '<<<', draft, '>>>']
-    const found = this.mentions.filter((m) => m.status === 'found').slice(0, 8)
-    if (found.length) lines.push(`In the code: ${found.map((m) => `${m.phrase} (${m.files[0] ?? m.match})`).join('; ')}`)
+    const several = this.mentions.filter((m) => m.status === 'found' && (m.places?.length ?? 0) > 1)
+    const found = this.mentions.filter((m) => m.status === 'found' && !several.includes(m)).slice(0, 8)
+    if (found.length) lines.push(`In the code: ${found.map((m) => `${m.phrase} (${m.places ? 'in many files' : m.files[0] ?? m.match})`).join('; ')}`)
+    if (several.length) lines.push(`In several files, which one is asked about separately (no row for this): ${several.map((m) => `${m.phrase} (${m.places!.join(', ')})`).join('; ')}`)
     const missing = this.mentions.filter((m) => m.status === 'missing')
     if (missing.length) lines.push(`Not found in the code, asked about separately (no row for these): ${missing.map((m) => `"${m.phrase}"`).join(', ')}`)
     const folders = this.index ? relatedFolders(this.text, this.index) : []
@@ -1285,14 +1295,18 @@ export class Core {
   /** `partial`: part of a streamed reading. Rows it has not reached yet stay, and no sketch is asked for until it ends. */
   private applyCard(card: Card, parsed: ParsedCard, text: string, partial = false): void {
     card.read = parsed.read ?? card.read
-    card.kind = parsed.kind ?? card.kind
+    if (!partial && this.atEnter && text === this.text && parsed.kind === null && (parsed.read || parsed.rows.length)) {
+      card.kind = deriveCardKind(text)
+      if (card.kind !== null) this.metric('card-kind-derived', { card: card.id, kind: card.kind })
+    } else card.kind = parsed.kind ?? card.kind
     if (!partial) card.readFor = text
     card.error = false
     // A question is answered, not built: its card is the reading alone.
     // The step-order row pins steps the draft wrote; on a draft with none it would send an order nobody asked for.
+    // A row offering the files a name's own row already asks about is that question again.
     const steps = listsSteps(text)
     const fresh = this.stateDraft?.directive === 'delegate' || card.kind === 'ask' ? [] : parsed.rows.filter((row) =>
-      !card.dismissed.has(row.key) && (row.key !== STEP_ORDER_KEY || steps))
+      !card.dismissed.has(row.key) && (row.key !== STEP_ORDER_KEY || steps) && !asksPlaces(card.rows, row))
     const old = card.rows.filter((row) => row.origin === 'model' || row.origin === 'lens')
     const used = new Set<string>()
     const next: CardRow[] = []
@@ -1329,7 +1343,9 @@ export class Core {
   private withLearned(row: CardRow): CardRow {
     const habit = this.learned[row.key]
     if (!habit || habit.count < LEARNED_AFTER || row.type === 'many') return row
-    const at = row.options.findIndex((option) => normalize(option) === normalize(habit.label))
+    const label = normalize(habit.label)
+    const current = row.options.findIndex((option) => normalize(option) === label)
+    const at = current !== -1 ? current : row.originalOptions?.findIndex((option) => normalize(option) === label) ?? -1
     return at === -1 ? row : { ...row, learned: [at] }
   }
 
@@ -1420,9 +1436,13 @@ export class Core {
       .map((row) => ({ statement: row.statement, option: row.said ?? this.rowText(row, row.picked ?? row.learned ?? row.defaults) }))
     if (this.refsEnabled) {
       // Only what the draft wrote as code (a path, a file, an identifier, backticks): a product name or a
-      // plain word that happens to match a file would send the agent to the wrong place.
-      const refs = this.mentions.filter((m) => m.status === 'found' && m.files.length > 0 && m.as === 'code').slice(0, REFS_MAX)
-      if (refs.length) out.push({ statement: 'Where things are: {}', option: refs.map((m) => `${m.phrase} (${m.files[0]})`).join(', ') })
+      // plain word that happens to match a file would send the agent to the wrong place. A name in several files
+      // points at all of them until its row is picked (the pick then travels as a decision); one in more files
+      // than a row offers points nowhere, since any one of them would be a guess.
+      const picked = new Set(card.rows.filter((row) => row.origin === 'repo' && row.picked !== null).map((row) => row.anchor))
+      const refs = this.mentions.filter((m) => m.status === 'found' && m.files.length > 0 && m.as === 'code' &&
+        !(m.places && (m.places.length < 2 || picked.has(m.phrase)))).slice(0, REFS_MAX)
+      if (refs.length) out.push(fileReferenceDecision(refs.map((m) => ({ phrase: m.phrase, files: m.places ?? m.files.slice(0, 1) }))))
     }
     return out
   }
@@ -1507,6 +1527,7 @@ export class Core {
     this.out.push({
       type: 'request', req, kind: 'sketch', tier: 'cloud', maxTokens: SKETCH_MAX_TOKENS, prompt,
       system: [system.replace('{language}', english ? 'in English' : "in the draft's language")],
+      ...(this.atEnter && { atEnter: true as const }),
     })
     this.metric('sketch-requested', { req, card: card.id })
   }
@@ -1569,7 +1590,7 @@ export class Core {
       // A message typed while the agent works is queued by the engine: its decisions wait for the turn that
       // runs it, and meanwhile the agent's own choices come back on screen.
       if (this.card?.stage === 'draft') this.clearCard()
-      this.pendingSent.push(...added.filter((line) => !line.startsWith('Where things are:')))
+      this.pendingSent.push(...added.filter((line) => !line.startsWith(FILE_REFERENCES_HEADING)))
       if (this.turnCard) this.card = this.turnCard
       return
     }
@@ -1579,7 +1600,7 @@ export class Core {
     this.card = this.turnCard = this.newCard('turn')
     this.card.submittedAt = this.now
     // The receipt lists the choices that travelled; where names live in the code is not one.
-    this.card.sent = added.filter((line) => !line.startsWith('Where things are:'))
+    this.card.sent = added.filter((line) => !line.startsWith(FILE_REFERENCES_HEADING))
   }
 
   private onBlank(label: string, choice: string, alternatives: string[]): void {
@@ -2073,6 +2094,13 @@ export function isHostCommand(text: string): boolean {
 /** Typing that completes a sentence: the inserted text ends in `.`, `?`, `!` or a newline. */
 function completesClause(splice: Splice, clauses: boolean): boolean {
   return (clauses ? /[,.?!:;\n][)"'”’»\]]*[ \t]*$/ : /[.?!\n]$/).test(splice.text)
+}
+
+/** Whether a row offers two or more of the files a which-file row lists (each option counted once, by the longest path in it). */
+function asksPlaces(rows: CardRow[], row: { options: string[] }): boolean {
+  return rows.some((repo) => repo.origin === 'repo' && repo.key.startsWith('file_') &&
+    new Set(row.options.map((option) => repo.options.filter((path) => option.includes(path)).sort((a, b) => b.length - a.length)[0])
+      .filter(Boolean)).size >= 2)
 }
 
 function sameOptions(a: string[], b: string[]): boolean {
