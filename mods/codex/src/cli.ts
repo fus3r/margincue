@@ -11,7 +11,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, appendFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { describeUser, interview } from '../../claude-code/hooks/onboarding'
@@ -21,6 +21,7 @@ import { serveMcp } from './mcp'
 import { findRelay, installRelay, startRelay } from './relay'
 import { runPrefetch } from './prefetch'
 import { PATHS, readSettings, saveSettings } from './store'
+import { MIN_CODEX, tooOld } from './version'
 
 const SELF = fileURLToPath(import.meta.url)
 /** Where setup and the session hook keep a copy of this file, so the shell alias survives plugin updates. */
@@ -86,16 +87,19 @@ function launch(args: string[]): void {
   const own = process.env['MARGINCUE_EDITOR'] || process.env['VISUAL'] || process.env['EDITOR'] || ''
   const visual = `${quote(process.execPath)} ${quote(existsSync(STABLE) ? STABLE : SELF)} compose`
   const env = { ...process.env, VISUAL: visual, ...(own && !own.includes('margincue') && { MARGINCUE_EDITOR: own }) }
+  const bare = () => {
+    const child = spawn('codex', args, {
+      stdio: 'inherit', shell: process.platform === 'win32', env,
+    })
+    child.on('exit', (code) => process.exit(code ?? 0))
+    child.on('error', (error) => {
+      process.stderr.write(`margincue: could not start codex (${error.message}). Is Codex CLI installed?\n`)
+      process.exit(1)
+    })
+  }
   const relay = findRelay(env)
-  if (relay && startRelay(relay, args, env)) return
-  const child = spawn('codex', args, {
-    stdio: 'inherit', shell: process.platform === 'win32', env,
-  })
-  child.on('exit', (code) => process.exit(code ?? 0))
-  child.on('error', (error) => {
-    process.stderr.write(`margincue: could not start codex (${error.message}). Is Codex CLI installed?\n`)
-    process.exit(1)
-  })
+  if (relay && startRelay(relay, args, env, bare)) return
+  bare()
 }
 
 // ---- setup ---------------------------------------------------------------------------
@@ -137,6 +141,12 @@ async function setup(): Promise<void> {
     rl.close()
     return
   }
+  const found = tooOld(`${codex.stdout ?? ''}`)
+  if (found) {
+    say(`Codex CLI ${found} is older than ${MIN_CODEX}, which MarginCue needs. Update it first: npm install -g @openai/codex@latest`)
+    rl.close()
+    return
+  }
   say(`1. The plugin (hooks that let you switch the agent's choices during a turn, and the receipt after it).`)
   const added = spawnSync('codex', ['plugin', 'marketplace', 'add', 'fus3r/margincue'], { encoding: 'utf8', shell: process.platform === 'win32' })
   const installed = spawnSync('codex', ['plugin', 'add', 'margincue@margincue'], { encoding: 'utf8', shell: process.platform === 'win32' })
@@ -172,16 +182,30 @@ async function setup(): Promise<void> {
   say(`3. The card under Codex's prompt, as you type.`)
   await installRelay(say)
   const line = aliasLine()
-  if (line && existsSync(line.file) && readFileSync(line.file, 'utf8').includes(line.text)) {
+  if (line && readText(line.file).includes(line.text)) {
     say(`   The codex alias is already in ${line.file}.`)
   } else if (line) {
     const answer = ((await rl.question(`   Add this to ${line.file}?\n     ${line.text}\n   [Y/n] `)) ?? 'n').trim().toLowerCase()
     if (answer === '' || answer === 'y' || answer === 'yes') {
-      appendFileSync(line.file, `\n# MarginCue: Codex with MarginCue's card under its prompt\n${line.text}\n`)
-      say('   Added. Open a new terminal and run codex: the card shows under the prompt as you type.')
+      try {
+        mkdirSync(dirname(line.file), { recursive: true })
+        appendFileSync(line.file, `\n# MarginCue: Codex with MarginCue's card under its prompt\n${line.text}\n`)
+        say('   Added. Open a new terminal and run codex: the card shows under the prompt as you type.')
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : 'error')
+        say(`   Could not write to ${line.file} (${code}). Add the line above to your shell profile yourself, or start Codex with: node ${quote(STABLE)} codex`)
+      }
     } else say(`   Not added. Start Codex with: node ${quote(STABLE)} codex`)
   }
   rl.close()
+}
+
+function readText(file: string): string {
+  try {
+    return readFileSync(file, 'utf8')
+  } catch {
+    return ''
+  }
 }
 
 function aliasLine(): { file: string; text: string } | null {
@@ -193,8 +217,16 @@ function aliasLine(): { file: string; text: string } | null {
     return { file: profile, text: `function codex { & ${run} codex @args }` }
   }
   const shell = process.env['SHELL'] ?? ''
-  if (shell.endsWith('fish')) return { file: join(homedir(), '.config', 'fish', 'config.fish'), text: `function codex; ${run} codex $argv; end` }
-  const file = shell.endsWith('zsh') ? join(homedir(), '.zshrc') : join(homedir(), '.bashrc')
+  if (shell.endsWith('fish')) {
+    const config = process.env['XDG_CONFIG_HOME'] || join(homedir(), '.config')
+    return { file: join(config, 'fish', 'config.fish'), text: `function codex; ${run} codex $argv; end` }
+  }
+  // zsh reads its profile from ZDOTDIR when set. A macOS terminal opens bash as a login shell, which reads the
+  // first of these files that exists and never ~/.bashrc.
+  const login = ['.bash_profile', '.bash_login', '.profile'].map((name) => join(homedir(), name))
+  const file = shell.endsWith('zsh') ? join(process.env['ZDOTDIR'] || homedir(), '.zshrc')
+    : process.platform === 'darwin' && shell.endsWith('bash') ? login.find((path) => existsSync(path)) ?? login[0]!
+    : join(homedir(), '.bashrc')
   return { file, text: `alias codex='${run} codex'` }
 }
 
@@ -207,4 +239,8 @@ function status(): void {
   ].join('\n') + '\n')
 }
 
-void main(process.argv.slice(2))
+main(process.argv.slice(2)).catch((error: unknown) => {
+  // A last resort: one line, never a stack trace in the person's terminal.
+  process.stderr.write(`margincue: ${error instanceof Error ? error.message : String(error)}\n`)
+  process.exitCode = 1
+})

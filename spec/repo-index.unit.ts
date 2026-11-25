@@ -60,3 +60,29 @@ test('a folder outside git is indexed through ripgrep, with the same paths', { s
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('the home folder and a drive root are not indexed: nothing walks the whole disk', async () => {
+  const home = project()
+  try {
+    const ran: string[] = []
+    const engine = (env: Record<string, string>) => ({
+      env: { get: async (name: string) => env[name] },
+      process: { run: async (argv: string[]) => {
+        ran.push(argv.join(' '))
+        return { exitCode: 1, stdout: '', stderr: '' }
+      } },
+    }) as never
+    assert.equal(await collectVocabulary(engine({ HOME: home }), home), null)
+    assert.equal(await collectVocabulary(engine({ HOME: home }), `${home}/`), null)
+    // Windows has no HOME, only USERPROFILE, and writes its paths with backslashes.
+    assert.equal(await collectVocabulary(engine({ USERPROFILE: 'C:\\Users\\Maya' }), 'C:\\Users\\Maya\\'), null)
+    assert.equal(await collectVocabulary(engine({ HOME: home }), '/'), null)
+    assert.equal(await collectVocabulary(engine({ HOME: home }), 'D:\\'), null)
+    assert.deepEqual(ran, [])
+    // A project inside the home folder is still indexed.
+    await collectVocabulary(engine({ HOME: home }), join(home, 'src'))
+    assert.ok(ran.length > 0)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})

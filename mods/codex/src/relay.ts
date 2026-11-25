@@ -61,8 +61,11 @@ function relayWorks(path: string): boolean {
   return version.status === 0 && version.stdout.includes(`protocol ${PROTOCOL}`)
 }
 
-/** Runs Codex under the relay; false when it did not start (the caller starts Codex bare). */
-export function startRelay(relay: string, args: string[], env: NodeJS.ProcessEnv): boolean {
+/**
+ * Runs Codex under the relay; false when it did not start (the caller starts Codex bare). A relay that fails before
+ * it starts Codex (it says hello once Codex runs) hands over to `bare`, so the person still gets Codex.
+ */
+export function startRelay(relay: string, args: string[], env: NodeJS.ProcessEnv, bare?: () => void): boolean {
   const cwd = interactive(args)
   if (!cwd) return false
   let child
@@ -77,14 +80,30 @@ export function startRelay(relay: string, args: string[], env: NodeJS.ProcessEnv
     child.kill()
     return false
   }
+  const spawnedAt = Date.now()
+  let started = false
+  link.once('data', () => (started = true))
+  // This process must outlive the relay: if it ended first, the shell would take the terminal back from Codex.
+  // A fault in the card costs the card, never the session.
+  process.on('uncaughtException', () => {})
+  process.on('unhandledRejection', () => {})
   const band = serveBand(link, cwd)
   child.on('exit', (code, signal) => {
     band.close()
-    process.exit(code ?? (signal ? 128 + (SIGNALS[signal] ?? 1) : 1))
+    // A relay that fails at once, before its hello (it says hello once Codex runs), hands over to Codex bare.
+    const failed = code !== 0 && !signal && Boolean(bare) && Date.now() - spawnedAt < 3000
+    const finish = () => {
+      if (failed && !started) return bare!()
+      process.exit(code ?? (signal ? 128 + (SIGNALS[signal] ?? 1) : 1))
+    }
+    // The hello can still be in the pipe when the exit is reported.
+    if (failed && !started) setTimeout(finish, 150)
+    else finish()
   })
   child.on('error', (error) => {
     band.close()
     process.stderr.write(`margincue: the relay could not start (${error.message}).\n`)
+    if (bare) return bare()
     process.exit(1)
   })
   return true

@@ -257,7 +257,8 @@ export class Band {
 
   /** Enter on a plain box while it is claimed: say what goes with the prompt. */
   private onEnter(text: string, approx: boolean): void {
-    if (this.agent && text === this.agent.text) {
+    // The card hidden for this prompt (ctrl+] d): it goes as written.
+    if ((this.agent && text === this.agent.text) || (this.dismissed !== null && this.dismissed === text)) {
       this.send({ t: 'enter', do: 'pass' })
       return
     }
@@ -413,9 +414,10 @@ export class Band {
     // A finished card for this prompt goes with it as the plan (the core decides what at Enter);
     // before that, only what the person switched does.
     const plan = !agentShown && card?.stage === 'draft' && !card.reading
+    const hidden = this.dismissed !== null && this.dismissed === this.draft.text
     this.emit({
       t: 'claims',
-      enter: this.on && !agentShown && (decisions > 0 || plan) && Boolean(this.draft.text?.trim()),
+      enter: this.on && !agentShown && !hidden && (decisions > 0 || plan) && Boolean(this.draft.text?.trim()),
       arrows: this.on && Boolean(card?.rows.length),
     })
     this.spin(Boolean(card?.reading || card?.sketch?.drawing))

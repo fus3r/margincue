@@ -67,6 +67,8 @@ export class CodexModel {
     })
     this.child = child
     child.stderr.resume()
+    // An app-server that stops reading (EPIPE) fails the readings; it never crashes the card.
+    child.stdin.on('error', (error) => this.fail(`codex app-server: ${error.message}`))
     child.on('error', (error) => this.fail(`codex could not start: ${error.message}`))
     child.on('exit', () => this.fail('codex app-server exited'))
     createInterface({ input: child.stdout }).on('line', (line) => this.receive(line))

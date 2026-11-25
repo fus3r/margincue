@@ -101,6 +101,8 @@ const host = {
   /** Choices marked in replies from before the running turn: drawn again later, they are not this turn's. */
   blankOld: new Set<string>(),
   indexedAt: -Infinity,
+  /** The last index run found a project to index (not the home folder, an empty folder, or one git and ripgrep can't read). */
+  indexed: false,
   indexing: false,
   /** The follow-up text MarginCue last put in the composer; only that (or an empty box) is ever replaced. */
   lastFill: '',
@@ -296,6 +298,11 @@ function metric($: $, fx: MetricEffect): void {
   const ms = fx['ms']
   if (fx.name === 'first' && typeof ms === 'number') stats.first.push(Math.round(ms))
   if (fx.name === 'reply' && typeof ms === 'number') stats.full.push(Math.round(ms))
+  // A card's reading comes whole (no streaming here): its first words and its reply arrive together.
+  if (fx.name === 'card-reply' && fx['ok'] === true && typeof ms === 'number') {
+    stats.first.push(Math.round(ms))
+    stats.full.push(Math.round(ms))
+  }
   if (fx.name === 'submit') {
     stats.submits++
     const n = fx['decisions']
@@ -967,6 +974,7 @@ async function reindex($: $, force: boolean): Promise<void> {
     const vocab = await collectVocabulary($, host.root)
     if (epoch !== host.epoch) return
     host.indexedAt = now()
+    host.indexed = vocab !== null
     run($, { type: 'vocabulary', vocab })
     log($, 'indexed', { files: vocab?.files.length ?? 0, names: vocab?.entries.length ?? 0 })
   } catch {
@@ -1132,6 +1140,7 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
   else run($, { type: 'loadState', now: now(), state: { model: null, values: [], submitted: turns > 0 } })
   if (loaded.skipped && host.settings.mode !== 'off') void $.ui.toast(`MarginCue skipped ${loaded.skipped} invalid or conflicting personal bundle(s).`)
   host.indexedAt = -Infinity
+  host.indexed = false
   host.blankSeen.clear()
   host.blankOld.clear()
   host.onboardPending = false
@@ -1341,7 +1350,7 @@ ${slot.source}` : 'Use /margincue why <slot>.')
           `MarginCue is ${settings.mode} · profile ${settings.profile} · language ${settings.language} · depth ${currentDepth()} · card ${settings.sheet ? 'on' : 'off'} · sketch ${settings.sketch ? 'on' : 'off'} · refs ${settings.refs ? 'on' : 'off'} · blanks ${settings.blanks ? 'on' : 'off'}`,
           `This session: ${stats.requests} model calls, ${stats.failures} failed · median first ${med(stats.first)} · median reply ${med(stats.full)}`,
           `${stats.submits} prompts sent, ${stats.attached} with decisions attached.`,
-          `Project index: ${host.indexing ? 'reading…' : host.indexedAt > 0 ? 'ready' : 'none (not a git repository, or off)'}.`,
+          `Project index: ${host.indexing ? 'reading…' : host.indexed ? 'ready' : 'none (not a git repository, or off)'}.`,
           ...profileLines(),
           host.settings.user ? `You: ${describeUser(host.settings.user)} (/margincue setup changes this.)`
             : 'You: not set up yet (/margincue setup asks three or four questions).',
@@ -1396,7 +1405,7 @@ async function onboard($: $, asked: boolean): Promise<string> {
 
 /** Which expert profiles the project calls for, read from its files, and why. */
 function profileLines(): string[] {
-  if (!(host.indexedAt > 0)) return []
+  if (!host.indexed) return []
   const lenses = host.core?.projectProfiles() ?? []
   if (!lenses.length) return ['Profiles from this project: none detected (/margincue profile <name> adds one).']
   return [`Profiles from this project: ${lenses.map((lens) => `${lens.profile}, ${lens.rigor} (${lens.reasons.join(', ')})`).join('; ')}.`]

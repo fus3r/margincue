@@ -28,7 +28,9 @@ if [[ "$RUNNER_OS" == Windows ]]; then
   grep "function codex" "$home/Documents/PowerShell/Microsoft.PowerShell_profile.ps1"
   grep "Not on Windows yet" "$RUNNER_TEMP/setup.log"
 else
-  grep "margincue.mjs\" codex'" "$home/.bashrc"
+  # A macOS terminal opens bash as a login shell: the alias goes where that shell reads it.
+  if [[ "$RUNNER_OS" == macOS ]]; then rc="$home/.bash_profile"; else rc="$home/.bashrc"; fi
+  grep "margincue.mjs\" codex'" "$rc"
   if [[ "$released" == yes ]]; then
     "$home/.margincue/bin/margincue-relay" --version | grep "protocol 1"
   else

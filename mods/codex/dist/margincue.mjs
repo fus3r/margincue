@@ -4,7 +4,7 @@
 import { spawn as spawn5, spawnSync as spawnSync3 } from "node:child_process";
 import { copyFileSync as copyFileSync2, existsSync as existsSync2, mkdirSync as mkdirSync4, readFileSync as readFileSync5, appendFileSync } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { join as join5 } from "node:path";
+import { dirname as dirname3, join as join5 } from "node:path";
 import { createInterface as createInterface4 } from "node:readline";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
@@ -9859,9 +9859,23 @@ var DECLARED = [
 ];
 var DECLARED_FILES = ["requirements*.txt", "*/requirements*.txt", "pyproject.toml", "package.json", "environment.yml"];
 async function collectVocabulary($, root) {
+  if (await tooBroad($, root)) return null;
   const vocab = await fromGit($, root) ?? await fromRipgrep($, root);
   const project = root.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
   return vocab && project ? { ...vocab, project } : vocab;
+}
+async function tooBroad($, root) {
+  const norm = (path) => path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const at = norm(root);
+  if (/^(?:[a-z]:)?$/.test(at)) return true;
+  let home;
+  try {
+    home = await $.env.get("HOME") ?? await $.env.get("USERPROFILE");
+  } catch {
+    const own = globalThis.process?.env;
+    home = own?.["HOME"] ?? own?.["USERPROFILE"];
+  }
+  return Boolean(home) && norm(home) === at;
 }
 async function fromGit($, root) {
   const git = (args) => $.process.run(["git", "-C", root, ...args], { cwd: root, timeoutMs: 2e4 });
@@ -10082,7 +10096,15 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.16";
+var VERSION = "0.4.17";
+var MIN_CODEX = "0.171";
+function tooOld(output2) {
+  const match = /codex-cli (\d+)\.(\d+)\.(\d+)/.exec(output2);
+  if (!match) return null;
+  const [major, minor] = [Number(match[1]), Number(match[2])];
+  const [minMajor, minMinor] = MIN_CODEX.split(".").map(Number);
+  return major < minMajor || major === minMajor && minor < minMinor ? `${match[1]}.${match[2]}.${match[3]}` : null;
+}
 
 // src/model.ts
 var LIGHT = [/luna/i, /mini/i, /nano/i, /lite/i, /small/i, /flash/i, /terra/i];
@@ -10130,6 +10152,7 @@ var CodexModel = class {
     });
     this.child = child;
     child.stderr.resume();
+    child.stdin.on("error", (error) => this.fail(`codex app-server: ${error.message}`));
     child.on("error", (error) => this.fail(`codex could not start: ${error.message}`));
     child.on("exit", () => this.fail("codex app-server exited"));
     createInterface({ input: child.stdout }).on("line", (line) => this.receive(line));
@@ -11931,7 +11954,7 @@ var Band = class {
   }
   /** Enter on a plain box while it is claimed: say what goes with the prompt. */
   onEnter(text2, approx) {
-    if (this.agent && text2 === this.agent.text) {
+    if (this.agent && text2 === this.agent.text || this.dismissed !== null && this.dismissed === text2) {
       this.send({ t: "enter", do: "pass" });
       return;
     }
@@ -12067,9 +12090,10 @@ var Band = class {
     const decisions = this.view?.decisions.length ?? 0;
     const agentShown = Boolean(this.shownAgent());
     const plan = !agentShown && card?.stage === "draft" && !card.reading;
+    const hidden = this.dismissed !== null && this.dismissed === this.draft.text;
     this.emit({
       t: "claims",
-      enter: this.on && !agentShown && (decisions > 0 || plan) && Boolean(this.draft.text?.trim()),
+      enter: this.on && !agentShown && !hidden && (decisions > 0 || plan) && Boolean(this.draft.text?.trim()),
       arrows: this.on && Boolean(card?.rows.length)
     });
     this.spin(Boolean(card?.reading || card?.sketch?.drawing));
@@ -12230,7 +12254,7 @@ function relayWorks(path) {
   const version = spawnSync2(path, ["--version"], { encoding: "utf8", timeout: 3e3 });
   return version.status === 0 && version.stdout.includes(`protocol ${PROTOCOL}`);
 }
-function startRelay(relay, args, env) {
+function startRelay(relay, args, env, bare) {
   const cwd = interactive(args);
   if (!cwd) return false;
   let child;
@@ -12244,15 +12268,29 @@ function startRelay(relay, args, env) {
     child.kill();
     return false;
   }
+  const spawnedAt = Date.now();
+  let started = false;
+  link.once("data", () => started = true);
+  process.on("uncaughtException", () => {
+  });
+  process.on("unhandledRejection", () => {
+  });
   const band = serveBand(link, cwd);
   child.on("exit", (code, signal) => {
     band.close();
-    process.exit(code ?? (signal ? 128 + (SIGNALS[signal] ?? 1) : 1));
+    const failed = code !== 0 && !signal && Boolean(bare) && Date.now() - spawnedAt < 3e3;
+    const finish = () => {
+      if (failed && !started) return bare();
+      process.exit(code ?? (signal ? 128 + (SIGNALS[signal] ?? 1) : 1));
+    };
+    if (failed && !started) setTimeout(finish, 150);
+    else finish();
   });
   child.on("error", (error) => {
     band.close();
     process.stderr.write(`margincue: the relay could not start (${error.message}).
 `);
+    if (bare) return bare();
     process.exit(1);
   });
   return true;
@@ -12376,19 +12414,22 @@ function launch(args) {
   const own = process.env["MARGINCUE_EDITOR"] || process.env["VISUAL"] || process.env["EDITOR"] || "";
   const visual = `${quote(process.execPath)} ${quote(existsSync2(STABLE) ? STABLE : SELF)} compose`;
   const env = { ...process.env, VISUAL: visual, ...own && !own.includes("margincue") && { MARGINCUE_EDITOR: own } };
-  const relay = findRelay(env);
-  if (relay && startRelay(relay, args, env)) return;
-  const child = spawn5("codex", args, {
-    stdio: "inherit",
-    shell: process.platform === "win32",
-    env
-  });
-  child.on("exit", (code) => process.exit(code ?? 0));
-  child.on("error", (error) => {
-    process.stderr.write(`margincue: could not start codex (${error.message}). Is Codex CLI installed?
+  const bare = () => {
+    const child = spawn5("codex", args, {
+      stdio: "inherit",
+      shell: process.platform === "win32",
+      env
+    });
+    child.on("exit", (code) => process.exit(code ?? 0));
+    child.on("error", (error) => {
+      process.stderr.write(`margincue: could not start codex (${error.message}). Is Codex CLI installed?
 `);
-    process.exit(1);
-  });
+      process.exit(1);
+    });
+  };
+  const relay = findRelay(env);
+  if (relay && startRelay(relay, args, env, bare)) return;
+  bare();
 }
 function lineReader() {
   const rl = createInterface4({ input: process.stdin });
@@ -12426,6 +12467,12 @@ async function setup() {
     rl.close();
     return;
   }
+  const found = tooOld(`${codex.stdout ?? ""}`);
+  if (found) {
+    say(`Codex CLI ${found} is older than ${MIN_CODEX}, which MarginCue needs. Update it first: npm install -g @openai/codex@latest`);
+    rl.close();
+    return;
+  }
   say(`1. The plugin (hooks that let you switch the agent's choices during a turn, and the receipt after it).`);
   const added = spawnSync3("codex", ["plugin", "marketplace", "add", "fus3r/margincue"], { encoding: "utf8", shell: process.platform === "win32" });
   const installed = spawnSync3("codex", ["plugin", "add", "margincue@margincue"], { encoding: "utf8", shell: process.platform === "win32" });
@@ -12459,21 +12506,34 @@ async function setup() {
   say(`3. The card under Codex's prompt, as you type.`);
   await installRelay(say);
   const line = aliasLine();
-  if (line && existsSync2(line.file) && readFileSync5(line.file, "utf8").includes(line.text)) {
+  if (line && readText(line.file).includes(line.text)) {
     say(`   The codex alias is already in ${line.file}.`);
   } else if (line) {
     const answer = (await rl.question(`   Add this to ${line.file}?
      ${line.text}
    [Y/n] `) ?? "n").trim().toLowerCase();
     if (answer === "" || answer === "y" || answer === "yes") {
-      appendFileSync(line.file, `
+      try {
+        mkdirSync4(dirname3(line.file), { recursive: true });
+        appendFileSync(line.file, `
 # MarginCue: Codex with MarginCue's card under its prompt
 ${line.text}
 `);
-      say("   Added. Open a new terminal and run codex: the card shows under the prompt as you type.");
+        say("   Added. Open a new terminal and run codex: the card shows under the prompt as you type.");
+      } catch (error) {
+        const code = error.code ?? (error instanceof Error ? error.message : "error");
+        say(`   Could not write to ${line.file} (${code}). Add the line above to your shell profile yourself, or start Codex with: node ${quote(STABLE)} codex`);
+      }
     } else say(`   Not added. Start Codex with: node ${quote(STABLE)} codex`);
   }
   rl.close();
+}
+function readText(file) {
+  try {
+    return readFileSync5(file, "utf8");
+  } catch {
+    return "";
+  }
 }
 function aliasLine() {
   const run = `node ${quote(STABLE)}`;
@@ -12483,8 +12543,12 @@ function aliasLine() {
     return { file: profile, text: `function codex { & ${run} codex @args }` };
   }
   const shell = process.env["SHELL"] ?? "";
-  if (shell.endsWith("fish")) return { file: join5(homedir2(), ".config", "fish", "config.fish"), text: `function codex; ${run} codex $argv; end` };
-  const file = shell.endsWith("zsh") ? join5(homedir2(), ".zshrc") : join5(homedir2(), ".bashrc");
+  if (shell.endsWith("fish")) {
+    const config = process.env["XDG_CONFIG_HOME"] || join5(homedir2(), ".config");
+    return { file: join5(config, "fish", "config.fish"), text: `function codex; ${run} codex $argv; end` };
+  }
+  const login = [".bash_profile", ".bash_login", ".profile"].map((name) => join5(homedir2(), name));
+  const file = shell.endsWith("zsh") ? join5(process.env["ZDOTDIR"] || homedir2(), ".zshrc") : process.platform === "darwin" && shell.endsWith("bash") ? login.find((path) => existsSync2(path)) ?? login[0] : join5(homedir2(), ".bashrc");
   return { file, text: `alias codex='${run} codex'` };
 }
 function status2() {
@@ -12495,4 +12559,8 @@ function status2() {
     `Composer: ${existsSync2(STABLE) ? STABLE : "not installed (margincue setup)"}`
   ].join("\n") + "\n");
 }
-void main(process.argv.slice(2));
+main(process.argv.slice(2)).catch((error) => {
+  process.stderr.write(`margincue: ${error instanceof Error ? error.message : String(error)}
+`);
+  process.exitCode = 1;
+});

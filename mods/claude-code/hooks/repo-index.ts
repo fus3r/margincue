@@ -31,9 +31,30 @@ const DECLARED = ['^[A-Za-z][A-Za-z0-9_.-]*', '^[[:space:]]*"[A-Za-z][A-Za-z0-9_
 const DECLARED_FILES = ['requirements*.txt', '*/requirements*.txt', 'pyproject.toml', 'package.json', 'environment.yml']
 
 export async function collectVocabulary($: EngineInterface, root: string): Promise<Vocabulary | null> {
+  if (await tooBroad($, root)) return null
   const vocab = await fromGit($, root) ?? await fromRipgrep($, root)
   const project = root.replace(/[\\/]+$/, '').split(/[\\/]/).pop()
   return vocab && project ? { ...vocab, project } : vocab
+}
+
+/**
+ * A session started in the home folder or at a drive's root is not a project: listing and searching it walks the
+ * whole disk (every reading after a turn too) and opens folders the system guards. Such a folder gets no index.
+ * The home folder comes from the engine (Claude Code), else from the process (Codex).
+ */
+async function tooBroad($: EngineInterface, root: string): Promise<boolean> {
+  const norm = (path: string) => path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  const at = norm(root)
+  if (/^(?:[a-z]:)?$/.test(at)) return true
+  let home: string | undefined
+  try {
+    home = await $.env.get('HOME') ?? await $.env.get('USERPROFILE')
+  } catch {
+    // Codex's engine has no $.env: its process's own environment says.
+    const own = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
+    home = own?.['HOME'] ?? own?.['USERPROFILE']
+  }
+  return Boolean(home) && norm(home!) === at
 }
 
 async function fromGit($: EngineInterface, root: string): Promise<Vocabulary | null> {

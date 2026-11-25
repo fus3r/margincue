@@ -1,18 +1,28 @@
 // A stand-in for `codex app-server` in tests: it speaks the same newline-delimited JSON-RPC,
 // lists two models, and answers each turn with a fixed reply in three streamed pieces.
-// FAKE_CODEX_FAIL=1 makes every turn fail; FAKE_CODEX_LINES=1 streams the reply a line at a time.
+// FAKE_CODEX_FAIL=1 makes every turn fail; FAKE_CODEX_LINES=1 streams the reply a line at a time;
+// FAKE_CODEX_CLOSE=1 stops reading (closes stdin, stays alive) once it has listed the models.
+import { closeSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`)
 let thread = 0
 const instructions = new Map()
-createInterface({ input: process.stdin }).on('line', (line) => {
+const lines = createInterface({ input: process.stdin })
+lines.on('line', (line) => {
   const message = JSON.parse(line)
   if (message.id === undefined) return
   const { id, method, params } = message
   if (method === 'initialize') return send({ id, result: { userAgent: 'fake' } })
   if (method === 'model/list') {
-    return send({ id, result: { data: [{ id: 'gpt-big', isDefault: true }, { id: 'gpt-6-luna', isDefault: false }] } })
+    send({ id, result: { data: [{ id: 'gpt-big', isDefault: true }, { id: 'gpt-6-luna', isDefault: false }] } })
+    if (process.env.FAKE_CODEX_CLOSE) {
+      lines.close()
+      process.stdin.destroy()
+      closeSync(0)
+      setTimeout(() => {}, 3000)
+    }
+    return
   }
   if (method === 'thread/start') {
     if (process.env.FAKE_CODEX_PROJECT && (params.cwd !== process.env.FAKE_CODEX_PROJECT || !process.argv.includes('features.plugins=false'))) {

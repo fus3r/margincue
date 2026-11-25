@@ -4,7 +4,7 @@ While you type a prompt, MarginCue shows how the agent will read it, links the n
 
 ## Install
 
-In Claude Code 2.1.275 or later, at the prompt:
+In Claude Code 2.1.326 or later, at the prompt:
 
 ```
 /plugin install margincue --marketplace fus3r/margincue

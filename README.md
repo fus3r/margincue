@@ -26,7 +26,7 @@ It adapts to you and to the project. The first run asks what you work on and you
 
 ## Install
 
-**Claude Code** 2.1.275 or later, at the prompt:
+**Claude Code** 2.1.326 or later, at the prompt:
 
 ```
 /plugin install margincue --marketplace fus3r/margincue

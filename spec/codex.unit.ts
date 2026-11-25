@@ -1,10 +1,10 @@
 // MarginCue for Codex: the composer's keys and text, the hooks, the session reader, and the
 // model client against a fake app-server. Runs on every platform in CI.
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import { test } from 'node:test'
-import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -28,6 +28,7 @@ const { composeFollowUp } = await import('../mods/codex/src/widget-message')
 const { emptyCard, readRecord, writeRecord } = await import('../mods/codex/src/card-store')
 const { CardReader } = await import('../mods/codex/src/card-reader')
 const { fillCard } = await import('../mods/codex/src/prefetch')
+const versionModule = await import('../mods/codex/src/version')
 import type { CardOutput } from '../mods/codex/src/widget-message'
 import type { WidgetCard, WidgetRow } from '../mods/codex/src/widget-message'
 
@@ -165,6 +166,21 @@ test('readings: the lightest model, the reader prompt as instructions, the reply
   const outcome = await missing.complete('x', 'y')
   assert.equal(outcome.ok, false)
   missing.close()
+})
+
+test('an app-server that stops reading fails the reading instead of crashing the card (EPIPE)', async () => {
+  process.env['FAKE_CODEX_CLOSE'] = '1'
+  try {
+    const model = new CodexModel(home, [process.execPath, join(here, 'fixtures', 'fake-codex.mjs')])
+    assert.equal(await model.start(), 'gpt-6-luna')
+    await new Promise((r) => setTimeout(r, 200))
+    const outcome = await model.complete('x', 'y')
+    assert.equal(outcome.ok, false)
+    assert.match(!outcome.ok ? outcome.reason : '', /EPIPE/)
+    model.close()
+  } finally {
+    delete process.env['FAKE_CODEX_CLOSE']
+  }
 })
 
 test('the desktop hook gates new tasks on the widget and skips its follow-ups; the CLI keeps the text card', async () => {
@@ -443,4 +459,40 @@ test('a scripted run (codex exec) is left exactly as it would be without MarginC
   assert.equal(promptHook({ session_id: 'x', turn_id: 'e-1', transcript_path: transcript, cwd: '/p', prompt: 'Build a report page.' }), null)
   assert.equal(readFileSync(PATHS.turn, 'utf8'), before)
   assert.equal(stopHook({ turn_id: 'e-1', transcript_path: transcript }), null)
+})
+
+test('setup stops on a Codex older than it needs, and a shell profile it cannot write costs a message, not a stack trace', { skip: process.platform === 'win32' }, () => {
+  const { tooOld } = versionModule
+  assert.equal(tooOld('codex-cli 0.150.0'), '0.150.0')
+  assert.equal(tooOld('codex-cli 0.171.0'), null)
+  assert.equal(tooOld('codex-cli 1.2.0'), null)
+  assert.equal(tooOld('something else 0.1.0'), null)
+  assert.equal(tooOld('A notice about 0.150.0\ncodex-cli 0.172.0'), null)
+  const sandbox = mkdtempSync(join(tmpdir(), 'margincue-setup-'))
+  const bin = join(sandbox, 'bin')
+  mkdirSync(bin)
+  // A fake Codex that only knows --version and plugin, and a relay that is already installed: no network.
+  writeFileSync(join(bin, 'codex'), '#!/bin/sh\nif [ "$1" = --version ]; then echo "codex-cli ${FAKE_VERSION:-0.172.0}"; fi\nexit 0\n', { mode: 0o755 })
+  const bundle = join(here, '..', 'mods', 'codex', 'dist', 'margincue.mjs')
+  const setup = (name: string, env: Record<string, string>) => {
+    const home = join(sandbox, name)
+    mkdirSync(join(home, '.margincue', 'bin'), { recursive: true })
+    writeFileSync(join(home, '.margincue', 'bin', 'margincue-relay'), '#!/bin/sh\necho "margincue-relay 0.1.2 protocol 1"\n', { mode: 0o755 })
+    const run = spawnSync(process.execPath, [bundle, 'setup'], {
+      input: '\ny\n', encoding: 'utf8',
+      env: { PATH: `${bin}:${process.env['PATH']}`, HOME: home, USERPROFILE: home, MARGINCUE_HOME: join(home, '.margincue'), SHELL: '/bin/bash', ...env },
+    })
+    assert.equal(run.status, 0, run.stderr)
+    assert.doesNotMatch(`${run.stdout}${run.stderr}`, /\n\s+at /)
+    return { home, out: run.stdout }
+  }
+  assert.match(setup('old', { FAKE_VERSION: '0.150.0' }).out, /0\.150\.0 is older than 0\.171/)
+  // fish with no ~/.config/fish yet: the folder is made.
+  const fish = setup('fish', { SHELL: '/usr/bin/fish' })
+  assert.match(readFileSync(join(fish.home, '.config', 'fish', 'config.fish'), 'utf8'), /function codex; node .* codex \$argv; end/)
+  // zsh reads ZDOTDIR; a profile there that cannot be written gets the line to add by hand.
+  const zdot = join(sandbox, 'zdot')
+  mkdirSync(zdot)
+  writeFileSync(join(zdot, '.zshrc'), '# mine\n', { mode: 0o444 })
+  if (process.getuid?.() !== 0) assert.match(setup('zsh', { SHELL: '/bin/zsh', ZDOTDIR: zdot }).out, /Could not write to .*zdot.*\.zshrc/)
 })

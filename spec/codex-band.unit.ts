@@ -204,6 +204,20 @@ test('off, and hidden for one prompt', async () => {
   h.band.close()
 })
 
+test('a card hidden for the prompt (ctrl+] d) lets it go as written, even with a choice switched', async () => {
+  const h = harness()
+  h.draft(PROMPT)
+  await until(() => h.last('claims')?.enter === true)
+  h.band.receive({ t: 'key', key: 'down' })
+  assert.match(h.lines(), /1 set/)
+  h.band.receive({ t: 'dismiss' })
+  assert.deepEqual(h.last('claims'), { t: 'claims', enter: false, arrows: false })
+  // An Enter the relay asked about before it heard the claims goes as written too.
+  h.band.receive({ t: 'enter', text: PROMPT, approx: false })
+  assert.deepEqual(h.last('enter'), { t: 'enter', do: 'pass' })
+  h.band.close()
+})
+
 test('only Codex\'s full-screen commands start under the relay, in the folder Codex opens', () => {
   const cwd = '/work/app'
   assert.equal(interactive([], cwd), cwd)

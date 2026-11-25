@@ -55,7 +55,9 @@ const composer = ($: { prompt: unknown }) => $.prompt as Composer
 
 /** The engine beneath: a box that applies splices, a model that answers REPLY, a clock and a store. */
 function world(on: Engine, reply: string | ((prompt: string, system: string) => Promise<string>) = REPLY,
-  options: { git?: (args: string) => string | undefined; env?: Record<string, string>; submitted?: { text: string; origin: string }[] } = {}) {
+  options: { git?: (args: string) => string | undefined; env?: Record<string, string>; submitted?: { text: string; origin: string }[]
+    /** The model call failing: its result in place of a reply, or a throw or a promise that never settles. */
+    failure?: () => unknown } = {}) {
   const clock = mock.clock(on, { now: 1000 })
   const store = new Map<string, unknown>()
   const files = new Map<string, string>()
@@ -126,6 +128,7 @@ function world(on: Engine, reply: string | ((prompt: string, system: string) => 
   })
   on('model.complete', async (_, e) => {
     calls.push(e.prompt)
+    if (options.failure) return { value: await options.failure() as never }
     const text = typeof reply === 'string' ? reply : await reply(e.prompt, e.system ?? '')
     return { value: { isAnswered: true as const, text, usage: USAGE } }
   })
@@ -716,6 +719,7 @@ test('grounding links names to the code, asks what a missing one means, and says
   // Only what the draft wrote as code says where things are; Dashboard and Maya stay links on screen.
   expect(sent.text).toBe(`${draft}.\n\nDecisions:\n- "Old Market" is South of Market (src/city/canvas.ts).\n` +
     '- Export the filtered rows.\n- Run it in the browser.\n- Write 500 rows per batch.\n- Where things are: ExportTool (src/dashboard/export.ts).')
+  expect((await $.command.run({ ...cli, command: 'margincue', args: 'status' })).text).toContain('Project index: ready')
 })
 
 test('the sketch shows what done looks like and travels with the prompt unless left out', async ($, on) => {
@@ -997,3 +1001,125 @@ test('event log records suppressed candidates without source text and preserves 
   })
 })
 
+
+// ---- the reading call failing: offline, rate-limited, signed out, a model the account lacks, too slow ----------
+
+const FAILED = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+const FAILURES = {
+  offline: { isAnswered: false as const, reason: 'api-error' as const, status: null, error: 'unknown' as const, usage: FAILED },
+  'rate-limited': { isAnswered: false as const, reason: 'api-error' as const, status: 429, error: 'rate_limit' as const, usage: FAILED },
+  'signed out': { isAnswered: false as const, reason: 'api-error' as const, status: 401, error: 'authentication_failed' as const, usage: FAILED },
+  'timed out': { isAnswered: false as const, reason: 'aborted' as const, usage: FAILED },
+  'empty': { isAnswered: false as const, reason: 'empty-reply' as const, usage: FAILED },
+}
+
+for (const [name, failure] of Object.entries(FAILURES)) {
+  test(`a reading that fails (${name}) says so quietly on the card, and Enter sends the prompt as typed`, async ($, on) => {
+    const { clock } = world(on, replies(), { failure: () => failure })
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await composer($).edit(edit(DRAFT, '.'))
+    await clock.settle()
+    const ui = await $.ui.mount(WIDE)
+    expect(await ui.find({ type: 'Text', text: /no reading this time/ })).toBeDefined()
+    await ui.unmount()
+    const sent = await $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
+    expect(sent.text).toBe(`${DRAFT}.`)
+    expect((await $.command.run({ ...cli, command: 'margincue', args: 'status' })).text).toMatch(/\d+ model calls, \d+ failed/)
+  })
+}
+
+test('a model call the engine refuses to send (a model the account lacks) leaves the prompt as typed', async ($, on) => {
+  const { clock } = world(on, replies(), { failure: () => { throw new Error('model not available') } })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await composer($).edit(edit(DRAFT, '.'))
+  await clock.settle()
+  const ui = await $.ui.mount(WIDE)
+  expect(await ui.find({ type: 'Text', text: /no reading this time/ })).toBeDefined()
+  await ui.unmount()
+  const sent = await $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
+  expect(sent.text).toBe(`${DRAFT}.`)
+})
+
+test('a reading still on its way never holds Enter at the terminal: the prompt goes as typed', async ($, on) => {
+  const { clock } = world(on, replies(), { failure: () => new Promise(() => {}) })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await composer($).edit(edit(DRAFT, '.'))
+  await clock.advance(2000)
+  const sent = await $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
+  expect(sent.text).toBe(`${DRAFT}.`)
+})
+
+test('in the desktop app a reading that fails or never comes lets the prompt go as typed', async ($, on) => {
+  let calls = 0
+  const { clock } = world(on, replies(), {
+    env: { CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' },
+    failure: () => (++calls === 1 ? FAILURES['rate-limited'] : new Promise(() => {})),
+  })
+  heldPanel(on)
+  await $.session.start({ cwd: '/', surface: null, isInteractive: false })
+  await clock.settle()
+  const failed = $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
+  await clock.settle()
+  await clock.advance(1000)
+  expect((await failed).text).toBe(`${DRAFT}.`)
+  const slow = $.prompt.submit({ text: `${DRAFT} for the admins.`, origin: { kind: 'composer' }, wait: false })
+  await clock.settle()
+  await clock.advance(61000)
+  expect((await slow).text).toBe(`${DRAFT} for the admins.`)
+})
+
+test('/margincue status gives the readings\' median times once a card has been read', async ($, on) => {
+  const { clock } = world(on, replies())
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const status = async () => (await $.command.run({ ...cli, command: 'margincue', args: 'status' })).text
+  expect(await status()).toContain('median first – · median reply –')
+  await composer($).edit(edit(DRAFT, '.'))
+  await clock.settle()
+  expect(await status()).toMatch(/model calls, 0 failed · median first \d+ ms · median reply \d+ ms/)
+  // Neither git nor ripgrep found a project here: the status says so rather than "ready".
+  expect(await status()).toContain('Project index: none')
+})
+
+// ---- the first-run questions: skippable, never in the way of typing ----------------------------------------------
+
+test('the first-run questions come once on an empty prompt; closing them skips them for good and the card still works', async ($, on) => {
+  const { clock, store, calls } = world(on, replies())
+  on('ui.toast', () => ({ value: undefined }))
+  const asked = panel(on, () => null)
+  store.set('settings', { onboarded: null })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.advance(2000)
+  expect(asked.map((question) => question.header)).toEqual(['Your work'])
+  expect(store.get('settings')).toMatchObject({ onboarded: 'skipped' })
+  await composer($).edit(edit(DRAFT, '.'))
+  await clock.settle()
+  expect(calls.length).toBeGreaterThan(0)
+  const sent = await $.prompt.submit({ text: `${DRAFT}.`, origin: { kind: 'composer' }, wait: false })
+  expect(sent.text).toContain(`${DRAFT}.\n\nDecisions:`)
+  // The next session does not ask again.
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.advance(2000)
+  expect(asked.length).toBe(1)
+})
+
+test('someone who starts typing at once is never interrupted by the first-run questions', async ($, on) => {
+  const { clock, store } = world(on, replies())
+  const asked = panel(on, (question) => question.options[0]!.label)
+  store.set('settings', { onboarded: null })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await composer($).edit(edit('Build', ' a'))
+  await clock.advance(2000)
+  expect(asked.length).toBe(0)
+  expect((store.get('settings') as { onboarded?: unknown } | undefined)?.onboarded ?? null).toBe(null)
+})
+
+test('Enter on each first-run question takes its first option and finishes the interview', async ($, on) => {
+  const { clock, store } = world(on, replies())
+  on('ui.toast', () => ({ value: undefined }))
+  const asked = panel(on, (question) => question.options[0]!.label)
+  store.set('settings', { onboarded: null })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.advance(2000)
+  expect(asked.map((question) => question.header)).toEqual(['Your work', 'You decide'])
+  expect(store.get('settings')).toMatchObject({ onboarded: 'done', user: { work: ['apps'], decide: ['scope'] } })
+})
