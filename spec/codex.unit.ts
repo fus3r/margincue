@@ -176,7 +176,8 @@ test('an app-server that stops reading fails the reading instead of crashing the
     await new Promise((r) => setTimeout(r, 200))
     const outcome = await model.complete('x', 'y')
     assert.equal(outcome.ok, false)
-    assert.match(!outcome.ok ? outcome.reason : '', /EPIPE/)
+    // POSIX reports the broken pipe itself; on Windows the closed pipe shows as the app-server exiting first.
+    assert.match(!outcome.ok ? outcome.reason : '', process.platform === 'win32' ? /EPIPE|EOF|exited/ : /EPIPE/)
     model.close()
   } finally {
     delete process.env['FAKE_CODEX_CLOSE']
