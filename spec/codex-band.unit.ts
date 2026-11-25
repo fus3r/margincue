@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { test } from 'node:test'
+import { layoutProject } from './fixtures/layout-project.ts'
 import './ts-resolve.ts'
 
 const home = mkdtempSync(join(tmpdir(), 'margincue-band-'))
@@ -164,10 +165,7 @@ test('open mode sends an untouched card as questions even with no Decisions', as
 })
 
 test('the relay card carries file candidates, a file pick, or a file question according to the send mode', async () => {
-  const cwd = mkdtempSync(join(tmpdir(), 'margincue-project-'))
-  mkdirSync(join(cwd, 'app', 'dashboard'), { recursive: true })
-  writeFileSync(join(cwd, 'app', 'layout.tsx'), 'export default function Layout() {}\n')
-  writeFileSync(join(cwd, 'app', 'dashboard', 'layout.tsx'), 'export default function Layout() {}\n')
+  const cwd = layoutProject()
   const text = 'Build a footer with a copyright year in `layout.tsx`.'
   for (const send of ['all', 'picked', 'open'] as const) {
     saveSettings({ send, read: 'key', sketch: false, refs: send !== 'open' })

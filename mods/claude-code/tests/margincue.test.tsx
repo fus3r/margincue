@@ -975,6 +975,65 @@ test('choices the agent marks become switches during the turn, then a receipt an
   await message.unmount()
 })
 
+test('the receipt opens the focused choice’s diff only when asked', async ($, on) => {
+  const commands: string[] = []
+  const toasts: string[] = []
+  const { clock, calls, files, panes } = world(on, '[]', { env: { TERM_PROGRAM: 'cursor' }, git: (argv) => {
+    commands.push(argv)
+    if (argv === 'mktemp -d') return '/receipt-diff\n'
+    if (argv.startsWith('cursor --diff ')) return ''
+    return undefined
+  } })
+  mock.session(on)
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('ui.place', (_, e) => ({ value: { isPlaced: true, requestId: e.id } }))
+  on('ui.toast', (_, e) => { toasts.push(e.text); return { value: undefined } })
+  on('ui.focus', { plugin: '*' }, () => ({}))
+  on('tool.run', { tool: 'Write' }, () => ({ result: { type: 'create', filePath: '/project/report.jsonl',
+    content: 'report format = jsonl\n', originalFile: null, structuredPatch: [], userModified: false } }))
+
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: DRAFT, turnId: 'edits' })
+  const answer = 'I chose ⟦orientation: horizontal | vertical⟧ and ⟦export format: JSONL | CSV⟧.'
+  await $.session.append({ door: 'response', uuid: 'marked', origin: { kind: 'model', model: 'current' },
+    message: { type: 'assistant', content: [{ type: 'text', text: answer }] } })
+  await $.tool.run({ tool: 'Write', tool_use_id: 'write-report', file_path: '/project/report.jsonl', content: 'report format = jsonl\n' })
+  await $.turn.complete({ turnId: 'edits', reason: 'answer', answer, durationMs: 1000, isAborted: false })
+  await clock.settle()
+
+  const receipt = await $.ui.mount({ plugin: 'margincue', component: 'Placed', requestId: 'receipt-1', surface: 'terminal',
+    props: { id: 'receipt-1', plugin: 'margincue' } })
+  expect(await receipt.find({ type: 'Text', text: /e opens related edits/ })).toBeDefined()
+  expect(await receipt.find({ key: 'receipt-diff-0' })).toBeDefined()
+  expect(await receipt.find({ key: 'receipt-diff-1' })).toBeDefined()
+  await receipt.press({ key: 'receipt-review' })
+  expect(panes.at(-1)).toMatchObject({ id: 'margincue-receipt', focus: true })
+  expect(commands).not.toContain('mktemp -d')
+  expect(calls).toHaveLength(0)
+
+  const pane = await $.ui.mount({ plugin: 'margincue', component: 'Pane', requestId: 'margincue-receipt', surface: 'terminal',
+    props: { title: 'MarginCue receipt', isFocused: true, bodyColumns: 80, placement: 'inline', scroll: { offset: 0, bodyRows: 8 }, view: {} } })
+  expect((await pane.find({ key: 'receipt-open-diff' }))?.props.hotkey).toBe('e')
+  await $.ui.focus({ component: 'Pane', requestId: 'margincue-receipt', plugin: 'margincue', element: 'receipt-choice-1', origin: { kind: 'person' } })
+  await pane.press({ key: 'receipt-open-diff' })
+  await clock.settle()
+  expect(calls).toHaveLength(0)
+  expect(commands.filter((line) => line.startsWith('cursor '))).toEqual([
+    'cursor --diff /receipt-diff/before/report.jsonl /receipt-diff/after/report.jsonl',
+  ])
+  expect(files.get('/receipt-diff/before/report.jsonl')).toBe('')
+  expect(files.get('/receipt-diff/after/report.jsonl')).toBe('report format = jsonl\n')
+  await receipt.press({ key: 'receipt-diff-0' })
+  await clock.settle()
+  expect(calls).toHaveLength(1)
+  expect(JSON.parse(calls[0]!)).toMatchObject({ choice: 'orientation horizontal',
+    hunks: [{ path: 'report.jsonl', changes: '+report format = jsonl' }] })
+  expect(toasts).toContain('No related edits found for this choice.')
+  await pane.unmount()
+  await receipt.unmount()
+})
+
 const MARKED_EXPORT = [
   '- Export delivery: ⟦delivery: streamed server download endpoint | background job with emailed file | client-side from loaded rows⟧',
   '- Format: ⟦format: CSV | JSON⟧',

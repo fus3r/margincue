@@ -6,12 +6,15 @@ import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { LAYOUT_PATHS, layoutProject } from './fixtures/layout-project.ts'
 import './ts-resolve.ts'
 
 const { collectVocabulary } = await import('../mods/claude-code/hooks/repo-index')
+const { ground, indexVocabulary } = await import('../mods/claude-code/core/grounding')
 
 /** The engine's `$.process.run`, as far as the index uses it. */
 const $ = {
+  env: { get: async () => undefined },
   process: {
     run: async (argv: string[], options: { cwd: string }) => {
       const r = spawnSync(argv[0]!, argv.slice(1), { cwd: options.cwd, encoding: 'utf8', maxBuffer: 32 << 20 })
@@ -19,7 +22,7 @@ const $ = {
       return { exitCode: r.status ?? 1, stdout: r.stdout, stderr: r.stderr }
     },
   },
-} as never
+}
 
 const has = (command: string) => !spawnSync(command, ['--version']).error
 
@@ -56,6 +59,23 @@ test('a folder outside git is indexed through ripgrep, with the same paths', { s
   const root = project()
   try {
     await check(root)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('the card fixture offers both layout files when ripgrep is unavailable', { skip: !has('git') && 'no git' }, async () => {
+  const root = layoutProject()
+  try {
+    const vocab = await collectVocabulary({
+      ...$,
+      process: { run: async (argv, options) => {
+        if (argv[0] === 'rg') throw Object.assign(new Error('spawn rg ENOENT'), { code: 'ENOENT' })
+        return $.process.run(argv, options)
+      } },
+    }, root)
+    assert.ok(vocab, 'the fixture should be indexable with Git alone')
+    assert.deepEqual(ground('Build a footer in `layout.tsx`.', indexVocabulary(vocab))[0]?.places, LAYOUT_PATHS)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

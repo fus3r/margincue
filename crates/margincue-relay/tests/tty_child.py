@@ -3,6 +3,7 @@
 import fcntl
 import os
 from pathlib import Path
+import signal
 import struct
 import sys
 import termios
@@ -24,12 +25,18 @@ def size():
     return struct.unpack("HHHH", fcntl.ioctl(0, termios.TIOCGWINSZ, b"\0" * 8))
 
 
+def report_size():
+    out(("\x1b[1;1H" + f"SIZE {size()}").encode())
+
+
 mode = sys.argv[1]
 if mode == "editor-read":
     Path(sys.argv[2]).write_bytes(Path(sys.argv[3]).read_bytes())
     sys.exit(0)
 
 tty.setraw(0)
+if mode == "relay":
+    signal.signal(signal.SIGWINCH, lambda *_: report_size())
 out(b"\x1b[1;1HREADY")
 while key := os.read(0, 1):
     if mode == "bench":
@@ -73,6 +80,6 @@ while key := os.read(0, 1):
             answers.append(read_through(b"t").removeprefix(b"\x1b[")[:-1])
         out(b"\x1b[2J\x1b[1;1H" + b"|".join([cursor, *answers]))
     elif key == b"z":
-        out(("\x1b[1;1H" + f"SIZE {size()}").encode())
+        report_size()
     elif key == b"e":
         break

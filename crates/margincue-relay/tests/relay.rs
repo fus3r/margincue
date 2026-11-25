@@ -72,13 +72,12 @@ fn viewport_resets_geometry_and_history() {
     assert!(term.contains("history-00"));
     assert!(!term.contains("MarginCue"));
     term.parser.screen_mut().set_scrollback(0);
+    // The fixture reports its size when the inner PTY receives SIGWINCH.
     term.resize(Size::cells(22, 72));
-    term.send(b"z");
     term.wait_text("SIZE (19, 72, 0, 0)");
     assert_eq!(term.band(3), " MarginCue\n\n");
     assert!(!term.above(3).contains("MarginCue"), "{}", term.dump());
     term.resize(Size::cells(4, 48));
-    term.send(b"z");
     term.wait_text("SIZE (4, 48, 0, 0)");
     assert!(!term.contains("MarginCue"), "{}", term.dump());
     term.send(b"e");

@@ -23,7 +23,7 @@ import { joinList, sameSelection } from '../core/card'
 import { splitDecisions } from '../core/decisions'
 import { closesFrame, tidySketch } from '../core/frame'
 import type { MargincueCard, MargincueReceipt, MargincueRow } from '../types'
-import { CARD_READ_KEY, CHORD_NEXT, CHORD_SWAP, DARK, cells, segmentsWidth, text, truncate, wrapLines } from './segments'
+import { CARD_READ_KEY, CHORD_NEXT, CHORD_SWAP, DARK, RECEIPT_DIFF_KEY, cells, segmentsWidth, text, truncate, wrapLines } from './segments'
 import type { Color, Palette, Segment, Style } from './segments'
 
 export type CardOptions = { chords: boolean; extra: Segment[]; palette?: Palette; sketchKey?: string; readHint?: string }
@@ -522,21 +522,26 @@ function hiddenButtons(card: MargincueCard, chords: boolean): Line {
 // ---- the receipt, under the answer ---------------------------------------------------
 
 /** What travelled with the prompt and what the agent chose; one press on another option writes the follow-up. */
-export function layoutReceipt(receipt: MargincueReceipt, columns: number, P: Palette = DARK): Line[] {
+export function layoutReceipt(receipt: MargincueReceipt, columns: number, P: Palette = DARK, edits = false): Line[] {
   const width = cells(TAG)
   const content = MARK + width + GAP.length
   const room = Math.max(20, columns - content)
   const lead = (name: string): Line => [text(' '.repeat(MARK + width - cells(name))), text(name, { dim: true }), text(GAP)]
-  const out: Line[] = [[text(' '.repeat(MARK)), text(TAG, P.tag), text(GAP), text(`you set ${receipt.yours.length} · the agent chose ${receipt.agent.length}`, { dim: true })]]
-  for (const line of receipt.yours) {
-    wrapLines(line, room - 2, room - 2, 3).forEach((part, k) => out.push(k
+  const summary = `you set ${receipt.yours.length} · the agent chose ${receipt.agent.length}`
+  const heading = edits && cells(summary) > room ? `you ${receipt.yours.length} · agent ${receipt.agent.length}` : summary
+  const out: Line[] = [[text(' '.repeat(MARK)), text(TAG, P.tag), text(GAP), text(heading, { dim: true })]]
+  const diff = (choice: number): Segment => ({ kind: 'button', key: `receipt-diff-${choice}`, label: 'diff',
+    dim: true, action: { type: 'receiptDiff', receipt: receipt.id, choice } })
+  for (const [i, line] of receipt.yours.entries()) {
+    wrapLines(line, room - (edits ? 8 : 2), room - 2, 3).forEach((part, k) => out.push(k
       ? [text(' '.repeat(content + 2)), text(part)]
-      : [...lead('you'), text('✓ ', { color: 'success' }), text(part)]))
+      : [...lead('you'), text('✓ ', { color: 'success' }), text(part), ...(edits ? [text(GAP), diff(i)] : [])]))
   }
   receipt.agent.forEach((item, i) => {
     const value = item.was ? P.yours : P.agent
     const groups: Line[] = [
       [text(`${item.label} `, { dim: true }), text(' ', value), text(item.value, value), text(' ', value)],
+      ...(edits ? [[diff(receipt.yours.length + i)]] : []),
       ...(item.was ? [[text(`was ${item.was}`, { dim: true, italic: true })]] : []),
       ...item.options.flatMap((option, j): Line[] => option === item.value ? [] : [[{
         kind: 'button', key: `agent-${i}-${j}`, label: `→ ${option}`, face: `→ ${option}`, dim: true,
@@ -546,6 +551,15 @@ export function layoutReceipt(receipt: MargincueReceipt, columns: number, P: Pal
     flow(groups, room, 3, 2, (n) => [text(`+${n}`, { dim: true })]).lines
       .forEach((line, k) => out.push(k ? [text(' '.repeat(content)), ...line] : [...lead('agent'), ...line]))
   })
+  if (edits) {
+    const review: Segment = { kind: 'button', key: 'receipt-review', label: 'Review choices', dim: true,
+      action: { type: 'receiptReview', receipt: receipt.id } }
+    const hint = `${RECEIPT_DIFF_KEY} opens related edits`
+    const indent = text(' '.repeat(content))
+    if (room < cells(review.label + ' · ' + hint)) {
+      out.push([indent, review], [indent, text(truncate(hint, room), { dim: true })])
+    } else out.push([indent, review, text(` · ${hint}`, { dim: true })])
+  }
   return out
 }
 

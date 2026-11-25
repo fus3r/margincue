@@ -52,6 +52,7 @@ Accept the `codex` alias during setup. Open a **new terminal** (including a new 
 | `ctrl+x tab`, then `1`–`9`, `x`, `s`, `p` | Pick an option, drop a row, open the sketch, attach it to the prompt |
 | A number in the empty prompt during a turn | Switch Claude's focused choice right away |
 | `ctrl+]` then `c` (Codex) | Read the draft in `key` mode with relay 0.1.3 or later |
+| `e` on a focused receipt choice (Claude Code terminal) | Open related edits |
 | `ctrl+]` then `t` (Codex) | MarginCue off or on for this session |
 
 Everything on the card also takes clicks.
@@ -60,7 +61,7 @@ Everything on the card also takes clicks.
 
 In Claude Code, each reading and each sketch is one small Haiku call through your own session, so it counts toward your plan. In Codex, each reading or sketch is a short thread through your own Codex login, on the lightest model your account offers, never saved to your history. A reading runs when you finish a sentence or pause in the composers, or on Enter in the Codex desktop app. `/margincue mode quiet` keeps the card to one line while you type, `/margincue sketch off` drops sketches, and `/margincue mode off` stops everything. In Codex desktop, quiet mode skips the card at Enter.
 
-Your draft goes to Claude the same way your prompt does, through your own session, with a little context from the project: an outline of its folders and file names (at most 3,200 characters), the file where each name in your draft was found, a few related folders with their file names, and one line about you from your first-run answers. File contents never leave your machine. The project index (file names and declared names, read with git or ripgrep), your first-run answers and your learned picks are stored on your machine. There is no telemetry; `/margincue log <path>` writes a local log of counts and timings, never your text.
+Your draft goes to Claude the same way your prompt does, through your own session, with a little context from the project: an outline of its folders and file names (at most 3,200 characters), the file where each name in your draft was found, a few related folders with their file names, and one line about you from your first-run answers. MarginCue keeps file contents on your machine unless you open a receipt diff that needs one Claude reading, which sends only a bounded set of potentially related hunks. The project index (file names and declared names, read with git or ripgrep), your first-run answers and your learned picks are stored on your machine. There is no telemetry; `/margincue log <path>` writes a local log of counts and timings, never your text.
 
 ## Where it runs
 

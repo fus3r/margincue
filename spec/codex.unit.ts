@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { LAYOUT_PATHS, layoutProject } from './fixtures/layout-project.ts'
 import './ts-resolve.ts'
 
 const home = mkdtempSync(join(tmpdir(), 'margincue-home-'))
@@ -308,13 +309,10 @@ test('Codex defaults to send all and automatic reading; the IDE skips its text c
 })
 
 test('the full-screen composer reads on tab then c and sends the file picked on its card', { timeout: 15000 }, async () => {
-  const project = mkdtempSync(join(tmpdir(), 'margincue-project-'))
+  const project = layoutProject()
   const draft = join(project, 'draft.txt')
   const prompt = 'Build a footer with a copyright year in `layout.tsx`.'
   writeFileSync(draft, prompt)
-  mkdirSync(join(project, 'app', 'dashboard'), { recursive: true })
-  writeFileSync(join(project, 'app', 'layout.tsx'), 'export default function Layout() {}\n')
-  writeFileSync(join(project, 'app', 'dashboard', 'layout.tsx'), 'export default function Layout() {}\n')
   writeFileSync(join(project, 'app-server'), `void import(${JSON.stringify(pathToFileURL(join(here, 'fixtures', 'fake-codex.mjs')).href)})\n`)
   saveSettings({ read: 'key', send: 'picked', sketch: false })
   const child = spawn(process.execPath, ['--import', tsResolve, launcher, 'compose', draft], {
@@ -442,14 +440,8 @@ test('the bundled MCP command resolves from the plugin directory and initializes
 
 test('the bundled MCP server uses the Desktop runtime to read a grounded card and draw its current choices', { timeout: 15000 }, async () => {
   const plugin = join(here, '..', 'mods', 'codex')
-  const project = mkdtempSync(join(tmpdir(), 'margincue-project-'))
+  const project = layoutProject()
   writeFileSync(join(project, 'activity.ts'), 'export const activityLogs = []\n')
-  const layouts = ['app/layout.tsx', 'app/dashboard/layout.tsx']
-  for (const layout of layouts) {
-    const path = join(project, layout)
-    mkdirSync(dirname(path), { recursive: true })
-    writeFileSync(path, 'export default function Layout() {}\n')
-  }
   const fake = join(here, 'fixtures', 'fake-codex.mjs')
   // Node acts as the bundled CLI, loading this file when the reader passes "app-server".
   writeFileSync(join(project, 'app-server'), `void import(${JSON.stringify(pathToFileURL(fake).href)})\n`)
@@ -565,8 +557,8 @@ test('the bundled MCP server uses the Desktop runtime to read a grounded card an
       const layoutResult = await call('tools/call', { name: 'margincue_card', arguments: { prompt: 'Build a footer in `layout.tsx`.', cwd: project } })
       const layoutCard = await follow(layoutResult.structuredContent.id)
       const layout = layoutCard.rows.find((row) => row.key === 'file_layouttsx')!
-      assert.deepEqual([layoutCard.send, layout.origin, layout.options, layout.assumed], [send, 'repo', layouts, []])
-      assert.deepEqual(layoutCard.fileReferences, [{ phrase: 'layout.tsx', files: layouts, rowId: layout.id }])
+      assert.deepEqual([layoutCard.send, layout.origin, layout.options, layout.assumed], [send, 'repo', LAYOUT_PATHS, []])
+      assert.deepEqual(layoutCard.fileReferences, [{ phrase: 'layout.tsx', files: LAYOUT_PATHS, rowId: layout.id }])
       assert.ok(layoutCard.sketch)
       assert.ok(layoutCard.sketch.lines.every((line) => !line.includes('layout.tsx')))
 

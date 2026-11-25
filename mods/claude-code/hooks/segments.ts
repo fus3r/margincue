@@ -48,6 +48,8 @@ export type Action =
   | { type: 'cardDismiss'; row: string }
   | { type: 'sketch'; action: 'toggle' | 'pin' | 'refresh' }
   | { type: 'receiptPick'; receipt: number; item: number; option: number }
+  | { type: 'receiptReview'; receipt: number }
+  | { type: 'receiptDiff'; receipt: number; choice: number }
   /** The card shown at Enter (an app that never shows MarginCue the draft): send with what is set, or as written. */
 
 /**
@@ -59,6 +61,7 @@ export type Action =
 export const CHORD_SWAP = 'app:diffFileListDown'
 export const CHORD_NEXT = 'app:diffFileListUp'
 export const CARD_READ_KEY = 'c'
+export const RECEIPT_DIFF_KEY = 'e'
 
 /**
  * The card's colours. Tags and accents use theme keys, so they follow the
