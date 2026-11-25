@@ -10,7 +10,7 @@ import { Lru } from './lru'
 import { normalize, parseReply } from './parse'
 import { parseProfile } from './profile'
 import { buildPrompt, buildSystem, isTerminated, lastSentenceStart } from './request'
-import { buildSketchPrompt, canSketch, CARD_MAX_TOKENS, cycleSelection, parseCard, parseSketch, rowValue, sameSelection, SKETCH_MAX_TOKENS, toggleSelection } from './card'
+import { buildSketchPrompt, canSketch, CARD_MAX_TOKENS, cycleSelection, listsSteps, openChoiceLine, parseCard, parseSketch, rowValue, sameSelection, SKETCH_MAX_TOKENS, STEP_ORDER_KEY, toggleSelection } from './card'
 import type { CardKind, ParsedCard, ParsedRow, ParsedSketch, RowType } from './card'
 import { ground, indexVocabulary, nameKey, relatedFolders } from './grounding'
 import type { GroundIndex, Mention } from './grounding'
@@ -140,6 +140,9 @@ const AMEND_MS = 3500
 const CARD_GAP_MS = 3000
 const CARD_IDLE_MS = 900
 const CARD_MIN_WORDS = 6
+/** Heads the rows sent as questions in `send open` mode: flagged by a quick read, decided by the agent. */
+const OPEN_CHOICES = 'Open choices (a quick read flagged these; they are not decisions, and its options may not fit the code. ' +
+  'Settle each one yourself, without stopping to ask, and say what you chose where you first act on it):'
 const SKETCH_DELAY_MS = 700
 /** alt+down during a turn waits this long for the next press before the change is sent. */
 const AMEND_DELAY_MS = 1500
@@ -207,6 +210,8 @@ export class Core {
   private sketchEnabled = true
   private refsEnabled = true
   private pickedOnly = false
+  /** `send open`: rows the person left alone go to the agent as open questions, never as the reading's guess. */
+  private openRows = false
   /** The card on screen: the draft's, or the running turn's while the prompt box is empty. */
   private card: Card | null = null
   /** The running turn's card (the agent's own choices), kept while a follow-up is being written over it. */
@@ -444,9 +449,11 @@ export class Core {
     this.readMode = readMode
     this.sketchEnabled = e.sketch !== false
     this.refsEnabled = e.refs !== false
-    const pickedOnly = e.send === 'picked'
+    // `open` sends what the person set, like `picked`, and asks the agent about the rest.
+    const pickedOnly = e.send === 'picked' || e.send === 'open'
     if (pickedOnly !== this.pickedOnly && this.card?.sketch) this.card.sketchDue = this.now
     this.pickedOnly = pickedOnly
+    this.openRows = e.send === 'open'
     this.userLine = e.user?.trim() || undefined
     this.today = e.today
     this.depths = { ...(e.depths ?? {}) }
@@ -745,8 +752,10 @@ export class Core {
     const decisions = isPrompt ? this.decisions(exact, whole) : []
     const attached = attachDecisions(text, decisions)
     const added = attached.added
+    const open = isPrompt && whole ? this.openChoices() : []
+    const asked = open.length ? `${attached.text.replace(/\s+$/, '')}\n\n${OPEN_CHOICES}\n${open.map((line) => `- ${line}`).join('\n')}` : attached.text
     const target = isPrompt && exact ? this.targetSketch(plan, added) : null
-    const sent = target ? `${attached.text.replace(/\s+$/, '')}\n\n${target}` : attached.text
+    const sent = target ? `${asked.replace(/\s+$/, '')}\n\n${target}` : asked
     if (this.sheetEnabled !== undefined) this.onCardSubmit(prompt, exact, amendable, added)
     if (this.mode !== undefined) {
       this.dropAmendment('new-submit')
@@ -1280,7 +1289,10 @@ export class Core {
     if (!partial) card.readFor = text
     card.error = false
     // A question is answered, not built: its card is the reading alone.
-    const fresh = this.stateDraft?.directive === 'delegate' || card.kind === 'ask' ? [] : parsed.rows.filter((row) => !card.dismissed.has(row.key))
+    // The step-order row pins steps the draft wrote; on a draft with none it would send an order nobody asked for.
+    const steps = listsSteps(text)
+    const fresh = this.stateDraft?.directive === 'delegate' || card.kind === 'ask' ? [] : parsed.rows.filter((row) =>
+      !card.dismissed.has(row.key) && (row.key !== STEP_ORDER_KEY || steps))
     const old = card.rows.filter((row) => row.origin === 'model' || row.origin === 'lens')
     const used = new Set<string>()
     const next: CardRow[] = []
@@ -1400,9 +1412,11 @@ export class Core {
   /** A finished reading adds learned picks, and adds suggested defaults in `all` mode. */
   private cardDecisions(whole = false): Decision[] {
     const card = this.card!
+    // The written step order travels in every mode: it comes from the draft, not from the reading's guess.
     const out: Decision[] = card.rows
       .filter((row) => row.picked !== null || whole && row.origin !== 'repo' &&
-        (row.learned !== undefined || !this.pickedOnly && row.defaults.length > 0))
+        (row.learned !== undefined || !this.pickedOnly && row.defaults.length > 0 ||
+          row.key === STEP_ORDER_KEY && row.defaults.length > 0))
       .map((row) => ({ statement: row.statement, option: row.said ?? this.rowText(row, row.picked ?? row.learned ?? row.defaults) }))
     if (this.refsEnabled) {
       // Only what the draft wrote as code (a path, a file, an identifier, backticks): a product name or a
@@ -1411,6 +1425,16 @@ export class Core {
       if (refs.length) out.push({ statement: 'Where things are: {}', option: refs.map((m) => `${m.phrase} (${m.files[0]})`).join(', ') })
     }
     return out
+  }
+
+  /** `send open`: the rows the person left alone, as questions for the agent (the step order travels as a decision). */
+  private openChoices(): string[] {
+    const card = this.card
+    if (!this.openRows || card?.stage !== 'draft') return []
+    return card.rows
+      .filter((row) => (row.origin === 'model' || row.origin === 'lens') && row.picked === null && row.learned === undefined &&
+        row.key !== STEP_ORDER_KEY)
+      .map((row) => openChoiceLine(row))
   }
 
   private cardView(canReadCard: boolean): CardView | undefined {

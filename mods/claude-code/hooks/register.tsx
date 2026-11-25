@@ -1148,7 +1148,7 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
     sketch: stored?.sketch !== false,
     refs: stored?.refs !== false,
     blanks: stored?.blanks !== false,
-    send: stored?.send === 'picked' ? 'picked' : DEFAULTS.send,
+    send: stored?.send === 'picked' || stored?.send === 'open' ? stored.send : DEFAULTS.send,
     user: readUser(stored?.user),
     onboarded: stored?.onboarded === 'done' || stored?.onboarded === 'skipped' ? stored.onboarded : null,
     depths: Object.fromEntries(Object.keys(host.assets.profiles).flatMap((profile) => {
@@ -1176,7 +1176,7 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
   await $.command.register({
     name: 'margincue',
     description: 'MarginCue card, sketch, blanks, decisions, expert review and session status',
-    argumentHint: '[setup [reset]|state|mode|language en|auto|card on|off|read auto|key|sketch on|off|refs on|off|blanks on|off|send all|picked|ab on|off|status|review [profile]|profile|status]',
+    argumentHint: '[setup [reset]|state|mode|language en|auto|card on|off|read auto|key|sketch on|off|refs on|off|blanks on|off|send all|picked|open|ab on|off|status|review [profile]|profile|status]',
     immediate: true,
   })
   await reopen($)
@@ -1364,7 +1364,7 @@ ${slot.source}` : 'Use /margincue why <slot>.')
       case 'send': {
         const send = arg.toLowerCase()
         if (!send) return done(`MarginCue send is ${settings.send}.`)
-        if (send !== 'all' && send !== 'picked') return done('Use /margincue send all|picked.')
+        if (send !== 'all' && send !== 'picked' && send !== 'open') return done('Use /margincue send all|picked|open.')
         settings.send = send
         run($, configEvent())
         await saveSettings($)

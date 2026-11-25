@@ -309,6 +309,80 @@ test('picked mode keeps learned picks and applicable project decisions', () => {
   assert.deepEqual(sent.decisions, ['Export the filtered orders.', 'Deletion targets unreferenced matches only.'])
 })
 
+test('a step-order row stays only on a draft that lists steps', () => {
+  for (const text of [
+    '1. Add a created_at column. 2. Backfill it. 3. Show it on the admin page.',
+    'Step 1: write failing tests. Step 2: fix the bug.',
+    'First update the schema, then migrate the rows, and finally expose the fields.',
+    'Do this:\n1) add the column\n2) backfill it',
+  ]) assert.equal(card.listsSteps(text), true, text)
+  for (const text of [
+    'Make team invitations expire so old invites stop working.',
+    'Build a weekly report for team owners: who signed in, who got invited, what changed.',
+    'Upgrade to HTTP/1.1 and keep 2.0 for later.',
+    'Add rate limiting to the public API so one noisy client cannot take the service down.',
+  ]) assert.equal(card.listsSteps(text), false, text)
+
+  const reading = `${READING}\nrow | step_order | order | one | Do the steps {} | in written order, from step 1 | in whatever order works`
+  const rows = (text: string) => {
+    const core = createCore(ASSETS)
+    core.handle(config())
+    const [req] = requests(core.handle({ type: 'draft', now: 100, text, origin: 'paste' }))
+    return lastView(core.handle({ type: 'reply', now: 200, req: req!.req, text: reading, done: true }))!.card!.rows.map((row) => row.key)
+  }
+  assert.deepEqual(rows(DRAFT), ['export_rows', 'export_limit'])
+  assert.deepEqual(rows(`First add a CSV export to the orders page, then link it from the menu.`), ['export_rows', 'export_limit', 'step_order'])
+})
+
+test('an open choice names the gap and every option, none marked and in a neutral order', () => {
+  assert.equal(card.openChoiceLine({ type: 'one', statement: 'Limit requests per {}', options: ['client API key', 'client IP address', 'user account'] }),
+    'Limit requests per … (client API key / client IP address / user account)?')
+  // The reading lists its guess first; the question does not.
+  assert.equal(card.openChoiceLine({ type: 'one', statement: 'Expire invites {} after creation', options: ['after 30 days', 'after 7 days', 'after 24 hours'] }),
+    'Expire invites … after creation (after 7 days / after 24 hours / after 30 days)?')
+  assert.equal(card.openChoiceLine({ type: 'many', statement: 'Include in the email {}', options: ['the team name', 'a link, then a button'] }),
+    'Include in the email … (any of: a link, then a button / the team name)?')
+  assert.equal(card.openChoiceLine({ type: 'range', statement: 'Allow {} requests per minute', options: ['10', '30', '60', '100', '1000'] }),
+    'Allow … requests per minute (between 10 and 1000)?')
+  assert.equal(card.openChoiceLine({ type: 'range', statement: 'Run {}', options: ['slow', 'normal', 'fast'] }), 'Run … (slow / normal / fast)?')
+})
+
+test('open mode sends set rows as decisions and asks the agent about the rest', () => {
+  const steps = 'First add a CSV export to the orders page for big accounts, then link it from the menu.'
+  const reading = `${READING}\nrow | step_order | order | one | Do the steps {} | in written order, from step 1 | in whatever order works`
+  const submit = (send: 'all' | 'open', text: string, option?: number, done = true) => {
+    const core = createCore(ASSETS)
+    core.handle(config({ send }))
+    const [req] = requests(core.handle({ type: 'draft', now: 100, text, origin: 'paste' }))
+    const view = lastView(core.handle({ type: 'reply', now: 200, req: req!.req, text: done ? reading : reading.slice(0, 60), done }))!
+    if (option !== undefined) core.handle({ type: 'cardSet', now: 300, row: view.card!.rows[0]!.id, option })
+    return { sent: core.handle({ type: 'submit', now: 400, text }).find((e) => e.type === 'submit')!, view }
+  }
+  const ask = 'Open choices (a quick read flagged these; they are not decisions, and its options may not fit the code. ' +
+    'Settle each one yourself, without stopping to ask, and say what you chose where you first act on it):'
+
+  // Nothing set: the reading's guesses stay home, its questions travel, and the card says they are left to the agent.
+  const untouched = submit('open', DRAFT)
+  assert.equal(untouched.sent.text, `${DRAFT}\n\n${ask}\n- Export … (all orders / the filtered orders)?\n- Cap one export at … (between 1000 rows and 1000000 rows)?`)
+  assert.deepEqual(untouched.sent.decisions, [])
+  assert.equal(untouched.view.card!.pickedOnly, true)
+
+  // A set row is the person's decision; the other is still asked.
+  const set = submit('open', DRAFT, 1)
+  assert.equal(set.sent.text, `${DRAFT}\n\nDecisions:\n- Export all orders.\n\n${ask}\n- Cap one export at … (between 1000 rows and 1000000 rows)?`)
+  assert.deepEqual(set.sent.decisions, ['Export all orders.'])
+
+  // Steps the draft wrote keep their order: that comes from the person, not from the reading.
+  const ordered = submit('open', steps)
+  assert.ok(ordered.sent.text.includes('Decisions:\n- Do the steps in written order, from step 1.'))
+  assert.ok(!ordered.sent.text.includes('Do the steps …'))
+
+  // A reading that has not finished asks nothing: Enter never waits, and the prompt goes as typed.
+  assert.equal(submit('open', DRAFT, undefined, false).sent.text, DRAFT)
+  // `all` is unchanged: the whole card travels as decisions.
+  assert.equal(submit('all', DRAFT).sent.text, `${DRAFT}\n\nDecisions:\n- Export the filtered orders.\n- Cap one export at 100000 rows.`)
+})
+
 test('key mode reads only on request and sends only set choices after an edit', () => {
   const core = createCore(ASSETS)
   core.handle(config({ read: 'key' }))
@@ -530,4 +604,15 @@ test('a missing name the person matched to a code name shows as found', () => {
   assert.equal(first.card!.mentions.find((m) => m.phrase === 'Audit Log')?.status, 'missing')
   const picked = lastView(core.handle({ type: 'cardSet', now: 200, row: row.id, option: 0 }))!
   assert.deepEqual(picked.card!.mentions.filter((m) => m.phrase === 'Audit Log').map((m) => [m.status, m.match]), [['found', 'ActivityLog']])
+})
+
+test('picked mode keeps the written step order, which comes from the draft and not from the reading', () => {
+  const core = createCore(ASSETS)
+  core.handle(config({ send: 'picked' }))
+  const text = 'First add a CSV export to the orders page, then link it from the menu.'
+  const reading = `${READING}\nrow | step_order | order | one | Do the steps {} | in written order, from step 1 | in whatever order works`
+  const [req] = requests(core.handle({ type: 'draft', now: 100, text, origin: 'paste' }))
+  core.handle({ type: 'reply', now: 200, req: req!.req, text: reading, done: true })
+  const sent = core.handle({ type: 'submit', now: 300, text }).find((e) => e.type === 'submit')!
+  assert.deepEqual(sent.decisions, ['Do the steps in written order, from step 1.'])
 })

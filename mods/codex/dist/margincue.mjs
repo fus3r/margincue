@@ -1144,6 +1144,24 @@ function rowValue(row, selected) {
   if (row.type === "many") return labels.length ? joinList(labels) : "none of these";
   return labels[0] ?? row.options[0] ?? "";
 }
+var STEP_ORDER_KEY = "step_order";
+function listsSteps(draft) {
+  if (/\bstep\s*(1|one)\b/i.test(draft)) return true;
+  if (/(^|\s)1[.)]\s+\S[\s\S]*?(^|\s)2[.)]\s+\S/.test(draft)) return true;
+  return /\bfirst(ly)?\b[\s\S]*?\b(then|next|finally|after that|second(ly)?)\b/i.test(draft);
+}
+function openChoiceLine(row) {
+  const statement = row.statement.replace(/\s+/g, " ").trim();
+  const gap = statement.includes("{}") ? statement.replace("{}", "\u2026") : `${statement} \u2026`;
+  const head = gap.charAt(0).toUpperCase() + gap.slice(1);
+  const options2 = row.options.map((option) => option.trim()).filter((option) => option !== "");
+  if (!options2.length) return `${head}?`;
+  if (row.type === "range") {
+    return `${head} (${options2.length > 4 ? `between ${options2[0]} and ${options2.at(-1)}` : options2.join(" / ")})?`;
+  }
+  const sorted = [...options2].sort((a, b) => a.localeCompare(b, "en", { numeric: true, sensitivity: "base" }));
+  return `${head} (${row.type === "many" ? "any of: " : ""}${sorted.join(" / ")})?`;
+}
 function sameSelection(a, b) {
   if (a.length !== b.length) return false;
   const x = [...a].sort((p, q) => p - q);
@@ -2104,6 +2122,7 @@ var AMEND_MS = 3500;
 var CARD_GAP_MS = 3e3;
 var CARD_IDLE_MS = 900;
 var CARD_MIN_WORDS = 6;
+var OPEN_CHOICES = "Open choices (a quick read flagged these; they are not decisions, and its options may not fit the code. Settle each one yourself, without stopping to ask, and say what you chose where you first act on it):";
 var SKETCH_DELAY_MS = 700;
 var AMEND_DELAY_MS = 1500;
 var LEARNED_AFTER = 2;
@@ -2160,6 +2179,8 @@ var Core = class {
   sketchEnabled = true;
   refsEnabled = true;
   pickedOnly = false;
+  /** `send open`: rows the person left alone go to the agent as open questions, never as the reading's guess. */
+  openRows = false;
   /** The card on screen: the draft's, or the running turn's while the prompt box is empty. */
   card = null;
   /** The running turn's card (the agent's own choices), kept while a follow-up is being written over it. */
@@ -2389,9 +2410,10 @@ var Core = class {
     this.readMode = readMode;
     this.sketchEnabled = e.sketch !== false;
     this.refsEnabled = e.refs !== false;
-    const pickedOnly = e.send === "picked";
+    const pickedOnly = e.send === "picked" || e.send === "open";
     if (pickedOnly !== this.pickedOnly && this.card?.sketch) this.card.sketchDue = this.now;
     this.pickedOnly = pickedOnly;
+    this.openRows = e.send === "open";
     this.userLine = e.user?.trim() || void 0;
     this.today = e.today;
     this.depths = { ...e.depths ?? {} };
@@ -2668,10 +2690,15 @@ var Core = class {
     const decisions = isPrompt ? this.decisions(exact, whole) : [];
     const attached = attachDecisions(text2, decisions);
     const added = attached.added;
-    const target = isPrompt && exact ? this.targetSketch(plan, added) : null;
-    const sent = target ? `${attached.text.replace(/\s+$/, "")}
+    const open = isPrompt && whole ? this.openChoices() : [];
+    const asked = open.length ? `${attached.text.replace(/\s+$/, "")}
 
-${target}` : attached.text;
+${OPEN_CHOICES}
+${open.map((line) => `- ${line}`).join("\n")}` : attached.text;
+    const target = isPrompt && exact ? this.targetSketch(plan, added) : null;
+    const sent = target ? `${asked.replace(/\s+$/, "")}
+
+${target}` : asked;
     if (this.sheetEnabled !== void 0) this.onCardSubmit(prompt, exact, amendable, added);
     if (this.mode !== void 0) {
       this.dropAmendment("new-submit");
@@ -3217,7 +3244,8 @@ ${lines.join("\n")}` : "";
     card.kind = parsed.kind ?? card.kind;
     if (!partial) card.readFor = text2;
     card.error = false;
-    const fresh = this.stateDraft?.directive === "delegate" || card.kind === "ask" ? [] : parsed.rows.filter((row) => !card.dismissed.has(row.key));
+    const steps = listsSteps(text2);
+    const fresh = this.stateDraft?.directive === "delegate" || card.kind === "ask" ? [] : parsed.rows.filter((row) => !card.dismissed.has(row.key) && (row.key !== STEP_ORDER_KEY || steps));
     const old = card.rows.filter((row) => row.origin === "model" || row.origin === "lens");
     const used = /* @__PURE__ */ new Set();
     const next = [];
@@ -3342,12 +3370,18 @@ ${lines.join("\n")}` : "";
   /** A finished reading adds learned picks, and adds suggested defaults in `all` mode. */
   cardDecisions(whole = false) {
     const card = this.card;
-    const out = card.rows.filter((row) => row.picked !== null || whole && row.origin !== "repo" && (row.learned !== void 0 || !this.pickedOnly && row.defaults.length > 0)).map((row) => ({ statement: row.statement, option: row.said ?? this.rowText(row, row.picked ?? row.learned ?? row.defaults) }));
+    const out = card.rows.filter((row) => row.picked !== null || whole && row.origin !== "repo" && (row.learned !== void 0 || !this.pickedOnly && row.defaults.length > 0 || row.key === STEP_ORDER_KEY && row.defaults.length > 0)).map((row) => ({ statement: row.statement, option: row.said ?? this.rowText(row, row.picked ?? row.learned ?? row.defaults) }));
     if (this.refsEnabled) {
       const refs = this.mentions.filter((m) => m.status === "found" && m.files.length > 0 && m.as === "code").slice(0, REFS_MAX);
       if (refs.length) out.push({ statement: "Where things are: {}", option: refs.map((m) => `${m.phrase} (${m.files[0]})`).join(", ") });
     }
     return out;
+  }
+  /** `send open`: the rows the person left alone, as questions for the agent (the step order travels as a decision). */
+  openChoices() {
+    const card = this.card;
+    if (!this.openRows || card?.stage !== "draft") return [];
+    return card.rows.filter((row) => (row.origin === "model" || row.origin === "lens") && row.picked === null && row.learned === void 0 && row.key !== STEP_ORDER_KEY).map((row) => openChoiceLine(row));
   }
   cardView(canReadCard) {
     const card = this.card;
@@ -10180,7 +10214,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.20";
+var VERSION = "0.4.21";
 var MIN_CODEX = "0.171";
 function tooOld(output2) {
   const match = /codex-cli (\d+)\.(\d+)\.(\d+)/.exec(output2);

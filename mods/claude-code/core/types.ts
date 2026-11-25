@@ -9,7 +9,7 @@ import type { DecisionView, StateChange, StateCue, StateLoad } from './state'
 
 export type Origin = 'type' | 'paste' | 'history' | 'fill' | 'open' | 'restore'
 export type LanguageSetting = 'en' | 'auto'
-export type SendSetting = 'all' | 'picked'
+export type SendSetting = 'all' | 'picked' | 'open'
 export type ReadingMode = 'auto' | 'key'
 
 /** One edit: `text` replaced the code units `[start, end)` of the previous draft. */

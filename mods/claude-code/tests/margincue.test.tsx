@@ -301,6 +301,28 @@ test('send picked is saved, labels open rows, and sends a preview only for the o
   expect(store.get('settings')).toMatchObject({ send: 'all' })
 })
 
+test('send open is saved, labels open rows, and asks the agent about the rows left alone', async ($, on) => {
+  const { clock, store } = world(on, replies())
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
+  expect((await command('send nope')).text).toBe('Use /margincue send all|picked|open.')
+  await command('send open')
+  expect(store.get('settings')).toMatchObject({ send: 'open' })
+  await composer($).edit(edit(DRAFT, '.'))
+  await clock.settle()
+  const ui = await $.ui.mount(WIDE)
+  expect(await ui.find({ type: 'Text', text: /^3 left to agent$/ })).toBeDefined()
+  await ui.press({ key: 'card-c1-1' })
+  const sent = await $.prompt.submit({ ...cli, text: `${DRAFT}.`, wait: false })
+  // The pick travels as a decision; the rows left alone travel as questions, never as the reading's guesses.
+  expect(sent.text?.startsWith(`${DRAFT}.\n\nDecisions:\n- Export all rows.\n\nOpen choices (`)).toBe(true)
+  expect(sent.text).toContain('\n- Run it … (from the terminal / in the browser)?')
+  expect(sent.text).toContain('\n- Write … per batch (between 100 rows and 5000 rows)?')
+  expect(sent.text).not.toContain('Run it in the browser.')
+  await ui.unmount()
+  await command('send all')
+})
+
 test('the clear that precedes a submit does not lose the decisions', async ($, on) => {
   const { clock } = world(on, replies())
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })

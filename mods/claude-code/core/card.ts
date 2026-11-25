@@ -192,6 +192,38 @@ export function rowValue(row: Pick<ParsedRow, 'type' | 'options'>, selected: num
   return labels[0] ?? row.options[0] ?? ''
 }
 
+/** The row the card's prompt adds when a draft lists steps: it pins the written order. */
+export const STEP_ORDER_KEY = 'step_order'
+
+/**
+ * Whether a draft lists steps: numbered items ("1. … 2. …", "1) …"), "step 1", or "first … then/next/finally".
+ * The reading may add the step-order row to a draft with none; such a row would send an order nobody wrote.
+ */
+export function listsSteps(draft: string): boolean {
+  if (/\bstep\s*(1|one)\b/i.test(draft)) return true
+  if (/(^|\s)1[.)]\s+\S[\s\S]*?(^|\s)2[.)]\s+\S/.test(draft)) return true
+  return /\bfirst(ly)?\b[\s\S]*?\b(then|next|finally|after that|second(ly)?)\b/i.test(draft)
+}
+
+/**
+ * A row the person left alone, as an open question for the agent: the statement with a gap and its options, in
+ * a neutral order and none marked, so the reading's guess does not travel as an answer.
+ */
+export function openChoiceLine(row: Pick<ParsedRow, 'type' | 'statement' | 'options'>): string {
+  const statement = row.statement.replace(/\s+/g, ' ').trim()
+  const gap = statement.includes('{}') ? statement.replace('{}', '…') : `${statement} …`
+  const head = gap.charAt(0).toUpperCase() + gap.slice(1)
+  const options = row.options.map((option) => option.trim()).filter((option) => option !== '')
+  if (!options.length) return `${head}?`
+  // Options can hold commas ("logged only, no email yet"): a slash keeps them apart.
+  if (row.type === 'range') {
+    // An ordered scale keeps its order; a long one reads as its span.
+    return `${head} (${options.length > 4 ? `between ${options[0]} and ${options.at(-1)}` : options.join(' / ')})?`
+  }
+  const sorted = [...options].sort((a, b) => a.localeCompare(b, 'en', { numeric: true, sensitivity: 'base' }))
+  return `${head} (${row.type === 'many' ? 'any of: ' : ''}${sorted.join(' / ')})?`
+}
+
 export function sameSelection(a: number[], b: number[]): boolean {
   if (a.length !== b.length) return false
   const x = [...a].sort((p, q) => p - q)
