@@ -5,24 +5,8 @@
 See how Claude Code or Codex will read your prompt before it starts, and steer the choices it makes while it works.
 
 <p align="center">
-  <img src="docs/demo.gif" width="720" alt="MarginCue in Claude Code: as the prompt is typed, the card checks names against the repo, offers the open choices and sketches the result">
+  <img src="docs/demo.gif" width="720" alt="MarginCue in Claude Code: the card flags Audit Log, a name the repo doesn't have, and one key picks the repo's ActivityLog; typing layout.tsx, which is in three files, adds a row asking which one you mean">
 </p>
-
-## What it does
-
-While you type:
-
-- **The reading.** One line above the prompt says what the agent will deliver and how it takes your request, including whether the cases you list are the whole job or just examples.
-- **Your names, checked against your code.** Names in the prompt are looked up in the project as you type. A name the code doesn't have ("Audit Log", when the code says `activityLogs`) is flagged before you send, with the closest names it does have, one key each.
-- **The open choices, each with a control.** Chips, sliders and pick-any rows for what the prompt leaves open. By default, your picks and the card's ordinary defaults go with the prompt in a visible Decisions block. A hard-to-undo default you leave untouched goes as an open question for the agent to settle.
-- **A sketch of the result.** For something new: a wireframe, a sample of the report, a results table. Change a choice and it redraws.
-
-While Claude works:
-
-- **Its choices become switches.** Claude marks the choices it makes for you as it goes. Switch one and the change reaches it at its next step, without stopping it.
-- **A receipt.** After the turn, what you set and what Claude chose. Switch one and the follow-up prompt is written for you.
-
-It adapts to you and to the project. The first run asks what you work on and your level in each field. A data challenge or a research repository brings in the matching expert decisions (statistics and machine learning, system design), at the depth you asked for.
 
 ## Install
 
@@ -43,6 +27,24 @@ npx -y github:fus3r/margincue setup
 Accept the `codex` alias during setup. Open a **new terminal** (including a new terminal tab in VS Code) and run `codex`: the card sits under Codex's prompt and follows what you type. On Windows, press **Ctrl+G** at the Codex prompt to open it. [Codex guide and direct launch command](mods/codex/README.md#install)
 
 **Codex in the ChatGPT desktop app** shows the card at Enter on new tasks. [Install and test the desktop card](mods/codex/README.md#codex-in-the-chatgpt-desktop-app)
+
+**First test:** type a one-letter typo of a real identifier from your repo, in backticks (`getUsr` for `getUser`), and watch the card flag it.
+
+## What it does
+
+While you type:
+
+- **The reading.** One line above the prompt says what the agent will deliver and how it takes your request, including whether the cases you list are the whole job or just examples.
+- **Your names, checked against your code.** Names in the prompt are looked up in the project as you type. A name the code doesn't have ("Audit Log", when the code says `activityLogs`) is flagged before you send, with the closest names it does have, one key each.
+- **The open choices, each with a control.** Chips, sliders and pick-any rows for what the prompt leaves open. By default, your picks and the card's ordinary defaults go with the prompt in a visible Decisions block. A hard-to-undo default you leave untouched goes as an open question for the agent to settle.
+- **A sketch of the result.** For something new: a wireframe, a sample of the report, a results table. Change a choice and it redraws.
+
+While Claude works:
+
+- **Its choices become switches.** Claude marks the choices it makes for you as it goes. Switch one and the change reaches it at its next step, without stopping it.
+- **A receipt.** After the turn, what you set and what Claude chose. Switch one and the follow-up prompt is written for you.
+
+It adapts to you and to the project. The first run asks what you work on and your level in each field. A data challenge or a research repository brings in the matching expert decisions (statistics and machine learning, system design), at the depth you asked for.
 
 ## Keys
 
