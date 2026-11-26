@@ -1,10 +1,12 @@
 import { resolveAnchor } from './anchor'
+import type { Span } from './anchor'
 import { isId } from './bundle'
 import type { Slot } from './bundle'
 import { normalizeTopic } from './chapters'
 import type { ExpertItem } from './types'
 
 export const MAX_EXPERT_CUES = 2
+const MAX_CHOICE_LABEL = 40
 
 type ExistingRow = { key: string; statement: string; options: string[] }
 
@@ -37,35 +39,101 @@ export function parseExpert(
   const out: ExpertItem[] = []
   for (const line of reply.split(/\r?\n/)) {
     if (line.trim() === 'NONE') break
-    const [first = '', ...fields] = line.trim().replace(/^[-*+]\s+(?=[^|])/, '').split('|').map((s) => s.trim())
-    const tagged = first === 'choice' || first === 'catalog'
-    const [anchor = '', rawKey, statement, ...options] = tagged ? fields : [first, ...fields]
-    const span = anchor && (tagged || anchor !== '-') ? resolveAnchor(draft, anchor) : null
-    const anchored = !anchor || !tagged && anchor === '-' || span !== null
-    // Catalog keys can stand alone or lead a line with a repeated choice, note or anchor.
-    const item = first === 'catalog' && anchored && fields.length === 2 ? known.get(rawKey!)
-      : tagged ? undefined : (anchored && rawKey ? known.get(rawKey) : undefined) ?? known.get(anchor)
-    if (item) {
-      if (seen.has(item.key)) continue
-      const location = anchored && item.key === rawKey ? span : rawKey && statement === undefined ? resolveAnchor(draft, rawKey) : null
-      out.push({ ...item, ...(location && { span: location }) })
-      seen.add(item.key)
-      continue
+    const text = line.trim().replace(/^[-*+]\s+(?=[^|])/, '')
+    const [first = '', ...fields] = text.split('|').map((s) => s.trim())
+    let item = first === 'choice' ? undefined : parseLegacyChoice(first, fields, draft, known, reserved)
+    if (!item && first !== 'catalog' && !/^(?:[#<>`~]|\|.*\|$)/.test(text)) {
+      const choice = first === 'choice' ? fields : [first, ...fields]
+      item = parseChoice(choice.filter(Boolean), draft, reserved)
     }
-    if (first === 'catalog' || !anchored || !rawKey || !statement || statement.split('{}').length !== 2 ||
-      options.length < 2 || options.length > 3 || options.some((o) => !o) ||
-      new Set(options.map((o) => o.toLowerCase())).size !== options.length) continue
-    const label = first === 'choice' ? rawKey : rawKey === 'new_key' ? statement.replace('{}', '').trim() : rawKey.replace(/[_-]/g, ' ')
-    const key = first === 'choice' || rawKey === 'new_key' ? choiceKey(label) : rawKey
-    if (!isId(key) || seen.has(key) || reserved(key)) continue
-    out.push({
-      key, slot: key, persistent: false, label, statement,
-      options: options.map((label, i) => ({ id: String(i), label })),
-      scope: 'session', guard: false, why: '', source: '', ...(span && { span }),
-    })
-    seen.add(key)
+    if (!item || seen.has(item.key)) continue
+    const { statement, options } = item
+    // A catalog key may be followed by its statement and options on a second line.
+    if (!item.persistent && out.some((row) => row.persistent && row.statement === statement &&
+      row.options.length === options.length && row.options.every((option, i) => option.label === options[i]!.label))) continue
+    out.push(item)
+    seen.add(item.key)
   }
   return out
+}
+
+function parseChoice(fields: string[], draft: string, reserved: (key: string) => boolean): ExpertItem | undefined {
+  const statementIndex = fields.findIndex((field) => field.includes('{}'))
+  if (statementIndex < 0) return
+  const statement = fields[statementIndex]!
+  let span: Span | null = null
+  let label = ''
+  for (const field of fields.slice(0, statementIndex)) {
+    const match = resolveAnchor(draft, field.replace(/^@/, ''))
+    if (match) span ??= match
+    else if (!field.startsWith('@') && field.length <= MAX_CHOICE_LABEL) label = field
+  }
+
+  const options: { label: string; marked: boolean }[] = []
+  for (const field of fields.slice(statementIndex + 1)) {
+    const match = field.startsWith('@') ? resolveAnchor(draft, field.slice(1)) : null
+    if (match || field === '@' || field.startsWith('@ ')) {
+      span ??= match
+      continue
+    }
+    const value = field.replace(/\*$/, '').trimEnd()
+    if (value) options.push({ label: value, marked: field.endsWith('*') })
+  }
+  // A bare phrase among the options is ambiguous. Use it as an anchor only
+  // when it is the sole match and two options remain.
+  if (!span && options.length > 2) {
+    const matches = options.flatMap(({ label, marked }, i) => {
+      const match = marked ? null : resolveAnchor(draft, label)
+      return match ? [{ i, span: match }] : []
+    })
+    if (matches.length === 1) {
+      span = matches[0]!.span
+      options.splice(matches[0]!.i, 1)
+    }
+  }
+  if (options.length < 2) return
+
+  const subject = statement.replaceAll('{}', ' ').replace(/\s+/g, ' ').trim().replace(/\s*[:;,.!?]+$/, '') || statement
+  label ||= subject
+  let key = choiceKey(label)
+  // Draft choices can overlap catalog wording without taking a catalog key.
+  if (reserved(key)) key = choiceKey(subject)
+  if (reserved(key)) key = `choice_${key}`
+  const defaultIndex = options.findIndex((option) => option.marked)
+  return {
+    ...reviewChoice(key, label, statement, options.map((option) => option.label), span),
+    ...(defaultIndex >= 0 && { defaultIndex }),
+  }
+}
+
+function parseLegacyChoice(
+  first: string, fields: string[], draft: string, known: Map<string, ExpertItem>, reserved: (key: string) => boolean,
+): ExpertItem | undefined {
+  const tagged = first === 'catalog'
+  const [anchor = '', rawKey, statement, ...options] = tagged ? fields : [first, ...fields]
+  const span = anchor && (tagged || anchor !== '-') ? resolveAnchor(draft, anchor) : null
+  const anchored = !anchor || !tagged && anchor === '-' || span !== null
+  // Catalog keys can stand alone or lead a line with a repeated choice, note or anchor.
+  const item = tagged && anchored && fields.length === 2 ? known.get(rawKey!)
+    : tagged ? undefined : (anchored && rawKey ? known.get(rawKey) : undefined) ?? known.get(anchor)
+  if (item) {
+    const location = anchored && item.key === rawKey ? span : rawKey && statement === undefined ? resolveAnchor(draft, rawKey) : null
+    return { ...item, ...(location && { span: location }) }
+  }
+  if (tagged || !anchored || !rawKey || !statement || statement.split('{}').length !== 2 ||
+    options.length < 2 || options.length > 3 || options.some((o) => !o) ||
+    new Set(options.map((o) => o.toLowerCase())).size !== options.length) return
+  const label = rawKey === 'new_key' ? statement.replace('{}', '').trim() : rawKey.replace(/[_-]/g, ' ')
+  const key = rawKey === 'new_key' ? choiceKey(label) : rawKey
+  if (isId(key) && !reserved(key)) return reviewChoice(key, label, statement, options, span)
+}
+
+function reviewChoice(key: string, label: string, statement: string, options: string[], span: Span | null): ExpertItem {
+  return {
+    key, slot: key, persistent: false, label, statement,
+    options: options.map((label, i) => ({ id: String(i), label })),
+    scope: 'session', guard: false, why: '', source: '', ...(span && { span }),
+  }
 }
 
 function choiceKey(label: string): string {

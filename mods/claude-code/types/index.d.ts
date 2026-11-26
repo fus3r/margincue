@@ -30,7 +30,7 @@ export type MargincueExpert = {
   id: number
   profile: string
   phase: 'reviewing' | 'ready' | 'error'
-  items: (MargincueStateCue & { key: string; persistent: boolean; chosen?: string })[]
+  items: (MargincueStateCue & { key: string; persistent: boolean; defaultIndex?: number; chosen?: string })[]
   language: 'en' | 'fr'
   model: boolean
 }

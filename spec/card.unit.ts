@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 import reviewFixtures from './fixtures/autoreview-replies.json' with { type: 'json' }
 import autoreview2 from './fixtures/autoreview2.json' with { type: 'json' }
+import autoreview3 from './fixtures/autoreview3.json' with { type: 'json' }
+import autoreview4 from './fixtures/autoreview4.json' with { type: 'json' }
 import './ts-resolve.ts'
 import type { Depth } from '../mods/claude-code/core/bundle'
 import type { Effect, Event, View } from '../mods/claude-code/core/index'
@@ -301,62 +303,44 @@ test('the first-run questions follow the answers, and the answers become one lin
   await assert.rejects(onboarding.interview(async () => { throw new Error('dismissed') }))
 })
 
-test('expert review gets different theory and workflows at each stated level across all shipped profiles', () => {
+test('expert requests carry the profile and level without chapter notes at any level', () => {
   const cases = [
-    ['general', 'Please verify live after merging the patch.', 'Evidence, reproducibility, and verification',
-      ['A check can only show', 'reproducible claim', 'Evidence transfers only']],
-    ['ml-research', 'Compare ridge regression and lasso for the study.', 'Linear models, shrinkage, and selection',
-      ['pulls weights toward zero', 'column span', 'Gauss–Markov']],
-    ['product', 'Plan the A/B test for this feature and set guardrails.', 'Experiments, rollout, and decisions',
-      ['Concurrent random assignment', 'detectable effect', 'Intent-to-treat']],
-    ['system-design', 'Set an error budget for the inbound API.', 'Service objectives and error budgets',
-      ['slow minority', 'good eligible events', 'observed bad-event fraction']],
+    ['general', 'Please verify live after merging the patch.'],
+    ['ml-research', 'Compare ridge regression and lasso for the study.'],
+    ['product', 'Plan the A/B test for this feature and set guardrails.'],
+    ['system-design', 'Set an error budget for the inbound API.'],
   ] as const
-  for (const [profile, text, title, markers] of cases) {
-    for (const [i, level] of onboarding.USER_LEVELS.entries()) {
+  for (const [profile, text] of cases) {
+    for (const level of onboarding.USER_LEVELS) {
+      const depths = onboarding.userDepths({ levels: { [profile]: level }, work: [], decide: [] })
+      const depth = depths[profile]!
+      const notes = chapterContext(ASSETS.chapters!.filter((chapter) => chapter.profile === profile), text, () => depth)
+      assert.ok(notes, text)
       const core = createCore(ASSETS)
-      core.handle(config({ profile, read: 'key', depths: onboarding.userDepths({ levels: { [profile]: level }, work: [], decide: [] }) }))
+      core.handle(config({ profile, read: 'key', depths }))
       core.handle({ type: 'draft', text, now: 100, origin: 'paste' })
       const [req] = requests(core.handle({ type: 'review', now: 200 }))
       assert.equal(req?.kind, 'expert', profile)
-      const notes = req!.prompt.split('Profile chapters matched to the draft.')[1]!
-      assert.ok(notes, text)
-      assert.ok(notes.includes(`[${profile}] ${title}`), text)
-      assert.match(notes, /\nTheory\..+\nWorkflow\..+\nChoice\./)
-      assert.ok(notes.includes(markers[i]!), level)
-      for (const marker of markers.filter((_, j) => j !== i)) assert.ok(!notes.includes(marker), marker)
+      assert.ok(req!.prompt.includes(`Draft:\n<<<\n${text}\n>>>`))
+      assert.ok(req!.prompt.includes(`Review profile: ${profile}\nLevel: ${depth}`))
+      const payload = [req!.prompt, ...req!.system].join('\n')
+      assert.doesNotMatch(payload, /\bchapters?\b|^(?:Theory|Workflow|Choice)\./im)
+      for (const chapter of ASSETS.chapters!) {
+        assert.ok(!payload.includes(`[${chapter.profile}] ${chapter.title}`))
+        for (const note of Object.values(chapter.notes)) assert.ok(!payload.includes(note))
+      }
     }
   }
 })
 
-test('expert chapter selection is bounded, recognizes French topic phrases, and ignores settled decisions', () => {
+test('the chapter matcher recognizes French topics and keeps the two strongest', () => {
   const text = 'Précise la validation croisée, le jeu de test et la fuite de données. Compare la régression linéaire aux moindres carrés et mesure les faux positifs. Vérifie aussi le budget d’erreur et le taux de conversion.'
-  const core = createCore(ASSETS)
-  core.handle(config({ read: 'key', depths: { 'ml-research': 'essentials', 'system-design': 'research' } }))
-  core.handle({ type: 'draft', text, now: 100, origin: 'paste' })
-  const headings = /^\[[a-z-]+\] .+$/gm
-  const [ml] = requests(core.handle({ type: 'review', profile: 'ml-research', now: 200 }))
-  assert.equal(ml?.kind, 'expert')
-  assert.deepEqual(ml!.prompt.match(headings), [
+  const chapters = ASSETS.chapters!.filter((chapter) => chapter.profile === 'ml-research')
+  const notes = chapterContext(chapters, text, () => 'essentials')
+  assert.deepEqual(notes.match(/^\[[a-z-]+\] .+$/gm), [
     '[ml-research] Resampling, leakage, and final assessment',
     '[ml-research] Linear models, shrinkage, and selection',
   ])
-  assert.match(ml!.prompt, /Rows from the same person/)
-  assert.ok(ml!.prompt.includes(`Draft:\n<<<\n${text}\n>>>`))
-  const [design] = requests(core.handle({ type: 'review', profile: 'system-design', now: 300 }))
-  assert.equal(design?.kind, 'expert')
-  assert.deepEqual(design!.prompt.match(headings), ['[system-design] Service objectives and error budgets'])
-  assert.match(design!.prompt, /Burn rate is the observed bad-event fraction/)
-
-  const unrelated = 'Fix the spacing on this dialog.\n\nDecisions:\n- Use lasso and measure the burn rate.'
-  core.handle({ type: 'draft', text: unrelated, now: 400, origin: 'paste' })
-  for (const [i, profile] of ['ml-research', 'system-design'].entries()) {
-    const [req] = requests(core.handle({ type: 'review', profile, now: 500 + i }))
-    assert.equal(req?.kind, 'expert')
-    assert.ok(req!.prompt.includes(`Draft:\n<<<\n${unrelated}\n>>>`))
-    assert.doesNotMatch(req!.prompt, /Profile chapters/)
-    assert.equal(req!.prompt.match(headings), null)
-  }
 })
 
 test('the general card request starts with the draft and contains no chapter notes', () => {
@@ -373,7 +357,6 @@ test('the general card request starts with the draft and contains no chapter not
 })
 
 const PRODUCT_DRAFT = 'Plan an A/B test for this feature and tell me what to measure.'
-const ML_DRAFT = 'Plan cross-validation for a churn classifier on the customer dataset and report test accuracy.'
 const PRODUCT_FIELD = { prefer: onboarding.preferredProfiles({ work: ['apps'] }) }
 
 for (const fixture of reviewFixtures) {
@@ -397,256 +380,92 @@ for (const fixture of autoreview2.parser) {
   })
 }
 
+const reservedReviewKeys = new Set(ASSETS.bundles!.flatMap((bundle) => bundle.slots.map((slot) => slot.id)))
+for (const [round, fixtures] of [[3, autoreview3], [4, autoreview4]] as const) {
+  for (const { id, draft, reply, expected } of fixtures) {
+    test(`review parser handles round ${round} case ${id}`, () => {
+      const items = parseExpert(reply, draft, [], (key) => reservedReviewKeys.has(key))
+      assert.deepEqual(items.map((item) => ({
+        key: item.key, label: item.label, statement: item.statement, options: item.options.map((option) => option.label),
+        ...(item.defaultIndex !== undefined && { defaultIndex: item.defaultIndex }),
+        ...(item.span && { anchor: draft.slice(item.span.start, item.span.end) }),
+      })), expected ? [expected] : [])
+    })
+  }
+}
+
+test('a review choice uses its statement as a label and keeps options around an optional anchor', () => {
+  const draft = 'Add a CSV export for all orders.'
+  const items = parseExpert([
+    'choice | | Export {} | | all orders | the filtered orders * | | @ CSV export |',
+    'choice | Send {} | a link | CSV export | a file',
+    'choice | Include {} | all orders | only new orders',
+    'choice | Notify {} | @sales | @support | @ recipients',
+  ].join('\n'), draft, [], () => false)
+  assert.deepEqual(items.map((item) => [item.key, item.label, item.options.map((option) => option.label),
+    item.defaultIndex, item.span && draft.slice(item.span.start, item.span.end)]), [
+    ['export', 'Export', ['all orders', 'the filtered orders'], 1, 'CSV export'],
+    ['send', 'Send', ['a link', 'a file'], undefined, 'CSV export'],
+    ['include', 'Include', ['all orders', 'only new orders'], undefined, undefined],
+    ['notify', 'Notify', ['@sales', '@support'], undefined, undefined],
+  ])
+})
+
+test('a statement-derived review key can coexist with a catalog key', () => {
+  const items = parseExpert('choice | Measure {} | errors | latency', '', [], (key) => key === 'measure')
+  assert.equal(items[0]?.key, 'choice_measure')
+})
+
+for (const [reason, reply] of [
+  ['the statement has no slot', 'choice | @CSV export | Which rows should go in the file? | all orders | the filtered orders'],
+  ['there is only one nonempty option', 'choice | Export {} | | all orders | * | @CSV export |'],
+  ['there are no options', 'choice | Export {} | |'],
+] as const) {
+  test(`review parser rejects a choice when ${reason}`, () => {
+    assert.deepEqual(parseExpert(reply, 'Add a CSV export.', [], () => false), [])
+  })
+}
+
 const DISTINCT_REVIEW = 'choice | A/B test | Assignment unit | Randomize by {} | account | workspace'
 const DUPLICATE_REVIEW = 'choice | | Export scope | Download {} | all orders | the filtered orders'
 
-test('automatic review defaults off and on-demand review uses chapters, tagged choices, and card deduplication', () => {
-  for (const reviewMode of [undefined, 'off'] as const) {
+test('on-demand review passes card rows and shows at most two new choices', () => {
+  const core = createCore(ASSETS)
+  core.handle(config({ ...PRODUCT_FIELD, sketch: false }))
+  const [reading] = requests(core.handle({ type: 'draft', now: 100, text: PRODUCT_DRAFT, origin: 'paste' }))
+  assert.equal(reading?.kind, 'card')
+  core.handle({ type: 'reply', req: reading!.req, now: 200, text: READING, done: true })
+  const [manual] = requests(core.handle({ type: 'review', now: 300, profile: 'product' }))
+  assert.match(manual!.system[0]!, /\x60choice \|\x60/)
+  assert.doesNotMatch(manual!.system[0]!, /new_key|catalog_key/)
+  assert.match(manual!.prompt, /Decisions already on the card/)
+  for (const { key, statement, options } of core.currentView().card!.rows) {
+    assert.ok(manual!.prompt.includes(JSON.stringify({ key, statement, options })))
+  }
+  assert.doesNotMatch(manual!.prompt, /Candidate catalog/)
+  core.handle({ type: 'reply', req: manual!.req, now: 400, done: true, text: [
+    DUPLICATE_REVIEW, DISTINCT_REVIEW, DISTINCT_REVIEW,
+    'Launch after {} | one week | two weeks*',
+    'choice | Measure {} | activation | retention',
+  ].join('\n') })
+  const items = core.currentView().expert?.items
+  assert.deepEqual(items?.map((item) => item.key), ['assignment_unit', 'launch_after'])
+  assert.deepEqual(items?.[0]?.span, { start: PRODUCT_DRAFT.indexOf('A/B test'), end: PRODUCT_DRAFT.indexOf('A/B test') + 8 })
+  assert.equal(items?.[1]?.span, undefined)
+  assert.equal(items?.[1]?.defaultIndex, 1)
+})
+
+test('the general request matches v0.4.26 and an old auto setting is ignored', () => {
+  for (const oldSettings of [{}, { review: 'auto' }]) {
     const core = createCore(ASSETS)
-    core.handle(config({ ...PRODUCT_FIELD, review: reviewMode }))
-    const draft = { type: 'draft', now: 100, text: PRODUCT_DRAFT, origin: 'paste' } as const
-    const reading = requests(core.handle(draft))
-    assert.deepEqual(reading.map((r) => r.kind), ['card'])
+    core.handle(config({ ...PRODUCT_FIELD, ...oldSettings }))
+    const reading = requests(core.handle({ type: 'draft', now: 100, text: PRODUCT_DRAFT, origin: 'paste' }))
+    assert.deepEqual(reading.map((effect) => effect.kind), ['card'])
+    assert.equal(createHash('sha256').update(JSON.stringify(reading[0])).digest('hex'),
+      'c57af4e70f1f2f180bec9a3fbf78e73e619b91bb8dd423277c5487fb98bb99c2')
     assert.deepEqual(requests(core.handle({ type: 'reply', req: reading[0]!.req, now: 200, text: READING, done: true })), [])
-    const [manual] = requests(core.handle({ type: 'review', now: 300, profile: 'product' }))
-    assert.match(manual!.system[0]!, /\x60choice \|\x60/)
-    assert.doesNotMatch(manual!.system[0]!, /new_key|catalog_key/)
-    assert.match(manual!.prompt, /\[product\] Experiments, rollout, and decisions/)
-    assert.match(manual!.prompt, /Decisions already on the card/)
-    assert.doesNotMatch(manual!.prompt, /Candidate catalog/)
-    core.handle({ type: 'reply', req: manual!.req, now: 400, done: true, text: [
-      DUPLICATE_REVIEW, DISTINCT_REVIEW, DISTINCT_REVIEW,
-      'choice | | Launch gate | Launch after {} | one week | two weeks',
-      'choice | | Experiment goal | Measure {} | activation | retention',
-    ].join('\n') })
-    const items = core.currentView().expert?.items
-    assert.deepEqual(items?.map((item) => item.key), ['assignment_unit', 'launch_gate'])
-    assert.deepEqual(items?.[0]?.span, { start: PRODUCT_DRAFT.indexOf('A/B test'), end: PRODUCT_DRAFT.indexOf('A/B test') + 8 })
-    assert.equal(items?.[1]?.span, undefined)
+    assert.deepEqual(requests(core.handle({ type: 'review', profile: 'product', now: 300 })).map((effect) => effect.kind), ['expert'])
   }
-})
-
-test('opted-in automatic review starts with the general request and preserves its v0.4.25 bytes', () => {
-  const core = createCore(ASSETS)
-  core.handle(config({ ...PRODUCT_FIELD, review: 'auto' }))
-  const effects = core.handle({ type: 'draft', now: 100, text: PRODUCT_DRAFT, origin: 'paste' })
-  const [general, review] = requests(effects)
-  assert.deepEqual(requests(effects).map((effect) => effect.kind), ['card', 'expert'])
-  assert.equal(createHash('sha256').update(JSON.stringify(general)).digest('hex'),
-    'c57af4e70f1f2f180bec9a3fbf78e73e619b91bb8dd423277c5487fb98bb99c2')
-  assert.match(review!.prompt, /\[product\] Experiments, rollout, and decisions/)
-  assert.doesNotMatch(review!.prompt, /Candidate catalog/)
-  assert.deepEqual(effects.find((effect) => effect.type === 'metric' && effect.name === 'chapter-review-started'), {
-    type: 'metric', name: 'chapter-review-started', req: review!.req, profile: 'product', depth: 'standard',
-    chapters: ['Experiments, rollout, and decisions'],
-  })
-})
-
-test('chapter routing uses selected fields and project lenses, with the most specific match first', () => {
-  const start = (text: string, settings: Event, projectVocab?: ReturnType<typeof vocabOf>) => {
-    const core = createCore(ASSETS)
-    core.handle(settings)
-    if (projectVocab) core.handle({ type: 'vocabulary', vocab: projectVocab })
-    const effects = core.handle({ type: 'draft', now: 100, text, origin: 'paste' })
-    const [general] = requests(effects)
-    return [...requests(effects), ...requests(core.handle({
-      type: 'reply', now: 200, req: general!.req, text: 'kind | change', done: true,
-    }))]
-  }
-  const selected = (extra: Partial<Extract<Event, { type: 'config' }>> = {}) => config({ review: 'auto', ...extra })
-  assert.deepEqual(start(DRAFT, selected(PRODUCT_FIELD)).map((r) => r.kind), ['card'])
-  // The draft's vocabulary alone can bring in the ML catalog without making it the person's field.
-  const guessed = start(ML_DRAFT, selected(PRODUCT_FIELD))
-  assert.deepEqual(guessed.map((r) => r.kind), ['card'])
-  assert.match(guessed[0]!.prompt, /Expert decisions \(ml-research\)/)
-  assert.deepEqual(start(PRODUCT_DRAFT, selected()).map((r) => r.kind), ['card'])
-  assert.match(start(PRODUCT_DRAFT, selected({ profile: 'product' }))[1]!.prompt, /\[product\]/)
-  const general = 'Verify live after merging the patch and capture the results.'
-  assert.deepEqual(start(general, selected()).map((r) => r.kind), ['card'])
-  assert.match(start(general, selected({ profileSelected: true }))[1]!.prompt, /\[general\]/)
-  const tooling = onboarding.preferredProfiles({ work: ['tooling'] })
-  assert.match(start(general, selected({ prefer: tooling }))[1]!.prompt, /\[general\]/)
-  const detected = vocabOf('dataset-challenge', ['train.csv', 'test.csv', 'eda.ipynb'], { sklearn: 3 })
-  assert.match(start(ML_DRAFT, selected(), detected)[1]!.prompt, /\[ml-research\]/)
-  const combined = start(`${ML_DRAFT} ${PRODUCT_DRAFT} Compare ridge regression and lasso using the one-standard-error rule.`,
-    selected(PRODUCT_FIELD), detected)
-  assert.deepEqual(combined.map((r) => r.kind), ['card', 'expert'])
-  assert.match(combined[1]!.prompt, /\[ml-research\] Linear models, shrinkage, and selection/)
-  assert.doesNotMatch(combined[1]!.prompt, /\[product\]/)
-})
-
-test('chapter review caches the text, profile and level and uses the note for that level', () => {
-  const core = createCore(ASSETS)
-  const text = `${PRODUCT_DRAFT} ${ML_DRAFT}`
-  const setLevel = (profile: string, level: 'learning' | 'expert') => core.handle(config({
-    read: 'key', review: 'auto', sketch: false, profile, depths: onboarding.userDepths({ work: [], levels: { [profile]: level }, decide: [] }),
-  }))
-  const draft = (value: string, now: number) => core.handle({ type: 'draft', text: value, now, origin: 'paste' })
-  const read = (now: number) => requests(core.handle({ type: 'cardRead', now }))
-  const reply = (req: number, text: string, now: number) => core.handle({ type: 'reply', req, text, now, done: true })
-  const reread = (now: number) => {
-    const [general, chapterReview] = read(now)
-    if (general?.kind === 'card') reply(general.req, 'kind | explore', now + 5)
-    return chapterReview ?? general
-  }
-
-  setLevel('product', 'learning')
-  draft(text, 100)
-  const [general, learner] = read(110)
-  reply(general!.req, 'kind | explore', 120)
-  assert.match(learner!.prompt, /Concurrent random assignment/)
-  assert.doesNotMatch(learner!.prompt, /Intent-to-treat/)
-  assert.match(learner!.system.join('\n'), /At essentials level, look for the concrete first/)
-  reply(learner!.req, '- | rollout_gate | Gate rollout on {} | one week | two weeks', 130)
-  draft('', 140)
-  draft(text, 150)
-  assert.deepEqual(read(160), [])
-  assert.deepEqual(core.currentView().card?.rows.map((row) => row.key), ['rollout_gate'])
-
-  setLevel('product', 'expert')
-  const expert = reread(170)
-  assert.equal(expert?.kind, 'expert')
-  assert.match(expert.prompt, /Intent-to-treat/)
-  assert.doesNotMatch(expert.prompt, /Concurrent random assignment/)
-  assert.match(expert.system.join('\n'), /At research level, look for\nthe trade-off/)
-  setLevel('ml-research', 'learning')
-  const ml = reread(180)
-  assert.equal(ml?.kind, 'expert')
-  assert.match(ml.prompt, /\[ml-research\] Resampling, leakage, and final assessment/)
-  assert.doesNotMatch(ml.prompt, /\[product\]/)
-})
-
-test('a fast card refreshes a pending review with its final rows and puts at most two choices on the card', () => {
-  const generalReply = [
-    'read | You want an honest estimate of churn performance.',
-    'kind | explore',
-    'row | score | score | one | Compare models using {} | Brier score | log loss',
-    'row | split_strategy | split | one | Hold out {} | new customers | later records',
-    'row | review_owner | reviewer | one | Send the report to {} | the data team | the product team',
-  ]
-  const chapterReply = [
-    '- | ranking_metric | Choose the winning model by {} | Log loss | Brier score',
-    'choice | | Holdout groups | Evaluation uses {} | group-disjoint holdout | within-group temporal holdout',
-    '- | reviewer | Send the report to the {} team | data | product',
-    '- | coverage | Report uncertainty over {} | holdout customers | refreshed cohorts',
-    '- | scope | Tune the classifier on {} | one region | all regions',
-    '- | threshold | Set the operating point by {} | a recall floor | a precision floor',
-  ].join('\n')
-  const core = createCore(ASSETS)
-  core.handle(config({ profile: 'ml-research', review: 'auto', sketch: false, streaming: true }))
-  const [general, speculative] = requests(core.handle({ type: 'draft', now: 100, text: ML_DRAFT, origin: 'paste' }))
-  const reply = (req: number, text: string, now: number, done = true) => core.handle({ type: 'reply', req, text, now, done })
-  assert.deepEqual(requests(reply(general!.req, generalReply.slice(0, -1).join('\n') + '\n', 200, false)), [])
-  assert.equal(core.currentView().card?.reading, true)
-  assert.deepEqual(core.currentView().card?.rows.map((row) => row.key), ['score', 'split_strategy'])
-  const cardReady = reply(general!.req, generalReply.at(-1)!, 300)
-  assert.ok(cardReady.some((effect) => effect.type === 'cancel' && effect.req === speculative!.req))
-  assert.deepEqual(reply(speculative!.req, DISTINCT_REVIEW, 310), [])
-  const [review] = requests(cardReady)
-  assert.equal(core.currentView().card?.reading, false)
-  const plainRows = core.currentView().card!.rows
-  assert.deepEqual(plainRows.map((row) => row.key), ['score', 'split_strategy', 'review_owner'])
-  const context = plainRows.map(({ key, statement, options }) => JSON.stringify({ key, statement, options }))
-  assert.ok(review!.prompt.includes(context.join('\n')))
-  assert.match(review!.prompt, /Skip the same choice even if you would word it differently/)
-  const finished = reply(review!.req, chapterReply, 400)
-  const rows = core.currentView().card!.rows
-  assert.deepEqual(rows.slice(0, 3), plainRows)
-  assert.deepEqual(rows.map((row) => [row.key, row.origin]), [
-    ['score', 'model'], ['split_strategy', 'lens'], ['review_owner', 'model'], ['coverage', 'lens'], ['scope', 'lens'],
-  ])
-  assert.deepEqual(finished.find((effect) => effect.type === 'metric' && effect.name === 'chapter-review-finished'), {
-    type: 'metric', name: 'chapter-review-finished', req: review!.req, profile: 'ml-research',
-    ms: 100, ok: true, rowsAdded: 2, duplicates: 3,
-  })
-  assert.deepEqual(rows[3]!.selected, [])
-  core.handle({ type: 'cardSet', now: 410, row: rows[3]!.id, option: 1 })
-  const sent = core.handle({ type: 'submit', now: 420, text: ML_DRAFT }).find((effect) => effect.type === 'submit')!
-  assert.ok(sent.decisions.includes('Report uncertainty over refreshed cohorts.'))
-  assert.ok(!sent.decisions.some((line) => line.startsWith('Tune the classifier on')))
-})
-
-test('chapter review follows quiet, off, card off and read-key settings', () => {
-  const draft = { type: 'draft', now: 100, text: PRODUCT_DRAFT, origin: 'paste' } as const
-  for (const settings of [
-    { mode: 'quiet', kinds: ['card'] },
-    { mode: 'off', kinds: [] },
-    { sheet: false, kinds: [] },
-  ] as const) {
-    const { kinds, ...options } = settings
-    const core = createCore(ASSETS)
-    core.handle(config({ ...PRODUCT_FIELD, review: 'auto', ...options }))
-    const effects = core.handle(draft)
-    assert.deepEqual(requests(effects).map((effect) => effect.kind), kinds)
-    const [general] = requests(effects)
-    if (general) {
-      assert.deepEqual(requests(core.handle({ type: 'reply', req: general.req, now: 200, text: READING, done: true })), [])
-    }
-  }
-  const core = createCore(ASSETS)
-  core.handle(config({ ...PRODUCT_FIELD, review: 'auto', read: 'key' }))
-  assert.deepEqual(requests(core.handle(draft)), [])
-  assert.deepEqual(requests(core.handle({ type: 'timer', now: 1800 })), [])
-  const [general, review] = requests(core.handle({ type: 'cardRead', now: 1900 }))
-  assert.equal(general?.kind, 'card')
-  assert.deepEqual(requests(core.handle({ type: 'cardRead', now: 1950 })), [])
-  assert.equal(review?.kind, 'expert')
-})
-
-test('a failed general reading discards the parallel review and a new reading retries both', () => {
-  const core = createCore(ASSETS)
-  core.handle(config({ ...PRODUCT_FIELD, review: 'auto', read: 'key' }))
-  core.handle({ type: 'draft', now: 100, text: PRODUCT_DRAFT, origin: 'paste' })
-  const [general, pending] = requests(core.handle({ type: 'cardRead', now: 200 }))
-  const failure = core.handle({ type: 'reply', req: general!.req, text: '', done: true, ok: false, now: 300 })
-  assert.ok(failure.some((effect) => effect.type === 'cancel' && effect.req === pending!.req))
-  assert.deepEqual(requests(failure), [])
-  const retry = requests(core.handle({ type: 'cardRead', now: 400 }))
-  assert.deepEqual(retry.map((effect) => effect.kind), ['card', 'expert'])
-  const [card, review] = retry
-  core.handle({ type: 'reply', req: card!.req, text: 'kind | explore', done: true, now: 500 })
-  core.handle({ type: 'reply', req: review.req, text: '- | rollout_gate | Gate rollout on {} | one week | two weeks', done: true, now: 600 })
-  assert.deepEqual(core.currentView().card?.rows.map((row) => row.key), ['rollout_gate'])
-})
-
-test('editing or submitting cancels an automatic review and late replies cannot add rows', () => {
-  const result = '- | rollout_gate | Gate rollout on {} | one week | two weeks'
-  for (const editing of [true, false]) {
-    const core = createCore(ASSETS)
-    core.handle(config({ ...PRODUCT_FIELD, review: 'auto', sketch: false }))
-    const [, review] = requests(core.handle({ type: 'draft', now: 100, text: PRODUCT_DRAFT, origin: 'paste' }))
-    const next = core.handle(editing
-      ? { type: 'draft', now: 300, text: DRAFT, origin: 'paste' }
-      : { type: 'submit', now: 300, text: PRODUCT_DRAFT })
-    assert.ok(next.some((effect) => effect.type === 'cancel' && effect.req === review!.req))
-    const late = core.handle({ type: 'reply', req: review!.req, text: result, now: 400, done: true })
-    assert.deepEqual(late, [])
-    assert.ok(!core.currentView().card?.rows.some((row) => row.key === 'rollout_gate'))
-  }
-  for (const submittedHost of [true, false]) {
-    const core = createCore(ASSETS, { readSubmittedPrompt: submittedHost })
-    core.handle(config({ ...PRODUCT_FIELD, review: 'auto' }))
-    const effects = core.handle({ type: 'draft', now: 100, text: PRODUCT_DRAFT, origin: 'paste',
-      ...(!submittedHost && { afterEnter: true as const }) })
-    const [general] = requests(effects)
-    assert.deepEqual(requests(effects).map((r) => r.kind), ['card'])
-    assert.deepEqual(requests(core.handle({ type: 'reply', req: general!.req, now: 200, text: READING, done: true })), [])
-  }
-})
-
-test('a manual review suppresses automatic repeats of the same text and can still be rerun', () => {
-  const core = createCore(ASSETS)
-  core.handle(config({ ...PRODUCT_FIELD, review: 'auto', read: 'key' }))
-  core.handle({ type: 'draft', now: 100, text: PRODUCT_DRAFT, origin: 'paste' })
-  const [manual] = requests(core.handle({ type: 'review', profile: 'product', now: 200 }))
-  assert.equal(manual?.kind, 'expert')
-  core.handle({ type: 'reply', req: manual!.req, text: 'NONE', now: 250, done: true })
-  core.handle({ type: 'draft', now: 300, text: '', origin: 'type' })
-  core.handle({ type: 'draft', now: 400, text: PRODUCT_DRAFT, origin: 'paste' })
-  const [general] = requests(core.handle({ type: 'cardRead', now: 500 }))
-  assert.equal(general?.kind, 'card')
-  assert.deepEqual(requests(core.handle({ type: 'reply', req: general.req, now: 600, text: READING, done: true })), [])
-  assert.deepEqual(requests(core.handle({ type: 'review', profile: 'product', now: 700 })).map((r) => r.kind), ['expert'])
 })
 
 for (const [heading, unrelated, relevant] of [
@@ -682,7 +501,7 @@ test('chapter routing sends the one-standard-error rule to shrinkage', () => {
   }
 })
 
-test('chapter routing recognizes inflections and domain synonyms in automatic reviews', () => {
+test('chapter routing recognizes inflections and domain synonyms', () => {
   for (const [profile, topic, drafts] of [
     ['system-design', 'Messaging, retries, and idempotency', [
       'Make webhook retries idempotent in the billing worker.',
@@ -701,68 +520,9 @@ test('chapter routing recognizes inflections and domain synonyms in automatic re
     ]],
   ] as const) {
     for (const text of drafts) {
-      const core = createCore(ASSETS)
-      core.handle(config({ profile, review: 'auto' }))
-      const [, review] = requests(core.handle({ type: 'draft', now: 100, text, origin: 'paste' }))
-      assert.ok(review?.prompt.includes(`[${profile}] ${topic}`), text)
+      const chapters = ASSETS.chapters!.filter((chapter) => chapter.profile === profile)
+      assert.ok(chapterContext(chapters, text, () => 'standard').includes(`[${profile}] ${topic}`), text)
     }
-  }
-})
-
-for (const [probe, text] of [
-  ['n:r01', 'Fix the typo in the cross-validation section of the README.'],
-  ['n:r02', 'Bump lightgbm to the latest version in requirements.txt.'],
-  ['n:r03', 'Add a docstring to the Kaplan-Meier plotting helper.'],
-  ['n:r04', 'Rename the test_set fixtures folder to eval_fixtures and update the imports.'],
-  ['n:r05', "Change the rate limit error message to say 'Try again in a minute'."],
-  ['n:r06', 'Move the schema migration files into db/migrations.'],
-  ['n:r07', 'Make the SLO chart line blue to match the other dashboards.'],
-  ['n:r08', 'Delete the unused read replica config from the old staging setup.'],
-  ['formatting', 'Format the load shedding config with the standard formatter.'],
-  ['f:fr02', 'Add type hints to the lasso helper functions.'],
-  ['f:fr03', 'Sort the imports in the random forest training script.'],
-  ['f:fr04', 'Remove the commented-out k-means code from analysis.py.'],
-  ['f:fr05', 'Fix the failing unit test for the Kaplan-Meier helper after the pandas upgrade.'],
-  ['f:fr08', 'Upgrade the Redis client used by the read-through cache from 4.6 to 4.7.'],
-  ['f:fr09', 'Translate the SLO dashboard labels to French.'],
-  ['f:fr10', 'Add a comment explaining the read replica fallback in db.ts.'],
-] as const) {
-  test(`automatic review skips the routine edit ${probe} even when a chapter matches`, () => {
-    const profile = /^(?:n:r0[1-4]|f:fr0[2-5])$/.test(probe) ? 'ml-research' : 'system-design'
-    const core = createCore(ASSETS)
-    core.handle(config({ profile, review: 'auto' }))
-    const reading = requests(core.handle({ type: 'draft', now: 100, text, origin: 'paste' }))
-    assert.deepEqual(reading.map((r) => r.kind), ['card'])
-    const [general] = reading
-    assert.deepEqual(requests(core.handle({ type: 'reply', now: 200, req: general.req, text: READING, done: true })), [])
-    const [manual] = requests(core.handle({ type: 'review', now: 300, profile }))
-    assert.match(manual!.prompt, /Profile chapters matched to the draft/)
-  })
-}
-
-test('a routine edit does not suppress review of a substantive second request', () => {
-  const core = createCore(ASSETS)
-  core.handle(config({ profile: 'system-design', review: 'auto' }))
-  const text = 'Fix the typo in the README and add load shedding when the API queue backs up.'
-  const [, review] = requests(core.handle({ type: 'draft', now: 100, text, origin: 'paste' }))
-  assert.match(review!.prompt, /\[system-design\] Capacity, queues, and overload/)
-})
-
-test('automatic review requires a substantive request with distinct topic evidence', () => {
-  for (const [profile, text, eligible] of [
-    ['ml-research', 'Evaluate lightgbm on the expanded dataset.', false],
-    ['ml-research', 'Evaluate lightgbm and compare lightgbm on fresh data.', false],
-    ['ml-research', 'Evaluate lightgbm alongside xgboost on fresh data.', true],
-    ['ml-research', 'Evaluate a random forest on fresh data.', true],
-    ['ml-research', 'Explain what a random forest is to me.', false],
-    ['ml-research', 'Fix the random forest reporter and add a heading to the results.', false],
-    ['ml-research', 'Investigate whether derived features leaked any data.', true],
-    ['system-design', 'Design TTL-based caching for the lookup table.', true],
-  ] as const) {
-    const core = createCore(ASSETS)
-    core.handle(config({ profile, review: 'auto' }))
-    assert.equal(requests(core.handle({ type: 'draft', now: 100, text, origin: 'paste' }))
-      .some((request) => request.kind === 'expert'), eligible, text)
   }
 })
 
@@ -782,29 +542,27 @@ test('an alert time window is distinct from alert delivery', () => {
   }), false)
 })
 
-test('a later reply merges with the finished card in either order and leaves adjacent decisions available', () => {
+test('on-demand review deduplicates against the card whichever reply arrives first', () => {
   const { rows, choice } = autoreview2.near.find(({ id }) => id === 'I21')!
   const draft = 'Add a retry policy with jitter to all outgoing HTTP calls.'
-  const general = ['kind | change', ...rows.map(({ key, statement, options }) =>
+  const cardRows = rows.slice(0, 3)
+  const general = ['kind | change', ...cardRows.map(({ key, statement, options }) =>
     ['row', key, 'choice', 'one', statement, ...options].join(' | '))].join('\n')
-  const novel = 'choice | | Backoff cap | Cap the total wait at {} | 20 seconds | 60 seconds'
-  const duplicate = ['choice', '', 'Ambiguous effect resolution', choice.statement, ...choice.options].join(' | ')
+  const novel = 'Cap the total wait at {} | 20 seconds | 60 seconds'
+  const duplicate = ['choice', 'Ambiguous effect resolution', choice.statement, ...choice.options].join(' | ')
   for (const reviewFirst of [false, true]) {
     const core = createCore(ASSETS)
-    core.handle(config({ profile: 'system-design', review: 'auto', sketch: false }))
-    const [card, review] = requests(core.handle({ type: 'draft', now: 100, text: draft, origin: 'paste' }))
+    core.handle(config({ profile: 'system-design', sketch: false }))
+    const [card] = requests(core.handle({ type: 'draft', now: 100, text: draft, origin: 'paste' }))
+    const [review] = requests(core.handle({ type: 'review', now: 150 }))
     const replies = [
       { req: card!.req, text: general },
       { req: review!.req, text: [duplicate, novel].join('\n') },
     ]
     if (reviewFirst) replies.reverse()
-    const first = core.handle({ type: 'reply', now: 2000, done: true, ...replies[0]! })
-    assert.ok(!first.some((e) => e.type === 'request' || e.type === 'cancel'))
-    assert.ok(!core.currentView().card?.rows.some((row) => row.key === 'backoff_cap'))
-    const second = core.handle({ type: 'reply', now: 2200, done: true, ...replies[1]! })
-    assert.equal(core.currentView().card?.rows.at(-1)?.key, 'backoff_cap')
-    assert.ok(!core.currentView().card?.rows.some((row) => row.key === 'ambiguous_effect_resolution'))
-    assert.ok(second.some((e) => e.type === 'metric' && e.name === 'chapter-review-finished' && e.duplicates === 1))
+    for (const [i, reply] of replies.entries()) core.handle({ type: 'reply', now: 200 + i, done: true, ...reply })
+    assert.deepEqual(core.currentView().expert?.items.map((item) => item.key), ['cap_the_total_wait_at'])
+    assert.deepEqual(core.currentView().card?.rows.map((row) => row.key), cardRows.map(({ key }) => key))
   }
 })
 
@@ -823,7 +581,7 @@ test('changing a field level rereads the draft and keeps a confirmed row', () =>
   assert.equal(pending?.kind, 'card')
   const [before] = requests(core.handle({ type: 'review', now: 410 }))
   assert.equal(before?.kind, 'expert')
-  assert.match(before!.prompt, /pulls weights toward zero/)
+  assert.match(before!.prompt, /Review profile: ml-research\nLevel: essentials/)
   const effects = core.handle(config({ ...settings, depths: { 'ml-research': 'research' } }))
   for (const req of [pending!.req, before!.req]) {
     assert.ok(effects.some((effect) => effect.type === 'cancel' && effect.req === req))
@@ -841,20 +599,8 @@ test('changing a field level rereads the draft and keeps a confirmed row', () =>
   assert.equal(confirmed?.chosen, true)
   const [after] = requests(core.handle({ type: 'review', now: 520 }))
   assert.equal(after?.kind, 'expert')
-  assert.match(after!.prompt, /Gauss–Markov/)
-  assert.doesNotMatch(after!.prompt, /pulls weights toward zero/)
+  assert.match(after!.prompt, /Review profile: ml-research\nLevel: research/)
   assert.ok(after!.prompt.includes(`Draft:\n<<<\n${edited}\n\nDecisions:\n- Put the report in reports.\n>>>`))
-})
-
-test('on-demand Product review uses its chapters and level without requiring a decision catalog', () => {
-  const core = createCore(ASSETS)
-  core.handle(config({ read: 'key', depths: { product: 'research' } }))
-  const text = 'Design the A/B test for the feature. Hold out a test set for the classifier separately.'
-  core.handle({ type: 'draft', text, now: 100, origin: 'paste' })
-  const [req] = requests(core.handle({ type: 'review', profile: 'product', now: 200 }))
-  assert.equal(req?.kind, 'expert')
-  assert.match(req!.prompt, /Intent-to-treat/)
-  assert.doesNotMatch(req!.prompt, /\[ml-research\] Resampling/)
 })
 
 test('who the person is reaches the reading, their level sets each field\'s depth, and their fields need less evidence', () => {

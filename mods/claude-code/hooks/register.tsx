@@ -9,7 +9,7 @@ import { atom, read } from 'claude-code'
 import type { Elements, EngineInterface, ModelCompleteResult, PromptDecoration, Register, RenderSurface } from 'claude-code'
 
 import { createCore, DEPTHS, isHostCommand, MODES, SCOPES, splitDecisions } from '../core/index'
-import type { Assets, Core, Depth, Effect, Event, LanguageSetting, Mode, Origin, ReadingMode, ReviewMode, Scope, SendSetting, StateLoad, Timing, View } from '../core/index'
+import type { Assets, Core, Depth, Effect, Event, LanguageSetting, Mode, Origin, ReadingMode, Scope, SendSetting, StateLoad, Timing, View } from '../core/index'
 import { DEFAULT_SEND } from '../core/types'
 import type { MargincueBand, MargincueExpert, MargincueReceipt, MargincueRow } from '../types'
 import { BLANK_CLOSE, BLANK_OPEN, parseBlanks, renderBlanks } from '../core/card'
@@ -49,15 +49,14 @@ const EAGER_PLAN = false
 
 type Settings = {
   mode: Mode; profile: string; language: LanguageSetting; inline: boolean; sheet: boolean; ab: boolean; depths: Record<string, Depth>
-  profileSelected: boolean
-  read: ReadingMode; review: ReviewMode; sketch: boolean; refs: boolean; blanks: boolean
+  read: ReadingMode; sketch: boolean; refs: boolean; blanks: boolean
   send: SendSetting; sendExplicit: boolean
   /** The first-run interview's answers, and whether it ran (or was closed, which is not asked again). */
   user: UserProfile | null; onboarded: 'done' | 'skipped' | null
 }
 const DEFAULTS: Settings = {
-  mode: 'auto', profile: 'general', profileSelected: false, language: 'en', inline: false, sheet: true, ab: false, depths: {},
-  read: 'auto', review: 'off', sketch: true, refs: true, blanks: true, user: null, onboarded: null,
+  mode: 'auto', profile: 'general', language: 'en', inline: false, sheet: true, ab: false, depths: {},
+  read: 'auto', sketch: true, refs: true, blanks: true, user: null, onboarded: null,
   send: DEFAULT_SEND, sendExplicit: false,
 }
 /** Re-read the project's names after a turn at most this often. */
@@ -185,7 +184,6 @@ function configEvent(): Event {
     language: host.settings.language,
     sheet: host.settings.sheet && host.arm !== 'control',
     read: host.settings.read,
-    review: host.settings.review,
     sketch: host.settings.sketch,
     refs: host.settings.refs,
     send: host.settings.send,
@@ -194,7 +192,6 @@ function configEvent(): Event {
     depths: { ...userDepths(host.settings.user), ...host.settings.depths },
     audit: host.eventLog.active,
     profile: host.settings.profile,
-    profileSelected: host.settings.profileSelected,
     timing: TIMING,
     streaming: false,
     eagerPlan: EAGER_PLAN,
@@ -1229,13 +1226,11 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
     ...DEFAULTS,
     mode: stored?.mode && MODES.includes(stored.mode) ? stored.mode : stored?.enabled === false ? 'off' : DEFAULTS.mode,
     profile: stored?.profile && Object.hasOwn(host.assets.profiles, stored.profile) ? stored.profile : DEFAULTS.profile,
-    profileSelected: stored?.profileSelected === true && Object.hasOwn(host.assets.profiles, stored.profile ?? ''),
     language: stored?.language === 'auto' ? 'auto' : DEFAULTS.language,
     inline: stored?.inline === true,
     sheet: stored?.sheet !== false,
     ab: stored?.ab === true,
     read: stored?.read === 'key' ? 'key' : DEFAULTS.read,
-    review: stored?.review === 'auto' ? 'auto' : DEFAULTS.review,
     sketch: stored?.sketch !== false,
     refs: stored?.refs !== false,
     blanks: stored?.blanks !== false,
@@ -1270,7 +1265,7 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
   await $.command.register({
     name: 'margincue',
     description: 'MarginCue card, sketch, blanks, decisions, expert review and session status',
-    argumentHint: '[setup [reset]|state|mode|language en|auto|card on|off|read auto|key|sketch on|off|refs on|off|blanks on|off|send all|picked|open|ab on|off|status|review [auto|off|profile]|edits|profile|status]',
+    argumentHint: '[setup [reset]|state|mode|language en|auto|card on|off|read auto|key|sketch on|off|refs on|off|blanks on|off|send all|picked|open|ab on|off|status|review [profile]|edits|profile|status]',
     immediate: true,
   })
   await reopen($)
@@ -1379,7 +1374,6 @@ ${slot.source}` : 'Use /margincue why <slot>.')
         if (!Object.hasOwn(host.assets.profiles, arg)) return done(`No profile named "${arg}". Available profiles are ${names}.`)
         const previousProfile = settings.profile
         settings.profile = arg
-        settings.profileSelected = true
         log($, 'profile-changed', { previousProfile })
         run($, configEvent())
         await saveSettings($)
@@ -1470,10 +1464,7 @@ ${slot.source}` : 'Use /margincue why <slot>.')
       case 'review': {
         const setting = arg.toLowerCase()
         if (setting === 'auto' || setting === 'off') {
-          settings.review = setting
-          run($, configEvent())
-          await saveSettings($)
-          return done(`MarginCue automatic review is ${setting}.`)
+          return done('Automatic review is unavailable. Use /margincue review to review your draft on demand.')
         }
         return done(await review($, arg || settings.profile, true))
       }
@@ -1498,7 +1489,7 @@ ${slot.source}` : 'Use /margincue why <slot>.')
         const { stats } = host
         const med = (list: number[]) => list.length ? `${median(list)} ms` : '–'
         return done([
-          `MarginCue is ${settings.mode} · profile ${settings.profile} · language ${settings.language} · depth ${currentDepth()} · card ${settings.sheet ? 'on' : 'off'} · read ${settings.read} · review ${settings.review} · sketch ${settings.sketch ? 'on' : 'off'} · refs ${settings.refs ? 'on' : 'off'} · blanks ${settings.blanks ? 'on' : 'off'}`,
+          `MarginCue is ${settings.mode} · profile ${settings.profile} · language ${settings.language} · depth ${currentDepth()} · card ${settings.sheet ? 'on' : 'off'} · read ${settings.read} · sketch ${settings.sketch ? 'on' : 'off'} · refs ${settings.refs ? 'on' : 'off'} · blanks ${settings.blanks ? 'on' : 'off'}`,
           `This session: ${stats.requests} model calls, ${stats.failures} failed · median first ${med(stats.first)} · median reply ${med(stats.full)}`,
           `${stats.submits} prompts sent, ${stats.attached} with decisions attached.`,
           `Project index: ${host.indexing ? 'reading…' : host.indexed ? 'ready' : 'none (not a git repository, or off)'}.`,
@@ -1944,7 +1935,7 @@ export const register: Register = (on) => {
                       type: 'expertPick', now: now(), at: Date.now(), review: checklist.id, key: item.key,
                       option: option.id, scope: selectedScope(item.slot, item.scope),
                     })}>
-                      <Text {...(i === 0 ? { color: P.suggested.color, backgroundColor: P.suggested.bg } : {})}>{` ${option.label} `}</Text>
+                      <Text {...(i === (item.defaultIndex ?? 0) ? { color: P.suggested.color, backgroundColor: P.suggested.bg } : {})}>{` ${option.label} `}</Text>
                     </Button>
                   ))}
                   {item.persistent && (

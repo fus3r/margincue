@@ -1,0 +1,675 @@
+[
+  {
+    "id": "n:m07/learning/auto/0/1",
+    "draft": "Fit Kaplan-Meier curves for time to first purchase; users who never bought should count as censored.",
+    "reply": "choice | users who never bought should count as censored | Users who churn without buying: {} | Censor them at churn date | Model churn as a competing risk",
+    "expected": {
+      "key": "users_who_churn_without_buying",
+      "label": "Users who churn without buying",
+      "statement": "Users who churn without buying: {}",
+      "options": ["Censor them at churn date", "Model churn as a competing risk"],
+      "anchor": "users who never bought should count as censored"
+    }
+  },
+  {
+    "id": "n:m07/learning/ondemand/0/1",
+    "draft": "Fit Kaplan-Meier curves for time to first purchase; users who never bought should count as censored.",
+    "reply": "choice | users who never bought should count as censored | Handle churn before purchase {} | as censoring, same as never-bought | as a competing event via cumulative incidence | as a separate analysis by churn status",
+    "expected": {
+      "key": "handle_churn_before_purchase",
+      "label": "Handle churn before purchase",
+      "statement": "Handle churn before purchase {}",
+      "options": ["as censoring, same as never-bought", "as a competing event via cumulative incidence", "as a separate analysis by churn status"],
+      "anchor": "users who never bought should count as censored"
+    }
+  },
+  {
+    "id": "n:s07/expert/ondemand/0/1",
+    "draft": "Move invite emails onto a background queue so sign-up doesn't wait on SMTP.",
+    "reply": "choice | background queue | The email worker runs {} | inside the existing web process | as a separate process",
+    "expected": {
+      "key": "the_email_worker_runs",
+      "label": "The email worker runs",
+      "statement": "The email worker runs {}",
+      "options": ["inside the existing web process", "as a separate process"],
+      "anchor": "background queue"
+    }
+  },
+  {
+    "id": "n:m11/expert/auto/0/1",
+    "draft": "Train a random forest to predict late payments and choose the decision threshold for alerts.",
+    "reply": "choice | Alert threshold policy | Set the alert threshold using {} | Cost ratio C_FP/(C_FP+C_FN) | Fixed weekly alert volume cap | Minimum recall on late payments",
+    "expected": {
+      "key": "alert_threshold_policy",
+      "label": "Alert threshold policy",
+      "statement": "Set the alert threshold using {}",
+      "options": ["Cost ratio C_FP/(C_FP+C_FN)", "Fixed weekly alert volume cap", "Minimum recall on late payments"]
+    }
+  },
+  {
+    "id": "n:m11/expert/auto/0/2",
+    "draft": "Train a random forest to predict late payments and choose the decision threshold for alerts.",
+    "reply": "choice | Score calibration | Calibrate forest scores before thresholding: {} | Isotonic regression on validation data | Platt scaling on validation data | Raw forest scores, no calibration",
+    "expected": {
+      "key": "score_calibration",
+      "label": "Score calibration",
+      "statement": "Calibrate forest scores before thresholding: {}",
+      "options": ["Isotonic regression on validation data", "Platt scaling on validation data", "Raw forest scores, no calibration"]
+    }
+  },
+  {
+    "id": "n:s16/expert/ondemand/0/1",
+    "draft": "Show the last known stats with a warning banner when the analytics service is down.",
+    "reply": "choice | warning banner | Clear the warning banner {} | on first successful request | after several consecutive successes | on next periodic health check",
+    "expected": {
+      "key": "clear_the_warning_banner",
+      "label": "Clear the warning banner",
+      "statement": "Clear the warning banner {}",
+      "options": ["on first successful request", "after several consecutive successes", "on next periodic health check"],
+      "anchor": "warning banner"
+    }
+  },
+  {
+    "id": "f:fm06/expert/auto/0/1",
+    "draft": "Report a bootstrap confidence interval for the lift between the two recommenders.",
+    "reply": "choice | Uncertainty target | bootstrap confidence interval for the lift | Lift interval should reflect {} variability. | Frozen fits on resampled test units | Refit at fixed tuning settings | Refitted pipeline with reselected tuning",
+    "expected": {
+      "key": "lift_interval_should_reflect_variability",
+      "label": "Uncertainty target",
+      "statement": "Lift interval should reflect {} variability.",
+      "options": ["Frozen fits on resampled test units", "Refit at fixed tuning settings", "Refitted pipeline with reselected tuning"],
+      "anchor": "bootstrap confidence interval for the lift"
+    }
+  },
+  {
+    "id": "n:s15/learning/ondemand/0/1",
+    "draft": "Add a retry policy with jitter to all outgoing HTTP calls.",
+    "reply": "choice | Post-timeout retry behavior | After a timeout, callers {} before retrying | retry immediately without checking status | check original operation status first",
+    "expected": {
+      "key": "post_timeout_retry_behavior",
+      "label": "Post-timeout retry behavior",
+      "statement": "After a timeout, callers {} before retrying",
+      "options": ["retry immediately without checking status", "check original operation status first"]
+    }
+  },
+  {
+    "id": "g:gm03/expert/auto/0/1",
+    "draft": "Estimate the treatment effect of the onboarding email from the observational signup data.",
+    "reply": "choice | Here: estimand | Estimand choice | Which estimand should the {} target? | Average effect across all signups (ATE) | Average effect among onboarded users (ATT)",
+    "expected": {
+      "key": "estimand_choice",
+      "label": "Estimand choice",
+      "statement": "Which estimand should the {} target?",
+      "options": ["Average effect across all signups (ATE)", "Average effect among onboarded users (ATT)"]
+    }
+  },
+  {
+    "id": "g:gm03/expert/auto/0/2",
+    "draft": "Estimate the treatment effect of the onboarding email from the observational signup data.",
+    "reply": "choice | | Sensitivity check | Which analysis bounds unmeasured confounding? | E-value for confounding strength | Rosenbaum bounds for matched sets",
+    "expected": null
+  },
+  {
+    "id": "g:gs02/expert/ondemand/0/1",
+    "draft": "Add a cache in front of the permissions lookup and decide how we invalidate it when roles change.",
+    "reply": "choice | Cache outage behavior | Permission checks fall back {} on cache failure | to origin reads, keeping normal latency | deny access until the cache recovers",
+    "expected": {
+      "key": "cache_outage_behavior",
+      "label": "Cache outage behavior",
+      "statement": "Permission checks fall back {} on cache failure",
+      "options": ["to origin reads, keeping normal latency", "deny access until the cache recovers"]
+    }
+  },
+  {
+    "id": "g:gs02/expert/ondemand/0/2",
+    "draft": "Add a cache in front of the permissions lookup and decide how we invalidate it when roles change.",
+    "reply": "choice | Invalidation scope | Role-change eviction reaches {} instances | every instance via broadcast | only the local process",
+    "expected": {
+      "key": "invalidation_scope",
+      "label": "Invalidation scope",
+      "statement": "Role-change eviction reaches {} instances",
+      "options": ["every instance via broadcast", "only the local process"]
+    }
+  },
+  {
+    "id": "n:s14/learning/ondemand/0/1",
+    "draft": "Set up point-in-time recovery for the Postgres database.",
+    "reply": "choice | Recovery loss tolerance | Set up point-in-time recovery | Accept data loss of {} during recovery | seconds, using continuous WAL shipping | up to an hour, periodic snapshots | a day, nightly full backups",
+    "expected": {
+      "key": "recovery_loss_tolerance",
+      "label": "Recovery loss tolerance",
+      "statement": "Accept data loss of {} during recovery",
+      "options": ["seconds, using continuous WAL shipping", "up to an hour, periodic snapshots", "a day, nightly full backups"],
+      "anchor": "Set up point-in-time recovery"
+    }
+  },
+  {
+    "id": "f:fs06/expert/auto/0/1",
+    "draft": "Add load shedding for the export endpoint when the job queue is full.",
+    "reply": "choice | load shedding for the export endpoint | Shedding order | Shed exports by {} when queue fills | priority class; per-tenant fairness; reject newest arrivals",
+    "expected": null
+  },
+  {
+    "id": "n:m20/expert/auto/0/1",
+    "draft": "Add early stopping to the training loop and log validation loss each epoch.",
+    "reply": "choice | Held-out reporting | log validation loss each epoch | Report final loss on {} data | Separate untouched test split | Fresh split per seed | Validation only, disclosed as tuned",
+    "expected": {
+      "key": "held_out_reporting",
+      "label": "Held-out reporting",
+      "statement": "Report final loss on {} data",
+      "options": ["Separate untouched test split", "Fresh split per seed", "Validation only, disclosed as tuned"],
+      "anchor": "log validation loss each epoch"
+    }
+  },
+  {
+    "id": "n:m20/expert/auto/0/2",
+    "draft": "Add early stopping to the training loop and log validation loss each epoch.",
+    "reply": "choice | Stopping budget | Add early stopping | Early stopping runs at a {} budget | Fixed budget across all arms | Per-run best-achievable checkpoint | Patience matched per arm",
+    "expected": {
+      "key": "stopping_budget",
+      "label": "Stopping budget",
+      "statement": "Early stopping runs at a {} budget",
+      "options": ["Fixed budget across all arms", "Per-run best-achievable checkpoint", "Patience matched per arm"],
+      "anchor": "Add early stopping"
+    }
+  },
+  {
+    "id": "g:gm05/expert/ondemand/0/1",
+    "draft": "Analyze time to cancellation with a survival model; plenty of subscribers haven't cancelled yet.",
+    "reply": "choice | time to cancellation | Report {} for cancellation | cause-specific hazard contrast | absolute cancellation probability by horizon",
+    "expected": {
+      "key": "report_for_cancellation",
+      "label": "Report for cancellation",
+      "statement": "Report {} for cancellation",
+      "options": ["cause-specific hazard contrast", "absolute cancellation probability by horizon"],
+      "anchor": "time to cancellation"
+    }
+  },
+  {
+    "id": "n:m04/learning/auto/0/1",
+    "draft": "Apply a Benjamini-Hochberg correction to the p-values in results/feature_screen.csv.",
+    "reply": "choice | Benjamini-Hochberg correction | Corrected p-values should {} | flag leads for follow-up | support a small set of firm claims",
+    "expected": {
+      "key": "corrected_p_values_should",
+      "label": "Corrected p-values should",
+      "statement": "Corrected p-values should {}",
+      "options": ["flag leads for follow-up", "support a small set of firm claims"],
+      "anchor": "Benjamini-Hochberg correction"
+    }
+  },
+  {
+    "id": "n:s15/expert/ondemand/0/1",
+    "draft": "Add a retry policy with jitter to all outgoing HTTP calls.",
+    "reply": "choice | Ambiguous outcome handling | all outgoing HTTP calls | Resolve uncertain side effects by {} | idempotency keys on every retry | reconciliation against remote state | alert operator, no automatic retry",
+    "expected": {
+      "key": "ambiguous_outcome_handling",
+      "label": "Ambiguous outcome handling",
+      "statement": "Resolve uncertain side effects by {}",
+      "options": ["idempotency keys on every retry", "reconciliation against remote state", "alert operator, no automatic retry"],
+      "anchor": "all outgoing HTTP calls"
+    }
+  },
+  {
+    "id": "n:m01/expert/auto/0/1",
+    "draft": "Evaluate the churn model on the March holdout and report AUC with a 95% confidence interval.",
+    "reply": "choice | Frozen model, resampled March test units | Interval should cover {} variability. | Frozen model, resampled March test units | Refit pipeline, repeating model selection",
+    "expected": {
+      "key": "frozen_model_resampled_march_test_units",
+      "label": "Frozen model, resampled March test units",
+      "statement": "Interval should cover {} variability.",
+      "options": ["Frozen model, resampled March test units", "Refit pipeline, repeating model selection"]
+    }
+  },
+  {
+    "id": "n:m01/expert/ondemand/0/1",
+    "draft": "Evaluate the churn model on the March holdout and report AUC with a 95% confidence interval.",
+    "reply": "choice | Uncertainty target | Interval should reflect {} | frozen model on new March customers | refitted pipeline including model selection",
+    "expected": {
+      "key": "interval_should_reflect",
+      "label": "Uncertainty target",
+      "statement": "Interval should reflect {}",
+      "options": ["frozen model on new March customers", "refitted pipeline including model selection"]
+    }
+  },
+  {
+    "id": "n:m21/expert/auto/0/1",
+    "draft": "Fais une validation croisée du modèle de prix et donne l'erreur moyenne.",
+    "reply": "choice | Error target | Error should describe {} of the price model | selection procedure via nested CV | frozen final fit on locked holdout",
+    "expected": {
+      "key": "error_target",
+      "label": "Error target",
+      "statement": "Error should describe {} of the price model",
+      "options": ["selection procedure via nested CV", "frozen final fit on locked holdout"]
+    }
+  },
+  {
+    "id": "n:m21/expert/ondemand/0/1",
+    "draft": "Fais une validation croisée du modèle de prix et donne l'erreur moyenne.",
+    "reply": "choice | validación cruzada | Error estimation scope | Compute the error {} | across the full selection procedure | for one frozen fitted model",
+    "expected": {
+      "key": "error_estimation_scope",
+      "label": "Error estimation scope",
+      "statement": "Compute the error {}",
+      "options": ["across the full selection procedure", "for one frozen fitted model"]
+    }
+  },
+  {
+    "id": "g:gm01/expert/ondemand/0/1",
+    "draft": "Build an evaluation harness that compares the three ranking models on the held-out week and reports whether the differences are significant.",
+    "reply": "choice | frozen pre-week fits | Model fit status | Evaluate {} models on the held-out week | frozen fits trained before the week | reselect with time-ordered inner CV | refit excluding the held-out week",
+    "expected": {
+      "key": "model_fit_status",
+      "label": "Model fit status",
+      "statement": "Evaluate {} models on the held-out week",
+      "options": ["frozen fits trained before the week", "reselect with time-ordered inner CV", "refit excluding the held-out week"]
+    }
+  },
+  {
+    "id": "n:m11/learning/ondemand/0/1",
+    "draft": "Train a random forest to predict late payments and choose the decision threshold for alerts.",
+    "reply": "choice | Score meaning | Alert scores must give {} | a ranked order of accounts | calibrated late-payment probabilities",
+    "expected": {
+      "key": "score_meaning",
+      "label": "Score meaning",
+      "statement": "Alert scores must give {}",
+      "options": ["a ranked order of accounts", "calibrated late-payment probabilities"]
+    }
+  },
+  {
+    "id": "n:m21/learning/ondemand/0/1",
+    "draft": "Fais une validation croisée du modèle de prix et donne l'erreur moyenne.",
+    "reply": "choice | validation croisée | Split strategy | Score the model on {} | unseen groups, such as new products | later records from known groups | random rows from known groups",
+    "expected": {
+      "key": "score_the_model_on",
+      "label": "Split strategy",
+      "statement": "Score the model on {}",
+      "options": ["unseen groups, such as new products", "later records from known groups", "random rows from known groups"],
+      "anchor": "validation croisée"
+    }
+  },
+  {
+    "id": "n:s20/expert/auto/0/1",
+    "draft": "Ajoute une limite de débit sur l'API publique par clé d'API.",
+    "reply": "choice |per API key|Overload fairness promise|Per-key limits need {} under overload.|Equal share for every API key|Priority for higher-tier keys|Reject excess immediately, no queue",
+    "expected": {
+      "key": "overload_fairness_promise",
+      "label": "Overload fairness promise",
+      "statement": "Per-key limits need {} under overload.",
+      "options": ["Equal share for every API key", "Priority for higher-tier keys", "Reject excess immediately, no queue"]
+    }
+  },
+  {
+    "id": "n:s08/expert/auto/0/1",
+    "draft": "Route the dashboard's read queries to a read replica.",
+    "reply": "choice | Route the dashboard's read queries to a read replica. | Staleness boundary | Which dashboard reads may return replica-lagged data? | All reads accept bounded staleness | Aggregate widgets use replica, rest primary | Read-after-write views pinned to primary",
+    "expected": null
+  },
+  {
+    "id": "f:fm06/learning/auto/0/1",
+    "draft": "Report a bootstrap confidence interval for the lift between the two recommenders.",
+    "reply": "choice | bootstrap confidence interval for the lift | Resampling unit for the lift is {}. | test examples for new-example claims | training seeds for new-run claims | fixed benchmark, no resampling",
+    "expected": {
+      "key": "resampling_unit_for_the_lift_is",
+      "label": "Resampling unit for the lift is",
+      "statement": "Resampling unit for the lift is {}.",
+      "options": ["test examples for new-example claims", "training seeds for new-run claims", "fixed benchmark, no resampling"],
+      "anchor": "bootstrap confidence interval for the lift"
+    }
+  },
+  {
+    "id": "g:gm02/learning/ondemand/0/1",
+    "draft": "Set up nested cross-validation for the SVM so the hyperparameter search doesn't leak into the test score.",
+    "reply": "choice | Test split type | test score | Hold out test data by {} | new people or groups | later time records | random independent rows",
+    "expected": {
+      "key": "test_split_type",
+      "label": "Test split type",
+      "statement": "Hold out test data by {}",
+      "options": ["new people or groups", "later time records", "random independent rows"],
+      "anchor": "test score"
+    }
+  },
+  {
+    "id": "n:s02/learning/ondemand/0/1",
+    "draft": "Add retries with exponential backoff to the Stripe webhook handler.",
+    "reply": "choice | Retry execution | Retries happen {} | inline before responding | queued background job",
+    "expected": {
+      "key": "retry_execution",
+      "label": "Retry execution",
+      "statement": "Retries happen {}",
+      "options": ["inline before responding", "queued background job"]
+    }
+  },
+  {
+    "id": "n:s02/learning/ondemand/0/2",
+    "draft": "Add retries with exponential backoff to the Stripe webhook handler.",
+    "reply": "choice | Exhausted retries | After retries exhausted, {} | return 500 for Stripe redelivery | alert and record failed event",
+    "expected": {
+      "key": "exhausted_retries",
+      "label": "Exhausted retries",
+      "statement": "After retries exhausted, {}",
+      "options": ["return 500 for Stripe redelivery", "alert and record failed event"]
+    }
+  },
+  {
+    "id": "g:gs01/learning/ondemand/0/1",
+    "draft": "Design the retry and idempotency strategy for the payment webhook consumer so retries never double-charge.",
+    "reply": "choice | Retry policy | retries never double-charge | Handle retries by {} | retrying immediately with same key | checking original operation status first | routing unclear outcomes to manual review",
+    "expected": {
+      "key": "retry_policy",
+      "label": "Retry policy",
+      "statement": "Handle retries by {}",
+      "options": ["retrying immediately with same key", "checking original operation status first", "routing unclear outcomes to manual review"],
+      "anchor": "retries never double-charge"
+    }
+  },
+  {
+    "id": "n:s12/expert/ondemand/0/1",
+    "draft": "If the server crashes between charging the card and saving the order, we must not lose the order.",
+    "reply": "choice | Crash ordering | Crash recovery uses {} | pending order written before charge | idempotency key with provider reconciliation | outbox event replays the order save",
+    "expected": {
+      "key": "crash_ordering",
+      "label": "Crash ordering",
+      "statement": "Crash recovery uses {}",
+      "options": ["pending order written before charge", "idempotency key with provider reconciliation", "outbox event replays the order save"]
+    }
+  },
+  {
+    "id": "g:gs05/expert/ondemand/0/1",
+    "draft": "Move reads for the analytics dashboard to a read replica and decide what users see when replica lag grows.",
+    "reply": "choice | Per-operation degradation | Reads allowed to return degraded results: {} | All dashboard reads | Only non-financial widgets | None; wait or reject",
+    "expected": {
+      "key": "per_operation_degradation",
+      "label": "Per-operation degradation",
+      "statement": "Reads allowed to return degraded results: {}",
+      "options": ["All dashboard reads", "Only non-financial widgets", "None; wait or reject"]
+    }
+  },
+  {
+    "id": "n:m15/learning/ondemand/0/1",
+    "draft": "Cluster the customers with k-means and pick a sensible k.",
+    "reply": "choice | Clustering goal | Judge the clusters by {} | a compact view of the data | stable groups people can act on | both, with stability checked across reruns",
+    "expected": {
+      "key": "clustering_goal",
+      "label": "Clustering goal",
+      "statement": "Judge the clusters by {}",
+      "options": ["a compact view of the data", "stable groups people can act on", "both, with stability checked across reruns"]
+    }
+  },
+  {
+    "id": "n:s10/learning/ondemand/0/1",
+    "draft": "Define an SLO for the dashboard API and alert when we burn the error budget too fast.",
+    "reply": "slo_target | Success or on-time | Promise is success, timeliness, or both | finishing successfully only|finishing within a latency threshold|both successful and within threshold",
+    "expected": null
+  },
+  {
+    "id": "n:s05/learning/ondemand/0/1",
+    "draft": "Cache the pricing page data in Redis with a 5-minute TTL.",
+    "reply": "choice | Redis outage behavior | in Redis with a 5-minute TTL | When Redis is down, pricing requests {} | fall back to the source fetch | fail with an error response",
+    "expected": {
+      "key": "redis_outage_behavior",
+      "label": "Redis outage behavior",
+      "statement": "When Redis is down, pricing requests {}",
+      "options": ["fall back to the source fetch", "fail with an error response"],
+      "anchor": "in Redis with a 5-minute TTL"
+    }
+  },
+  {
+    "id": "n:m06/learning/ondemand/0/1",
+    "draft": "The logistic regression overfits badly; add L2 regularization and pick the strength.",
+    "reply": "choice | add L2 regularization | Choose the penalty type {} | to maximize held-out prediction | to keep few inspectable features | to balance both with elastic net",
+    "expected": {
+      "key": "choose_the_penalty_type",
+      "label": "Choose the penalty type",
+      "statement": "Choose the penalty type {}",
+      "options": ["to maximize held-out prediction", "to keep few inspectable features", "to balance both with elastic net"],
+      "anchor": "add L2 regularization"
+    }
+  },
+  {
+    "id": "f:fs04/learning/auto/0/1",
+    "draft": "Add a TTL-based cache in front of the pricing lookup and decide how stale it can get.",
+    "reply": "choice | Stale price fallback | decide how stale it can get | Past the TTL, screens should {} | show last price with its age | show unavailable rather than stale price",
+    "expected": {
+      "key": "stale_price_fallback",
+      "label": "Stale price fallback",
+      "statement": "Past the TTL, screens should {}",
+      "options": ["show last price with its age", "show unavailable rather than stale price"],
+      "anchor": "decide how stale it can get"
+    }
+  },
+  {
+    "id": "g:gm04/expert/auto/0/1",
+    "draft": "Train a gradient boosting model for churn and calibrate its probabilities before we choose an alert threshold.",
+    "reply": "choice | Alert threshold | Alert threshold should follow {} | false-positive vs false-negative cost ratio | fixed weekly alert capacity | abstain on mid-probability customers",
+    "expected": {
+      "key": "alert_threshold_should_follow",
+      "label": "Alert threshold should follow",
+      "statement": "Alert threshold should follow {}",
+      "options": ["false-positive vs false-negative cost ratio", "fixed weekly alert capacity", "abstain on mid-probability customers"],
+      "anchor": "alert threshold"
+    }
+  },
+  {
+    "id": "n:s05/expert/ondemand/0/1",
+    "draft": "Cache the pricing page data in Redis with a 5-minute TTL.",
+    "reply": "choice | Cache key scope | pricing page data | Key the cached pricing by {} | per region and currency | one global entry",
+    "expected": {
+      "key": "cache_key_scope",
+      "label": "Cache key scope",
+      "statement": "Key the cached pricing by {}",
+      "options": ["per region and currency", "one global entry"],
+      "anchor": "pricing page data"
+    }
+  },
+  {
+    "id": "n:s05/expert/ondemand/0/2",
+    "draft": "Cache the pricing page data in Redis with a 5-minute TTL.",
+    "reply": "choice | Expiry refresh | 5-minute TTL | Refresh expired entries {} | synchronously on the next request | in the background before expiry",
+    "expected": {
+      "key": "expiry_refresh",
+      "label": "Expiry refresh",
+      "statement": "Refresh expired entries {}",
+      "options": ["synchronously on the next request", "in the background before expiry"],
+      "anchor": "5-minute TTL"
+    }
+  },
+  {
+    "id": "f:fs06/learning/auto/0/1",
+    "draft": "Add load shedding for the export endpoint when the job queue is full.",
+    "reply": "choice | load shedding for the export endpoint | Full-queue exports get: {} | Immediate 429 with Retry-After | Bounded short wait before refusing | Smaller or async export result",
+    "expected": {
+      "key": "full_queue_exports_get",
+      "label": "Full-queue exports get",
+      "statement": "Full-queue exports get: {}",
+      "options": ["Immediate 429 with Retry-After", "Bounded short wait before refusing", "Smaller or async export result"],
+      "anchor": "load shedding for the export endpoint"
+    }
+  },
+  {
+    "id": "n:m13/expert/auto/0/1",
+    "draft": "Report error bars over 5 training seeds for both architectures.",
+    "reply": "choice | error bars over 5 training seeds | Uncertainty target | Error bars should cover {} variability. | Frozen fits on new test units | Refitted selection pipeline per seed",
+    "expected": {
+      "key": "error_bars_should_cover_variability",
+      "label": "Uncertainty target",
+      "statement": "Error bars should cover {} variability.",
+      "options": ["Frozen fits on new test units", "Refitted selection pipeline per seed"],
+      "anchor": "error bars over 5 training seeds"
+    }
+  },
+  {
+    "id": "n:m09/expert/ondemand/0/1",
+    "draft": "Split the dataset into train and test by patient so nobody appears in both.",
+    "reply": "choice | Split method | Assign patients to splits by {} | Random patient-level assignment | Stratified group split by outcome | Time-based split by enrollment date",
+    "expected": {
+      "key": "split_method",
+      "label": "Split method",
+      "statement": "Assign patients to splits by {}",
+      "options": ["Random patient-level assignment", "Stratified group split by outcome", "Time-based split by enrollment date"]
+    }
+  },
+  {
+    "id": "f:fm08/learning/auto/0/2",
+    "draft": "Check whether the new feature leaks the label into the training data.",
+    "reply": "</br>",
+    "expected": null
+  },
+  {
+    "id": "n:s18/expert/auto/0/1",
+    "draft": "Shed load on the public API when the queue backlog passes 10k jobs.",
+    "reply": "choice | Shedding promise | Shedding should honor {} under overload. | strict priority classes | fair share per tenant | priority classes with tenant fairness",
+    "expected": {
+      "key": "shedding_promise",
+      "label": "Shedding promise",
+      "statement": "Shedding should honor {} under overload.",
+      "options": ["strict priority classes", "fair share per tenant", "priority classes with tenant fairness"]
+    }
+  },
+  {
+    "id": "g:gs05/learning/ondemand/0/1",
+    "draft": "Move reads for the analytics dashboard to a read replica and decide what users see when replica lag grows.",
+    "reply": "choice | Read-after-write behavior | After a user writes, their dashboard reads {} | route to primary briefly | stay on replica, accept lag | wait for replica to catch up",
+    "expected": {
+      "key": "read_after_write_behavior",
+      "label": "Read-after-write behavior",
+      "statement": "After a user writes, their dashboard reads {}",
+      "options": ["route to primary briefly", "stay on replica, accept lag", "wait for replica to catch up"]
+    }
+  },
+  {
+    "id": "n:m02/learning/auto/0/1",
+    "draft": "Set up 5-fold cross-validation for the gradient boosting model and report the mean RMSE.",
+    "reply": "choice | Validation split | 5-fold cross-validation | Score {} on new groups or later records? | Group folds by person or entity | Time-ordered folds, train only on past | Random row folds, rows independent",
+    "expected": {
+      "key": "validation_split",
+      "label": "Validation split",
+      "statement": "Score {} on new groups or later records?",
+      "options": ["Group folds by person or entity", "Time-ordered folds, train only on past", "Random row folds, rows independent"],
+      "anchor": "5-fold cross-validation"
+    }
+  },
+  {
+    "id": "n:m10/expert/ondemand/0/1",
+    "draft": "Test accuracy jumped to 99% after the new features, check whether something is leaking.",
+    "reply": "choice | Test accuracy jumped to 99% | Reported accuracy measures {} | full selection procedure via nested CV | frozen features on locked external cohort",
+    "expected": {
+      "key": "reported_accuracy_measures",
+      "label": "Reported accuracy measures",
+      "statement": "Reported accuracy measures {}",
+      "options": ["full selection procedure via nested CV", "frozen features on locked external cohort"],
+      "anchor": "Test accuracy jumped to 99%"
+    }
+  },
+  {
+    "id": "n:s03/learning/auto/0/1",
+    "draft": "Make the invite webhook handler idempotent so duplicate deliveries don't create two memberships.",
+    "reply": "choice | Retry path | When delivery outcome is unclear, {} before reprocessing. | Retry immediately with same key | Check original delivery status first",
+    "expected": {
+      "key": "retry_path",
+      "label": "Retry path",
+      "statement": "When delivery outcome is unclear, {} before reprocessing.",
+      "options": ["Retry immediately with same key", "Check original delivery status first"]
+    }
+  },
+  {
+    "id": "n:s03/learning/ondemand/0/1",
+    "draft": "Make the invite webhook handler idempotent so duplicate deliveries don't create two memberships.",
+    "reply": "choice | In-flight duplicate handling | Duplicates arriving mid-processing {} | return 200 and skip | reject with 409 until done | wait for first to finish",
+    "expected": {
+      "key": "in_flight_duplicate_handling",
+      "label": "In-flight duplicate handling",
+      "statement": "Duplicates arriving mid-processing {}",
+      "options": ["return 200 and skip", "reject with 409 until done", "wait for first to finish"]
+    }
+  },
+  {
+    "id": "n:s17/expert/ondemand/0/1",
+    "draft": "Use a transactional outbox so invite emails go out exactly once.",
+    "reply": "choice | Invite record commit order | Invite record commits {} the email | with the outbox row | only after provider confirms send | before, revoked on failure",
+    "expected": {
+      "key": "invite_record_commit_order",
+      "label": "Invite record commit order",
+      "statement": "Invite record commits {} the email",
+      "options": ["with the outbox row", "only after provider confirms send", "before, revoked on failure"]
+    }
+  },
+  {
+    "id": "g:gm06/expert/ondemand/0/1",
+    "draft": "We ran 25 A/B comparisons on the same users; work out which wins survive a false discovery rate correction.",
+    "reply": "choice | Testing family scope | Define the multiple-testing family as {} | all 25 comparisons | only pre-registered primary comparisons | grouped by user-facing metric",
+    "expected": {
+      "key": "testing_family_scope",
+      "label": "Testing family scope",
+      "statement": "Define the multiple-testing family as {}",
+      "options": ["all 25 comparisons", "only pre-registered primary comparisons", "grouped by user-facing metric"]
+    }
+  },
+  {
+    "id": "g:gs01/expert/ondemand/0/1",
+    "draft": "Design the retry and idempotency strategy for the payment webhook consumer so retries never double-charge.",
+    "reply": "choice | never double-charge | Charge idempotency enforced {} | at the Stripe API call | via shared DB transaction | only through reconciliation of uncertain outcomes",
+    "expected": {
+      "key": "charge_idempotency_enforced",
+      "label": "Charge idempotency enforced",
+      "statement": "Charge idempotency enforced {}",
+      "options": ["at the Stripe API call", "via shared DB transaction", "only through reconciliation of uncertain outcomes"],
+      "anchor": "never double-charge"
+    }
+  },
+  {
+    "id": "g:gs01/expert/ondemand/0/2",
+    "draft": "Design the retry and idempotency strategy for the payment webhook consumer so retries never double-charge.",
+    "reply": "choice | ambiguous charge | Ambiguous charge outcomes resolved {} | by querying Stripe before retry | by operator reconciliation queue | by retrying with same key",
+    "expected": {
+      "key": "ambiguous_charge",
+      "label": "ambiguous charge",
+      "statement": "Ambiguous charge outcomes resolved {}",
+      "options": ["by querying Stripe before retry", "by operator reconciliation queue", "by retrying with same key"]
+    }
+  },
+  {
+    "id": "n:m08/expert/auto/0/1",
+    "draft": "Run a Cox model on the trial data with age and dose as covariates.",
+    "reply": "choice | Run a Cox model | Estimand: {} | cause-specific hazard ratio | absolute event probability at horizon",
+    "expected": {
+      "key": "estimand",
+      "label": "Estimand",
+      "statement": "Estimand: {}",
+      "options": ["cause-specific hazard ratio", "absolute event probability at horizon"],
+      "anchor": "Run a Cox model"
+    }
+  },
+  {
+    "id": "n:m08/expert/ondemand/0/1",
+    "draft": "Run a Cox model on the trial data with age and dose as covariates.",
+    "reply": "choice |Estimand| Report {} from the Cox model | cause-specific hazard ratios | absolute event probabilities by horizon | cumulative incidence with competing events",
+    "expected": {
+      "key": "estimand",
+      "label": "Estimand",
+      "statement": "Report {} from the Cox model",
+      "options": ["cause-specific hazard ratios", "absolute event probabilities by horizon", "cumulative incidence with competing events"]
+    }
+  },
+  {
+    "id": "g:gm06/learning/ondemand/0/1",
+    "draft": "We ran 25 A/B comparisons on the same users; work out which wins survive a false discovery rate correction.",
+    "reply": "choice | Leads or firm claims | Surviving wins should count as {} | Leads for follow-up testing | Firm claims needing held-out confirmation | Stricter familywise error control",
+    "expected": {
+      "key": "leads_or_firm_claims",
+      "label": "Leads or firm claims",
+      "statement": "Surviving wins should count as {}",
+      "options": ["Leads for follow-up testing", "Firm claims needing held-out confirmation", "Stricter familywise error control"]
+    }
+  },
+  {
+    "id": "n:m03/learning/ondemand/0/1",
+    "draft": "We tested 40 candidate features against the baseline; tell me which improvements are significant.",
+    "reply": "choice | Improvement threshold | Count an improvement only if {} | its effect exceeds a minimum size | any positive significant difference counts | report all effects with intervals",
+    "expected": {
+      "key": "improvement_threshold",
+      "label": "Improvement threshold",
+      "statement": "Count an improvement only if {}",
+      "options": ["its effect exceeds a minimum size", "any positive significant difference counts", "report all effects with intervals"]
+    }
+  }
+]

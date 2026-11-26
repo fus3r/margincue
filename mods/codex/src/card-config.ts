@@ -10,7 +10,6 @@ export function cardConfig(settings: Settings): Extract<Event, { type: 'config' 
   return {
     type: 'config', enabled: settings.mode !== 'off', mode: settings.mode ?? 'auto', language: 'en', sheet: true,
     read: settings.read === 'key' ? 'key' : 'auto', send: sendSetting(settings),
-    review: settings.review === 'auto' ? 'auto' : 'off',
     sketch: settings.sketch !== false, refs: settings.refs !== false, today, profile: 'general',
     streaming: false, eagerPlan: false, depths: userDepths(user),
     ...(user && { user: describeUser(user), prefer: preferredProfiles(user) }),

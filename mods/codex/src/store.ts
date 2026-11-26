@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process'
 import { closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { ReadingMode, ReviewMode, SendSetting } from '../../claude-code/core/types'
+import type { ReadingMode, SendSetting } from '../../claude-code/core/types'
 import { DEFAULT_SEND } from '../../claude-code/core/types'
 import type { UserProfile } from '../../claude-code/hooks/onboarding'
 
@@ -24,7 +24,6 @@ export const PATHS = {
 export type Settings = {
   mode?: 'auto' | 'on' | 'quiet' | 'off'
   read?: ReadingMode
-  review?: ReviewMode
   send?: SendSetting
   sketch?: boolean
   refs?: boolean

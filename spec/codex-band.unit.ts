@@ -101,46 +101,23 @@ test('Enter before the card has read the prompt lets it go as written', () => {
   h.band.close()
 })
 
-test('the live card displays chapter choices with a diamond and keeps the general reading ready', async () => {
-  const settings: Parameters<typeof saveSettings>[0] = { sketch: false, user: { work: ['apps'], levels: { product: 'learning' }, decide: [] } }
-  saveSettings(settings)
-  let finishReview: (() => void) | undefined
-  let reviewCalls = 0
+test('the live card reads once with an old automatic review setting', async () => {
+  writeJson(PATHS.settings, { review: 'auto', sketch: false, user: { work: ['apps'], levels: { product: 'learning' }, decide: [] } })
   const model = reader()
   const general = model.complete
+  const prompts: string[] = []
   model.complete = async (system, prompt, options) => {
-    if (!prompt.includes('Profile chapters matched to the draft.')) return general(system, prompt, options)
-    reviewCalls++
-    assert.match(prompt, /Concurrent random assignment/)
-    await new Promise<void>((resolve) => {
-      finishReview = resolve
-      options?.signal?.addEventListener('abort', () => resolve(), { once: true })
-    })
-    if (options?.signal?.aborted) return { ok: false, reason: 'cancelled', ms: 0 }
-    const reply = 'choice | | Assignment unit | Randomize by {} | account | workspace\n'
-    options?.onDelta?.(reply)
-    return { ok: true, text: reply, ms: 1 }
+    prompts.push(prompt)
+    return general(system, prompt, options)
   }
-  const text = 'Plan an A/B test for this feature and tell me what to measure.'
-  const off = harness(undefined, model)
-  try {
-    off.draft(text)
-    await until(() => off.lines().includes('rows exported'))
-    assert.equal(reviewCalls, 0)
-  } finally {
-    off.band.close()
-  }
-  saveSettings({ ...settings, review: 'auto' })
   const h = harness(undefined, model)
+  const text = 'Plan an A/B test for this feature and tell me what to measure.'
   try {
     h.draft(text)
-    await until(() => h.lines().includes('rows exported'))
-    assert.equal(h.last('claims')?.enter, true)
-    assert.doesNotMatch(h.lines(), /◆/)
-    assert.ok(finishReview)
-    finishReview()
-    await until(() => /◆\s+assignment unit/.test(h.lines()))
-    assert.match(h.lines(), /rows exported/)
+    await until(() => h.last('claims')?.enter === true && h.lines().includes('rows exported'))
+    assert.equal(prompts.length, 1)
+    assert.ok(prompts[0]!.startsWith(`Draft:\n<<<\n${text}\n>>>`))
+    assert.doesNotMatch(prompts[0]!, /Profile chapters|Review profile:/)
   } finally {
     h.band.close()
     saveSettings({})

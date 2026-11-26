@@ -13,7 +13,6 @@ export type LanguageSetting = 'en' | 'auto'
 export type SendSetting = 'all' | 'picked' | 'open'
 export const DEFAULT_SEND: SendSetting = 'open'
 export type ReadingMode = 'auto' | 'key'
-export type ReviewMode = 'auto' | 'off'
 
 /** One edit: `text` replaced the code units `[start, end)` of the previous draft. */
 export type Splice = { start: number; end: number; text: string }
@@ -50,8 +49,6 @@ export type Event =
       sheet?: boolean
       /** When to read a draft card (default auto). */
       read?: ReadingMode
-      /** Run the chapter review alongside eligible draft cards (default off). */
-      review?: ReviewMode
       /** Draw a sketch of the deliverable under the card (default true). */
       sketch?: boolean
       /** Attach where the draft's names live in the code (default true). */
@@ -68,8 +65,6 @@ export type Event =
       depths?: Record<string, Depth>
       audit?: boolean
       profile: string
-      /** The default general profile counts as selected only when the person chose it. */
-      profileSelected?: boolean
       timing?: Partial<Timing>
       streaming: boolean
       eagerPlan: boolean
@@ -214,6 +209,7 @@ export type ReceiptView = {
 export type ExpertItem = StateCue & {
   key: string
   persistent: boolean
+  defaultIndex?: number
   chosen?: string
 }
 export type ExpertView = { id: number; profile: string; phase: 'reviewing' | 'ready' | 'error'; items: ExpertItem[] }

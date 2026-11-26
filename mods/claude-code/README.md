@@ -18,7 +18,7 @@ Run `/margincue status` in Claude Code to check that the mod loaded. The status 
 
 ## First run
 
-The first time MarginCue starts in an interactive session with an empty prompt, it asks what you use coding agents for, how experienced you are in the fields you picked, and which choices you want to make yourself. It can adapt chapters for general coding-agent work, statistics and machine learning, product, and system design. Your level sets the theory, practical workflow, and wording the draft reader uses in that field. Fields without a stated level use standard depth. Use `/margincue setup` to update your answers, `/margincue setup reset` to forget them, and `/margincue status` to see what MarginCue knows. The answers stay in the mod's store on this machine.
+The first time MarginCue starts in an interactive session with an empty prompt, it asks what you use coding agents for, how experienced you are in the fields you picked, and which choices you want to make yourself. Fields without a stated level use standard depth. Use `/margincue setup` to update your answers, `/margincue setup reset` to forget them, and `/margincue status` to see what MarginCue knows. The answers stay in the mod's store on this machine.
 
 ## What you see
 
@@ -53,7 +53,7 @@ In the terminal, use **diff** beside a choice or open **Review choices** (also `
 
 Buttons also take clicks: a chip, a step of a slider, `+N` to open a row, the sketch's title and `✓ goes with the prompt` (or `attach to prompt` once left out).
 
-Automatic chapter review (beta) is off by default, and `/margincue review auto|off` changes it while `/margincue review [profile]` runs a review on demand.
+Run `/margincue review [profile]` to find up to two consequential choices your draft leaves open. The review uses the profile and your level in it and skips choices already on the card.
 
 ## Settings
 

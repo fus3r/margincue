@@ -1382,57 +1382,29 @@ test('event log records suppressed candidates without source text and preserves 
   })
 })
 
-test('a selected profile adds chapter choices to the live card and logs counts without the draft', async ($, on) => {
-  let waitForReply: () => Promise<void>
-  const text = 'Plan the A/B test for the private checkout redesign.'
-  const { clock, calls, files, store } = world(on, async (prompt) => {
-    if (!prompt.includes('Profile chapters matched to the draft.')) return CARD
-    await waitForReply()
-    return [
-      'choice | | Export rows | Export {} | the filtered rows | all rows',
-      'choice | | Assignment unit | Randomize by {} | account | workspace',
-    ].join('\n')
-  })
-  waitForReply = () => clock.sleep(300)
+test('the former auto setting is ignored and the review command works on demand', async ($, on) => {
+  const { clock, calls, store } = world(on, async (prompt) => prompt.includes('Review profile: product')
+    ? 'Randomize by {} | account | workspace'
+    : CARD)
   const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
-  const path = '/project/chapter-log.jsonl'
-  store.set('settings', { sketch: false })
+  store.set('settings', { profile: 'product', sketch: false, review: 'auto' })
   await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
-  await command('profile product')
-  await command('depth essentials')
-  await command(`log ${path}`)
-  await composer($).edit(edit(text.slice(0, -1), '.'))
+  await composer($).edit(edit('Plan an A/B test for the checkout redesign', '.'))
   await clock.settle()
   expect(calls.length).toBe(1)
-  expect((await command('review auto')).text).toContain('automatic review is auto')
-  expect(store.get('settings')).toMatchObject({ review: 'auto', profileSelected: true })
+  for (const arg of ['auto', 'off']) {
+    expect((await command(`review ${arg}`)).text).toContain('Automatic review is unavailable. Use /margincue review')
+  }
+  expect(calls.length).toBe(1)
+  await command('depth essentials')
+  expect(Object.hasOwn(store.get('settings') as object, 'review')).toBe(false)
+  expect((await command('review product')).text).toContain('Reviewing the draft against product')
   await clock.settle()
-  expect(calls.length).toBe(2)
-  expect(calls[0]).not.toContain('Profile chapters')
-  expect(calls[1]).toContain('Concurrent random assignment')
-  expect(calls[1]).toContain('Decisions already on the card')
-  expect(calls[1]).not.toContain('Candidate catalog:')
-  const ui = await $.ui.mount(WIDE)
-  expect(await ui.find({ type: 'Text', text: /You want a CSV export/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /assignment unit/ })).toBeUndefined()
-  await clock.advance(400)
-  expect(await ui.find({ type: 'Text', text: '◆ ' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: 'assignment unit' })).toBeDefined()
-  expect((await command('review off')).text).toContain('automatic review is off')
-  expect(store.get('settings')).toMatchObject({ review: 'off' })
-  expect(await ui.find({ type: 'Text', text: 'assignment unit' })).toBeUndefined()
-  await ui.unmount()
-  await command('log off')
-  const contents = files.get(path)!
-  expect(contents).not.toContain('private checkout redesign')
-  const rows = contents.trim().split('\n').map((line) => JSON.parse(line))
-  const started = rows.find((row) => row.event === 'chapter-review-started')
-  expect(started).toMatchObject({ profile: 'product', depth: 'essentials', chapters: ['Experiments, rollout, and decisions'] })
-  expect(rows.find((row) => row.event === 'chapter-review-finished')).toMatchObject({
-    req: started.req, profile: 'product', ok: true, rowsAdded: 1, duplicates: 1,
-  })
+  const reviews = calls.filter((prompt) => prompt.includes('Review profile: product'))
+  expect(reviews.length).toBe(1)
+  expect(reviews[0]).toContain('Level: essentials')
+  expect(reviews[0]).not.toContain('Profile chapters')
 })
-
 
 // ---- the reading call failing: offline, rate-limited, signed out, a model the account lacks, too slow ----------
 

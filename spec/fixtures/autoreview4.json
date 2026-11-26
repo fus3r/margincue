@@ -1,0 +1,173 @@
+[
+  {
+    "id": "h:pr02/1",
+    "draft": "Design the onboarding checklist for new workspace admins and track where they drop off.",
+    "reply": "drop_def | Define drop-off {} | Stopped before finishing all steps | Inactive seven days while incomplete | @ track where they drop off",
+    "expected": {
+      "key": "drop_def",
+      "label": "drop_def",
+      "statement": "Define drop-off {}",
+      "options": [
+        "Stopped before finishing all steps",
+        "Inactive seven days while incomplete"
+      ],
+      "anchor": "track where they drop off"
+    }
+  },
+  {
+    "id": "h:pr02/2",
+    "draft": "Design the onboarding checklist for new workspace admins and track where they drop off.",
+    "reply": "admin_scope | Count as new admin {} | Workspace creator only | Any user granted admin role | @ new workspace admins",
+    "expected": {
+      "key": "admin_scope",
+      "label": "admin_scope",
+      "statement": "Count as new admin {}",
+      "options": [
+        "Workspace creator only",
+        "Any user granted admin role"
+      ],
+      "anchor": "new workspace admins"
+    }
+  },
+  {
+    "id": "h:pr01/1",
+    "draft": "Add a referral program: users get a free month when a friend they invite subscribes.",
+    "reply": "Limit referral rewards {} | per inviter per calendar year | with no cap",
+    "expected": {
+      "key": "limit_referral_rewards",
+      "label": "Limit referral rewards",
+      "statement": "Limit referral rewards {}",
+      "options": [
+        "per inviter per calendar year",
+        "with no cap"
+      ]
+    }
+  },
+  {
+    "id": "h:pr01/2",
+    "draft": "Add a referral program: users get a free month when a friend they invite subscribes.",
+    "reply": "Stop self-referral abuse {} | by matching payment method and device | by requiring a different email domain",
+    "expected": {
+      "key": "stop_self_referral_abuse",
+      "label": "Stop self-referral abuse",
+      "statement": "Stop self-referral abuse {}",
+      "options": [
+        "by matching payment method and device",
+        "by requiring a different email domain"
+      ]
+    }
+  },
+  {
+    "id": "h:sd07/1",
+    "draft": "Shard the events table by tenant so the biggest customers stop slowing everyone else down.",
+    "reply": "isolation_approach | Isolate heavy tenants {} | by dedicated physical shards | with per-tenant query quotas | using read replicas for heavy tenants | @ Shard the events table by tenant",
+    "expected": {
+      "key": "isolation_approach",
+      "label": "isolation_approach",
+      "statement": "Isolate heavy tenants {}",
+      "options": [
+        "by dedicated physical shards",
+        "with per-tenant query quotas",
+        "using read replicas for heavy tenants"
+      ],
+      "anchor": "Shard the events table by tenant"
+    }
+  },
+  {
+    "id": "h:ml05/1",
+    "draft": "Forecast weekly demand for the next quarter per warehouse and give me prediction intervals.",
+    "reply": "Fit models {} | one separate model per warehouse | one pooled model across all warehouses | pooled model with warehouse as a feature | @ per warehouse",
+    "expected": {
+      "key": "fit_models",
+      "label": "Fit models",
+      "statement": "Fit models {}",
+      "options": [
+        "one separate model per warehouse",
+        "one pooled model across all warehouses",
+        "pooled model with warehouse as a feature"
+      ],
+      "anchor": "per warehouse"
+    }
+  },
+  {
+    "id": "h:ml05/2",
+    "draft": "Forecast weekly demand for the next quarter per warehouse and give me prediction intervals.",
+    "reply": "Treat zero-demand weeks {} | as true zero demand | as missing, excluded from fitting | as stockouts, censored observations",
+    "expected": {
+      "key": "treat_zero_demand_weeks",
+      "label": "Treat zero-demand weeks",
+      "statement": "Treat zero-demand weeks {}",
+      "options": [
+        "as true zero demand",
+        "as missing, excluded from fitting",
+        "as stockouts, censored observations"
+      ]
+    }
+  },
+  {
+    "id": "h:ml02/1",
+    "draft": "Fit a mixed-effects model for test scores with students nested in schools and report the school-level variance.",
+    "reply": "Set fixed effects {} | no predictors, unconditional null model | student covariates such as prior score | school predictors such as funding or size",
+    "expected": {
+      "key": "set_fixed_effects",
+      "label": "Set fixed effects",
+      "statement": "Set fixed effects {}",
+      "options": [
+        "no predictors, unconditional null model",
+        "student covariates such as prior score",
+        "school predictors such as funding or size"
+      ]
+    }
+  },
+  {
+    "id": "h:sd05/1",
+    "draft": "Design how the mobile app syncs offline edits back to the server when two devices edit the same note.",
+    "reply": "detection |Detect concurrent edits using {}| server base version numbers | client wall-clock timestamps | per-device version vectors",
+    "expected": {
+      "key": "detection",
+      "label": "detection",
+      "statement": "Detect concurrent edits using {}",
+      "options": [
+        "server base version numbers",
+        "client wall-clock timestamps",
+        "per-device version vectors"
+      ]
+    }
+  },
+  {
+    "id": "prose",
+    "draft": "Add a CSV export.",
+    "reply": "Use {} to mark the missing part of a statement.",
+    "expected": null
+  },
+  {
+    "id": "html",
+    "draft": "Add a CSV export.",
+    "reply": "<strong>Export {}</strong> | all orders | filtered orders",
+    "expected": null
+  },
+  {
+    "id": "markdown heading",
+    "draft": "Add a CSV export.",
+    "reply": "## Export {} | all orders | filtered orders",
+    "expected": null
+  },
+  {
+    "id": "markdown table",
+    "draft": "Add a CSV export.",
+    "reply": "| Export {} | all orders | filtered orders |",
+    "expected": null
+  },
+  {
+    "id": "no placeholder",
+    "draft": "Add a CSV export.",
+    "reply": "Export orders | all orders | filtered orders",
+    "expected": null
+  },
+  {
+    "id": "only one option",
+    "draft": "Add a CSV export.",
+    "reply": "Export {} | all orders | @ CSV export",
+    "expected": null
+  }
+]

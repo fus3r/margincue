@@ -46,9 +46,7 @@ While Claude works:
 
 It adapts to you and to the project. The first run asks what you work on and your level in each field. A data challenge or a research repository brings in the matching expert decisions (statistics and machine learning, system design), at the depth you asked for.
 
-The on-demand expert review (`ctrl+x tab`, then `r`, or `/margincue review`) draws on chapters for [general coding-agent work](profiles/general/chapters.md), [ML research](profiles/ml-research/chapters.md), [product](profiles/product/chapters.md), and [system design](profiles/system-design/chapters.md). It picks up to two chapters that match the draft and uses the theory and workflow for your stated level in each field. For example, a learner working on model evaluation gets help choosing what data to hold out. An expert gets guidance on what the evaluation design lets them claim.
-
-Automatic chapter review (beta) is off by default and can be enabled with `/margincue review auto` or, for the Codex live card, by setting `"review": "auto"` in `~/.margincue/settings.json`.
+In Claude Code, press `ctrl+x tab` then `r`, or run `/margincue review`, to find up to two consequential choices your draft leaves open. The review uses your selected profile and level and skips choices already on the card.
 
 ## Keys
 
