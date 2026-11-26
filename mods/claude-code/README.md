@@ -34,7 +34,7 @@ The first time MarginCue starts in an interactive session with an empty prompt, 
 
 **After the turn.** A receipt under the answer lists the choices you set and those the agent made, with what you switched. Switch one again, on the receipt or on the card, and the follow-up prompt is written into the composer for you to send.
 
-The receipt shows high-consequence choices first and folds low ones when there are more than four agent choices. In the terminal, `/margincue choices` groups the last 20 receipts' agent choices by tier, with switches that name the turn and diff links when edits were captured.
+Choice ranking and the `/margincue choices` command are an opt-in preview enabled with `/margincue tiers on`.
 
 In the terminal, use **diff** beside a choice or open **Review choices** (also `/margincue edits` for the latest receipt). Focus a choice with Tab and press `e` to open its related edits. VS Code, Cursor and Windsurf open a diff for each related file when their CLI is on `PATH`. The diff starts from the file at the beginning of the turn and shows the related hunks or the whole file change when the receipt can only match the file. Other terminals open a temporary `.diff` through `$VISUAL` or `$EDITOR` or show its path in the transcript.
 

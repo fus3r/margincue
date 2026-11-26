@@ -146,16 +146,19 @@ export function stopHook(input: StopInput): object | null {
   })
   const yours = mine?.decisions.length ?? 0
   if (!chosen.size && !yours) return null
-  return { systemMessage: receiptLine(yours, choices, source) }
+  return { systemMessage: receiptLine(yours, choices, source, settings.tiers === 'on') }
 }
 
-export function receiptLine(yours: number, agent: { label: string; value: string; switched?: boolean }[], source: Source = 'cli'): string {
+export function receiptLine(yours: number, agent: { label: string; value: string; switched?: boolean }[], source: Source = 'cli',
+  tiers = false): string {
   const switched = agent.filter((choice) => choice.switched).length
   const parts = [`MarginCue · you set ${yours} · the agent chose ${agent.length}${switched ? ` · you switched ${switched}` : ''}`]
   if (agent.length) {
-    const choices = rankedChoices(agent.map((choice) => ({ ...choice, tier: choiceTier(`${choice.label}: {}`, choice.value) })))
-    parts.push(tierCounts(choices), choices.map(({ tier, label, value, switched }) =>
-      `[${tier}] ${label}: ${value}${switched ? ' (switched)' : ''}`).join(' · '))
+    const format = ({ label, value, switched }: typeof agent[number]) => `${label}: ${value}${switched ? ' (switched)' : ''}`
+    if (tiers) {
+      const choices = rankedChoices(agent.map((choice) => ({ ...choice, tier: choiceTier(`${choice.label}: {}`, choice.value) })))
+      parts.push(tierCounts(choices), choices.map((choice) => `[${choice.tier}] ${format(choice)}`).join(' · '))
+    } else parts.push(agent.map(format).join(' · '))
     // Under margincue-relay the agent's choices are already listed under Codex's prompt.
     if (source === 'cli' || source === 'unknown') {
       parts.push(process.env['MARGINCUE_CARD'] === 'prompt' ? 'alt+↓ under the prompt to switch one' : 'ctrl+g to switch one')

@@ -12,7 +12,7 @@ export function rankReceiptEdits(
   const paths = [...new Set(edits.map((edit) => edit.path))]
   const positions = [...marks.values()].map((mark) => mark.position)
   return choices.map((choice) => {
-    if (choice.tier === 'high') return choice
+    if (!choice.tier || choice.tier === 'high') return choice
     const mark = marks.get(nameKey(choice.label))
     const named = namedPaths(paths, `${choice.label} ${choice.value} ${mark?.words ?? ''}`)
     const start = mark?.position

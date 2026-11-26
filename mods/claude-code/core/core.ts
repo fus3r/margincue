@@ -218,6 +218,7 @@ export class Core {
   private sheetEnabled: boolean | undefined
   private readMode: ReadingMode = 'auto'
   private chaptersEnabled = true
+  private tiersEnabled = false
   private profileSelected = false
   private sketchEnabled = true
   private refsEnabled = true
@@ -477,6 +478,7 @@ export class Core {
     const sheetChanged = sheetEnabled !== this.sheetEnabled
     this.sheetEnabled = sheetEnabled
     this.chaptersEnabled = e.chapters !== false
+    this.tiersEnabled = e.tiers === true
     this.profileSelected = e.profileSelected === true
     const readMode = e.read ?? 'auto'
     const readModeChanged = this.readMode !== readMode
@@ -1567,7 +1569,7 @@ export class Core {
     const row = card?.rows.find((entry) => entry.id === rowId)
     if (!card || !row) return
     card.dismissed.add(row.key)
-    if (card.stage === 'turn' && row.origin === 'agent') (card.dismissedAgent ??= []).push(row)
+    if (this.tiersEnabled && card.stage === 'turn' && row.origin === 'agent') (card.dismissedAgent ??= []).push(row)
     card.rows = card.rows.filter((entry) => entry !== row)
     this.fixCardFocus()
     this.metric('card-dismissed', { card: card.id, row: row.key, origin: row.origin, stage: card.stage })
@@ -1786,7 +1788,7 @@ export class Core {
       // The agent restated the choice with another value: its newer word stands.
       Object.assign(row, { options, defaults: [0], picked: null, sent: undefined })
     } else {
-      if (card.dismissed.has(key)) return
+      if ((!this.tiersEnabled && card.rows.length >= 8) || card.dismissed.has(key)) return
       card.rows.push({
         id: this.newId(), key, label: cutLabel(label), type: 'one', statement: `${label}: {}`,
         options, defaults: [0], origin: 'agent', picked: null,
@@ -1819,14 +1821,17 @@ export class Core {
       return
     }
     const agent = card.rows.filter((row) => row.origin === 'agent')
-    const recorded = [...agent, ...card.dismissedAgent ?? []]
+    const recorded = this.tiersEnabled ? [...agent, ...card.dismissedAgent ?? []] : agent
     if (card.sent.length || recorded.length) {
       this.receipt = {
         id: this.nextReceipt++, yours: card.sent,
         agent: recorded.map((row) => {
           const now = (row.sent ?? row.defaults)[0] ?? 0
           const value = row.options[now]!
-          return { label: row.statement.replace(/: \{\}$/, ''), value, tier: choiceTier(row.statement, value),
+          const ranked = this.tiersEnabled
+            ? { label: row.statement.replace(/: \{\}$/, ''), tier: choiceTier(row.statement, value) }
+            : { label: row.label }
+          return { ...ranked, value,
             ...(now !== 0 && { was: row.options[0]! }), options: [...row.options] }
         }),
       }

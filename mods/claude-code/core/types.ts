@@ -50,6 +50,8 @@ export type Event =
       sheet?: boolean
       /** Show a matching reference chapter on the draft card (default true). */
       chapters?: boolean
+      /** Collect and rank choices for the receipt preview (default false). */
+      tiers?: boolean
       /** When to read a draft card (default auto). */
       read?: ReadingMode
       /** Draw a sketch of the deliverable under the card (default true). */
@@ -210,7 +212,7 @@ export type CardView = {
 export type ReceiptView = {
   id: number
   yours: string[]
-  agent: { label: string; value: string; was?: string; options: string[]; tier: ChoiceTier }[]
+  agent: { label: string; value: string; was?: string; options: string[]; tier?: ChoiceTier }[]
 }
 
 export type ExpertItem = StateCue & {

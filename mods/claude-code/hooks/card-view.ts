@@ -585,7 +585,7 @@ function hiddenButtons(card: MargincueCard, chords: boolean): Line {
 
 /** What travelled with the prompt and what the agent chose; one press on another option writes the follow-up. */
 export function layoutReceipt(receipt: MargincueReceipt, columns: number, P: Palette = DARK, edits = false,
-  showLow = false, sessionChoices = false): Line[] {
+  { tiers = false, showLow = false, sessionChoices = false } = {}): Line[] {
   const width = cells(TAG)
   const content = MARK + width + GAP.length
   const room = Math.max(20, columns - content)
@@ -600,26 +600,30 @@ export function layoutReceipt(receipt: MargincueReceipt, columns: number, P: Pal
       ? [text(' '.repeat(content + 2)), text(part)]
       : [...lead('you'), text('✓ ', { color: 'success' }), text(part), ...(edits ? [text(GAP), diff(i)] : [])]))
   }
-  const choices = rankedChoices(receipt.agent.map((item, i) => ({ ...item, i })))
-  if (choices.length) out.push([text(' '.repeat(content)), text(tierCounts(choices), { dim: true })])
-  const lows = choices.filter((item) => item.tier === 'low').length
-  const foldLow = choices.length > 4 && lows > 0
+  const indexed = receipt.agent.map((item, i) => ({ ...item, i }))
+  const tiered = tiers ? indexed.flatMap((item) => item.tier ? [{ ...item, tier: item.tier }] : []) : []
+  const ranked = tiered.length > 0 && tiered.length === indexed.length
+  const choices = ranked ? rankedChoices(tiered) : indexed
+  if (ranked) out.push([text(' '.repeat(content)), text(tierCounts(tiered), { dim: true })])
+  const lows = tiered.filter((item) => item.tier === 'low').length
+  const foldLow = ranked && tiered.length > 4 && lows > 0
+  const fit = (value: string, width: number) => ranked ? truncate(value, width) : value
   for (const item of choices) {
     if (foldLow && !showLow && item.tier === 'low') continue
     const { i, tier } = item
     const value = item.was ? P.yours : P.agent
-    const label = truncate(item.label, Math.floor(room / 2))
+    const label = fit(item.label, Math.floor(room / 2))
     const groups: Line[] = [
-      [text(`${label} `, { dim: true }), text(' ', value), text(truncate(item.value, room - cells(label) - 3), value), text(' ', value)],
+      [text(`${label} `, { dim: true }), text(' ', value), text(fit(item.value, room - cells(label) - 3), value), text(' ', value)],
       ...(edits ? [[diff(receipt.yours.length + i)]] : []),
-      ...(item.was ? [[text(truncate(`was ${item.was}`, room), { dim: true, italic: true })]] : []),
+      ...(item.was ? [[text(fit(`was ${item.was}`, room), { dim: true, italic: true })]] : []),
       ...item.options.flatMap((option, j): Line[] => option === item.value ? [] : [[{
-        kind: 'button', key: `agent-${i}-${j}`, label: `→ ${option}`, face: truncate(`→ ${option}`, room), dim: true,
+        kind: 'button', key: `agent-${i}-${j}`, label: `→ ${option}`, face: fit(`→ ${option}`, room), dim: true,
         action: { type: 'receiptPick', receipt: receipt.id, item: i, option: j },
       }]]),
     ]
     flow(groups, room, 3, 2, (n) => [text(`+${n}`, { dim: true })]).lines
-      .forEach((line, k) => out.push(k ? [text(' '.repeat(content)), ...line] : [...lead(tier), ...line]))
+      .forEach((line, k) => out.push(k ? [text(' '.repeat(content)), ...line] : [...lead(ranked && tier ? tier : 'agent'), ...line]))
   }
   if (foldLow) out.push([text(' '.repeat(content)), { kind: 'button', key: 'receipt-low',
     label: showLow ? 'Hide low choices' : `Show ${lows} low choice${lows === 1 ? '' : 's'}`,
@@ -633,7 +637,7 @@ export function layoutReceipt(receipt: MargincueReceipt, columns: number, P: Pal
       out.push([indent, review], [indent, text(truncate(hint, room), { dim: true })])
     } else out.push([indent, review, text(` · ${hint}`, { dim: true })])
   }
-  if (sessionChoices && choices.length) out.push([text(' '.repeat(content)), { kind: 'button', key: 'receipt-session',
+  if (sessionChoices && ranked) out.push([text(' '.repeat(content)), { kind: 'button', key: 'receipt-session',
     label: 'Session choices', dim: true, action: { type: 'sessionChoices' } }])
   return out
 }

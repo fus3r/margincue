@@ -996,7 +996,7 @@ test('during a turn, switching a marked choice sends one amendment after the las
   const sent = core.handle({ type: 'timer', now: 1900 }).filter((e) => e.type === 'amend')
   assert.deepEqual(sent.map((e) => 'text' in e && e.text), ['Amendment to my last prompt: for stuck after, use 60 s instead of 45 s.'])
   const after = lastView(core.handle({ type: 'endAmendment', now: 3000 }))!
-  assert.deepEqual(after.receipt, { id: 1, yours: [], agent: [{ label: 'stuck after', value: '60 s', was: '45 s', tier: 'low', options: ['45 s', '30 s', '60 s'] }] })
+  assert.deepEqual(after.receipt, { id: 1, yours: [], agent: [{ label: 'stuck after', value: '60 s', was: '45 s', options: ['45 s', '30 s', '60 s'] }] })
   assert.equal(after.card?.stage, 'after')
   const fill = core.handle({ type: 'cardSet', now: 3100, row: after.card!.rows[0]!.id, option: 1 }).find((e) => e.type === 'fill')
   assert.deepEqual(fill, { type: 'fill', text: 'Change stuck after: 30 s instead of 60 s. Keep everything else as it is.', replaces: null })
@@ -1004,7 +1004,7 @@ test('during a turn, switching a marked choice sends one amendment after the las
 
 test('the receipt keeps every marked choice, including a switch dismissed during the turn', () => {
   const core = createCore(ASSETS)
-  core.handle(config())
+  core.handle(config({ tiers: true }))
   core.handle({ type: 'turnStart', now: 10 })
   for (let i = 0; i < 9; i++) {
     core.handle({ type: 'blank', now: 11 + i, label: `setting ${i}`, choice: 'on', alternatives: ['off'] })

@@ -1158,8 +1158,48 @@ function textFrame(node: RenderNode): string {
     : children.join('\n'.repeat(1 + Number(node.props?.rowGap ?? 0)))
 }
 
+test('the default terminal receipt matches v0.4.28 and switches an older choice without naming the turn', async ($, on) => {
+  const { clock, box } = world(on)
+  mock.session(on)
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('ui.place', (_, e) => ({ value: { isPlaced: true, requestId: e.id } }))
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  const answers = [
+    ['⟦layout: compact | roomy⟧', '⟦database migration plan: migrate schema | keep schema⟧',
+      '⟦color: blue | gray⟧', '⟦delivery: email customers | draft an email⟧', '⟦heading: Results | Report⟧',
+      '⟦order: newest first | oldest first⟧', '⟦labels: short | long⟧', '⟦theme: light | dark⟧',
+      '⟦size: small | large⟧'].join('. '),
+    '⟦format: CSV | JSON⟧',
+  ]
+  for (const [i, answer] of answers.entries()) {
+    const turnId = `receipt-${i}`
+    await $.turn.start({ text: DRAFT, turnId })
+    await $.turn.complete({ turnId, reason: 'answer', answer, durationMs: 1000, isAborted: false })
+    await clock.settle()
+  }
+  const receipt = await $.ui.mount({ plugin: 'margincue', component: 'Placed', requestId: 'receipt-1', surface: 'terminal',
+    props: { id: 'receipt-1', plugin: 'margincue' } })
+  // Rendered with the same test against f6d765d.
+  expect(textFrame(await receipt.drawn())).toBe([
+    '   MarginCue   you set 0 · the agent chose 8',
+    '        agent  layout  compact   [diff]  [→ roomy]',
+    '        agent  database migrat…  migrate schema   [diff]  [→ keep schema]',
+    '        agent  color  blue   [diff]  [→ gray]',
+    '        agent  delivery  email customers   [diff]  [→ draft an email]',
+    '        agent  heading  Results   [diff]  [→ Report]',
+    '        agent  order  newest first   [diff]  [→ oldest first]',
+    '        agent  labels  short   [diff]  [→ long]',
+    '        agent  theme  light   [diff]  [→ dark]',
+    '               [Review choices] · e opens related edits',
+  ].join('\n'))
+  await receipt.press({ key: 'agent-0-1' })
+  expect(box.text).toBe('Change layout: roomy instead of compact. Keep everything else as it is.')
+  await receipt.unmount()
+})
+
 test('the terminal receipt folds low choices and session choices can switch an older turn', async ($, on) => {
-  const { clock, box, calls, panes } = world(on, '[]')
+  const { clock, box, calls, panes, store } = world(on, '[]')
   mock.session(on)
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
@@ -1168,6 +1208,10 @@ test('the terminal receipt folds low choices and session choices can switch an o
     content: '{"compilerOptions":{}}\n', originalFile: '{}\n', structuredPatch: [], userModified: false } }))
   await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
   const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
+  expect((await command('choices')).text).toBe('Turn on choice ranking with /margincue tiers on.')
+  expect(panes).toHaveLength(0)
+  expect((await command('tiers on')).text).toBe('MarginCue tiers on.')
+  expect(store.get('settings')).toMatchObject({ tiers: true })
   expect((await command('choices')).text).toBe('No agent choices to review.')
   const layout = '⟦layout: compact | roomy⟧'
   const first = `${layout}. In tsconfig.json use ⟦build settings: compiler default | strict settings⟧.`
@@ -1244,6 +1288,13 @@ test('the terminal receipt folds low choices and session choices can switch an o
   await pane.press({ key: 'switch-1-0-1' })
   expect(box.text).toBe('Revisit turn 1. Change layout: roomy instead of compact. Keep everything else as it is.')
   expect(calls).toHaveLength(0)
+  expect((await command('tiers off')).text).toBe('MarginCue tiers off.')
+  expect(store.get('settings')).toMatchObject({ tiers: false })
+  expect((await command('choices')).text).toBe('Turn on choice ranking with /margincue tiers on.')
+  expect(await receipt.find({ key: 'receipt-low' })).toBeUndefined()
+  expect(await receipt.find({ key: 'receipt-session' })).toBeUndefined()
+  expect(await receipt.find({ key: 'agent-0-1' })).toBeDefined()
+  expect(await pane.find({ key: 'switch-1-0-1' })).toBeUndefined()
   await pane.unmount()
   await receipt.unmount()
 })

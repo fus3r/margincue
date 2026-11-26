@@ -28,6 +28,7 @@ export type Settings = {
   sketch?: boolean
   refs?: boolean
   chapters?: boolean
+  tiers?: 'on' | 'off'
   blanks?: boolean
   user?: UserProfile
   onboarded?: 'done' | 'skipped'

@@ -2559,6 +2559,7 @@ var Core = class {
   sheetEnabled;
   readMode = "auto";
   chaptersEnabled = true;
+  tiersEnabled = false;
   profileSelected = false;
   sketchEnabled = true;
   refsEnabled = true;
@@ -2808,6 +2809,7 @@ var Core = class {
     const sheetChanged = sheetEnabled !== this.sheetEnabled;
     this.sheetEnabled = sheetEnabled;
     this.chaptersEnabled = e.chapters !== false;
+    this.tiersEnabled = e.tiers === true;
     this.profileSelected = e.profileSelected === true;
     const readMode = e.read ?? "auto";
     const readModeChanged = this.readMode !== readMode;
@@ -3871,7 +3873,7 @@ ${lines.join("\n")}` : "";
     const row = card?.rows.find((entry) => entry.id === rowId);
     if (!card || !row) return;
     card.dismissed.add(row.key);
-    if (card.stage === "turn" && row.origin === "agent") (card.dismissedAgent ??= []).push(row);
+    if (this.tiersEnabled && card.stage === "turn" && row.origin === "agent") (card.dismissedAgent ??= []).push(row);
     card.rows = card.rows.filter((entry) => entry !== row);
     this.fixCardFocus();
     this.metric("card-dismissed", { card: card.id, row: row.key, origin: row.origin, stage: card.stage });
@@ -4087,7 +4089,7 @@ ${tidySketch(sketch.lines).join("\n")}
       if (normalize(row.options[0] ?? "") === normalize(choice)) return;
       Object.assign(row, { options: options2, defaults: [0], picked: null, sent: void 0 });
     } else {
-      if (card.dismissed.has(key)) return;
+      if (!this.tiersEnabled && card.rows.length >= 8 || card.dismissed.has(key)) return;
       card.rows.push({
         id: this.newId(),
         key,
@@ -4125,7 +4127,7 @@ ${tidySketch(sketch.lines).join("\n")}
       return;
     }
     const agent = card.rows.filter((row) => row.origin === "agent");
-    const recorded = [...agent, ...card.dismissedAgent ?? []];
+    const recorded = this.tiersEnabled ? [...agent, ...card.dismissedAgent ?? []] : agent;
     if (card.sent.length || recorded.length) {
       this.receipt = {
         id: this.nextReceipt++,
@@ -4133,10 +4135,10 @@ ${tidySketch(sketch.lines).join("\n")}
         agent: recorded.map((row) => {
           const now3 = (row.sent ?? row.defaults)[0] ?? 0;
           const value = row.options[now3];
+          const ranked = this.tiersEnabled ? { label: row.statement.replace(/: \{\}$/, ""), tier: choiceTier(row.statement, value) } : { label: row.label };
           return {
-            label: row.statement.replace(/: \{\}$/, ""),
+            ...ranked,
             value,
-            tier: choiceTier(row.statement, value),
             ...now3 !== 0 && { was: row.options[0] },
             options: [...row.options]
           };
@@ -11827,7 +11829,7 @@ import { spawn as spawn2 } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.29";
+var VERSION = "0.4.30";
 var MIN_CODEX = "0.171";
 function tooOld(output2) {
   const match = /codex-cli (\d+)\.(\d+)\.(\d+)/.exec(output2);
@@ -12990,14 +12992,17 @@ function stopHook(input) {
   });
   const yours = mine?.decisions.length ?? 0;
   if (!chosen.size && !yours) return null;
-  return { systemMessage: receiptLine(yours, choices, source) };
+  return { systemMessage: receiptLine(yours, choices, source, settings.tiers === "on") };
 }
-function receiptLine(yours, agent, source = "cli") {
+function receiptLine(yours, agent, source = "cli", tiers = false) {
   const switched = agent.filter((choice) => choice.switched).length;
   const parts = [`MarginCue \xB7 you set ${yours} \xB7 the agent chose ${agent.length}${switched ? ` \xB7 you switched ${switched}` : ""}`];
   if (agent.length) {
-    const choices = rankedChoices(agent.map((choice) => ({ ...choice, tier: choiceTier(`${choice.label}: {}`, choice.value) })));
-    parts.push(tierCounts(choices), choices.map(({ tier, label, value, switched: switched2 }) => `[${tier}] ${label}: ${value}${switched2 ? " (switched)" : ""}`).join(" \xB7 "));
+    const format = ({ label, value, switched: switched2 }) => `${label}: ${value}${switched2 ? " (switched)" : ""}`;
+    if (tiers) {
+      const choices = rankedChoices(agent.map((choice) => ({ ...choice, tier: choiceTier(`${choice.label}: {}`, choice.value) })));
+      parts.push(tierCounts(choices), choices.map((choice) => `[${choice.tier}] ${format(choice)}`).join(" \xB7 "));
+    } else parts.push(agent.map(format).join(" \xB7 "));
     if (source === "cli" || source === "unknown") {
       parts.push(process.env["MARGINCUE_CARD"] === "prompt" ? "alt+\u2193 under the prompt to switch one" : "ctrl+g to switch one");
     }

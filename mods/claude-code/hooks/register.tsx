@@ -51,14 +51,14 @@ const EAGER_PLAN = false
 
 type Settings = {
   mode: Mode; profile: string; language: LanguageSetting; inline: boolean; sheet: boolean; ab: boolean; depths: Record<string, Depth>
-  read: ReadingMode; sketch: boolean; refs: boolean; blanks: boolean; chapters: boolean; profileSelected: boolean
+  read: ReadingMode; sketch: boolean; refs: boolean; blanks: boolean; chapters: boolean; tiers: boolean; profileSelected: boolean
   send: SendSetting; sendExplicit: boolean
   /** The first-run interview's answers, and whether it ran (or was closed, which is not asked again). */
   user: UserProfile | null; onboarded: 'done' | 'skipped' | null
 }
 const DEFAULTS: Settings = {
   mode: 'auto', profile: 'general', language: 'en', inline: false, sheet: true, ab: false, depths: {},
-  read: 'auto', sketch: true, refs: true, blanks: true, chapters: true, profileSelected: false, user: null, onboarded: null,
+  read: 'auto', sketch: true, refs: true, blanks: true, chapters: true, tiers: false, profileSelected: false, user: null, onboarded: null,
   send: DEFAULT_SEND, sendExplicit: false,
 }
 /** Re-read the project's names after a turn at most this often. */
@@ -189,6 +189,7 @@ function configEvent(): Event {
     language: host.settings.language,
     sheet: host.settings.sheet && host.arm !== 'control',
     chapters: host.settings.chapters,
+    tiers: host.settings.tiers,
     read: host.settings.read,
     sketch: host.settings.sketch,
     refs: host.settings.refs,
@@ -947,7 +948,7 @@ function act($: $, action: Action): void | Promise<void> {
   else if (action.type === 'receiptPick') return followUp($, action.receipt, action.item, action.option)
   else if (action.type === 'receiptLow') {
     const receipt = host.receipts.get(action.receipt)
-    if (receipt) {
+    if (host.settings.tiers && receipt) {
       receipt.showLow = !receipt.showLow
       $.ui.invalidate('ui.render')
     }
@@ -1000,13 +1001,14 @@ async function fillComposer($: $, text: string, replaces: string | null): Promis
 
 /** A choice switched on a receipt in the transcript: the follow-up prompt that asks for it. */
 async function followUp($: $, receiptId: number, item: number, option: number, nameTurn = false): Promise<void> {
+  if (nameTurn && !host.settings.tiers) return
   const receipt = host.receipts.get(receiptId)
   if (!receipt) return
   const choice = receipt.agent[item]
   const value = choice?.options[option]
   if (!choice || value === undefined || value === choice.value) return
   log($, 'receipt-pick', { receipt: receiptId, item, option })
-  const prefix = nameTurn || receipt.turn < host.turnNumber ? `Revisit turn ${receipt.turn}. ` : ''
+  const prefix = host.settings.tiers && (nameTurn || choice.tier && receipt.turn < host.turnNumber) ? `Revisit turn ${receipt.turn}. ` : ''
   await fillComposer($, `${prefix}Change ${choice.label}: ${value} instead of ${choice.value}. Keep everything else as it is.`, host.lastFill)
 }
 
@@ -1028,6 +1030,7 @@ async function reviewReceipt($: $, id: number): Promise<void> {
 }
 
 async function reviewSessionChoices($: $): Promise<void> {
+  if (!host.settings.tiers || !enabled() || !host.terminal) return
   const opened = await $.ui.open({ id: CHOICES_PANE, title: 'MarginCue session choices', focus: true, closeOnEscape: true,
     rows: 18 }).catch(() => null)
   if (!opened?.isPlaced) void $.ui.toast('The session choices could not be focused.')
@@ -1097,11 +1100,13 @@ function noteEditMarks(source: string, blanks: ParsedBlank[], currentTurn = fals
   const turn = host.editTurn
   if (!turn) return
   const position = turn.position + 1
+  const beforeBoundary = host.settings.tiers ? /[\n⟧]|[.!?](?=\s|$)/ : /[\n⟧]/
+  const afterBoundary = host.settings.tiers ? /[\n⟦]|[.!?](?=\s|$)/ : /[\n⟦]/
   for (const blank of blanks) {
     const name = nameKey(blank.label)
     if ((!currentTurn && host.blankOld.has(blankKey(blank))) || turn.marks.get(name)?.choice === blank.choice) continue
-    const before = source.slice(Math.max(0, blank.start - 160), blank.start).split(/[\n⟧]|[.!?](?=\s|$)/).at(-1) ?? ''
-    const after = source.slice(blank.end, blank.end + 160).split(/[\n⟦]|[.!?](?=\s|$)/)[0] ?? ''
+    const before = source.slice(Math.max(0, blank.start - 160), blank.start).split(beforeBoundary).at(-1) ?? ''
+    const after = source.slice(blank.end, blank.end + 160).split(afterBoundary)[0] ?? ''
     turn.marks.set(name, { position, words: `${before} ${after}`, choice: blank.choice })
     turn.position = position
   }
@@ -1115,7 +1120,7 @@ function noteEditMarks(source: string, blanks: ParsedBlank[], currentTurn = fals
 async function markTurnStart($: $, turn: string): Promise<void> {
   const found = await $.session.messages({ last: 400 }).catch(() => null)
   if (!found || 'deny' in found || host.activeTurn !== turn) return
-  host.blankOld.clear()
+  if (host.settings.tiers) host.blankOld.clear()
   for (const entry of found) {
     if (entry.role === 'assistant') for (const blank of parseBlanks(entry.text)) host.blankOld.add(blankKey(blank))
   }
@@ -1153,7 +1158,7 @@ async function placeReceipt($: $, turn: EditCapture | null): Promise<void> {
   if (turn) {
     const edits = finishEdits($, turn)
     receipt.edits = edits
-    if (view.agent.length) {
+    if (host.settings.tiers && view.agent.length) {
       const observed = toolChoiceEdits(turn)
       receipt.hasCapturedEdits = observed.length > 0
       receipt.agent = rankReceiptEdits(view.agent, observed, turn.marks)
@@ -1282,6 +1287,7 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
     read: stored?.read === 'key' ? 'key' : DEFAULTS.read,
     sketch: stored?.sketch !== false,
     chapters: stored?.chapters !== false,
+    tiers: stored?.tiers === true,
     refs: stored?.refs !== false,
     blanks: stored?.blanks !== false,
     // Older settings saved the default "all" in the same field as an explicit choice.
@@ -1315,7 +1321,7 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
   await $.command.register({
     name: 'margincue',
     description: 'MarginCue card, sketch, blanks, decisions, expert review and session status',
-    argumentHint: '[setup [reset]|state|mode|language en|auto|card on|off|chapters on|off|read auto|key|sketch on|off|refs on|off|blanks on|off|send all|picked|open|ab on|off|status|review [profile]|edits|choices|profile|status]',
+    argumentHint: '[setup [reset]|state|mode|language en|auto|card on|off|chapters on|off|tiers on|off|read auto|key|sketch on|off|refs on|off|blanks on|off|send all|picked|open|ab on|off|status|review [profile]|edits|choices|profile|status]',
     immediate: true,
   })
   await reopen($)
@@ -1478,6 +1484,15 @@ ${slot.source}` : 'Use /margincue why <slot>.')
         await saveSettings($)
         return done(`MarginCue reading mode is ${reading}.`)
       }
+      case 'tiers': {
+        const setting = arg.toLowerCase()
+        if (setting !== 'on' && setting !== 'off') return done('Use /margincue tiers on|off.')
+        settings.tiers = setting === 'on'
+        run($, configEvent())
+        $.ui.invalidate('ui.render')
+        await saveSettings($)
+        return done(`MarginCue tiers ${setting}.`)
+      }
       case 'sketch':
       case 'chapters':
       case 'refs':
@@ -1527,8 +1542,9 @@ ${slot.source}` : 'Use /margincue why <slot>.')
         return done('')
       }
       case 'choices':
+        if (!settings.tiers) return done('Turn on choice ranking with /margincue tiers on.')
         if (!enabled() || !host.terminal) return done('Session choices are available in the terminal with MarginCue on.')
-        if (![...host.receipts.values()].some((receipt) => receipt.agent.length)) return done('No agent choices to review.')
+        if (![...host.receipts.values()].some((receipt) => receipt.agent.some((choice) => choice.tier))) return done('No agent choices to review.')
         await reviewSessionChoices($)
         return done('')
       case 'log':
@@ -1546,7 +1562,7 @@ ${slot.source}` : 'Use /margincue why <slot>.')
         const { stats } = host
         const med = (list: number[]) => list.length ? `${median(list)} ms` : '–'
         return done([
-          `MarginCue is ${settings.mode} · profile ${settings.profile} · language ${settings.language} · depth ${currentDepth()} · card ${settings.sheet ? 'on' : 'off'} · chapters ${settings.chapters ? 'on' : 'off'} · read ${settings.read} · sketch ${settings.sketch ? 'on' : 'off'} · refs ${settings.refs ? 'on' : 'off'} · blanks ${settings.blanks ? 'on' : 'off'}`,
+          `MarginCue is ${settings.mode} · profile ${settings.profile} · language ${settings.language} · depth ${currentDepth()} · card ${settings.sheet ? 'on' : 'off'} · chapters ${settings.chapters ? 'on' : 'off'} · tiers ${settings.tiers ? 'on' : 'off'} · read ${settings.read} · sketch ${settings.sketch ? 'on' : 'off'} · refs ${settings.refs ? 'on' : 'off'} · blanks ${settings.blanks ? 'on' : 'off'}`,
           `This session: ${stats.requests} model calls, ${stats.failures} failed · median first ${med(stats.first)} · median reply ${med(stats.full)}`,
           `${stats.submits} prompts sent, ${stats.attached} with decisions attached.`,
           `Project index: ${host.indexing ? 'reading…' : host.indexed ? 'ready' : 'none (not a git repository, or off)'}.`,
@@ -1733,7 +1749,7 @@ export const register: Register = (on) => {
   on('turn.start', ($, e, next) => {
     if (e.agentId === undefined) {
       host.turnNumber++
-      host.blankSeen.clear()
+      if (host.settings.tiers) host.blankSeen.clear()
       host.activeTurn = e.turnId
       if (host.turn?.text === e.text) host.turn.id = e.turnId
       host.editTurn = host.terminal && enabled() && host.settings.sheet && host.arm !== 'control' ? startEdits($, host.root) : null
@@ -1755,11 +1771,12 @@ export const register: Register = (on) => {
   })
 
   on('session.append', { door: 'response' }, ($, e, next) => {
-    if (host.activeTurn !== null && e.agentId === undefined && e.message.type === 'assistant') {
+    const tiers = host.settings.tiers
+    if ((tiers ? host.activeTurn !== null : host.editTurn) && e.agentId === undefined && e.message.type === 'assistant') {
       for (const block of e.message.content) if (block.type === 'text' && typeof block.text === 'string') {
         const blanks = parseBlanks(block.text)
-        noteEditMarks(block.text, blanks, true)
-        for (const blank of blanks) noteBlank($, blank, true)
+        noteEditMarks(block.text, blanks, tiers)
+        if (tiers) for (const blank of blanks) noteBlank($, blank, true)
       }
     }
     return next(e)
@@ -1770,9 +1787,10 @@ export const register: Register = (on) => {
     if (e.agentId === undefined && host.activeTurn === e.turnId) {
       const answer = result?.text ?? ''
       const blanks = parseBlanks(answer)
-      noteEditMarks(answer, blanks, true)
-      for (const blank of blanks) noteBlank($, blank, true)
-      for (const seen of host.blankSeen) host.blankOld.add(seen)
+      const tiers = host.settings.tiers
+      noteEditMarks(answer, blanks, tiers)
+      for (const blank of blanks) noteBlank($, blank, tiers)
+      if (tiers) for (const seen of host.blankSeen) host.blankOld.add(seen)
       const edits = host.editTurn
       host.editTurn = null
       host.activeTurn = null
@@ -1912,12 +1930,13 @@ export const register: Register = (on) => {
     const id = /^receipt-(\d+)$/.exec(e.props.id)?.[1]
     const receipt = e.props.plugin === 'margincue' && id ? host.receipts.get(Number(id)) : undefined
     if (!receipt) return next(e)
+    const terminal = e.surface === 'terminal' && enabled()
     return drawRows($, $.ui.resolve(e), layoutReceipt(receipt, e.viewport?.columns ?? 100, host.palette,
-      e.surface === 'terminal' && enabled() && !!receipt.edits, receipt.showLow, e.surface === 'terminal' && enabled()))
+      terminal && !!receipt.edits, { tiers: host.settings.tiers, showLow: receipt.showLow, sessionChoices: terminal }))
   })
 
   on('ui.render', { component: 'Pane', requestId: CHOICES_PANE, surface: 'terminal' }, ($, e, next) => {
-    if (!enabled()) return next(e)
+    if (!host.settings.tiers || !enabled()) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
     const choices = [...host.receipts.values()].reverse().flatMap((receipt) =>
       receipt.agent.map((choice, item) => ({ receipt, choice, item })))

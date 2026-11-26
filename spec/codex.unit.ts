@@ -174,10 +174,18 @@ test('the prompt hook notes the turn and asks the agent to mark its choices; the
   assert.match(out.hookSpecificOutput.additionalContext, /Amendment to my last prompt/)
   const record = JSON.parse(readFileSync(PATHS.turn, 'utf8'))
   assert.deepEqual([record.turn, record.endedAt, record.decisions.length, record.source], ['t-3', null, 2, 'cli'])
-  const stopped = stopHook({ turn_id: 't-3', transcript_path: transcript,
-    last_assistant_message: `CSV is ${OPEN}CSV built: streamed | in the browser${CLOSE}; ${OPEN}delivery: email customers | draft an email${CLOSE}.` }) as { systemMessage: string }
-  // Labels are kept in lower case, as on the Claude Code card.
-  assert.match(stopped.systemMessage, /you set 2 · the agent chose 3 — 1 high · 0 mid · 2 low — \[high\] delivery: email customers · \[low\] week starts: Monday · \[low\] csv built: streamed/)
+  const input = { turn_id: 't-3', transcript_path: transcript,
+    last_assistant_message: `CSV is ${OPEN}CSV built: streamed | in the browser${CLOSE}; ${OPEN}delivery: email customers | draft an email${CLOSE}.` }
+  const legacy = { systemMessage: 'MarginCue · you set 2 · the agent chose 3 — week starts: Monday · csv built: streamed · delivery: email customers — ctrl+g to switch one' }
+  assert.deepEqual(stopHook(input), legacy)
+  try {
+    saveSettings({ tiers: 'on' })
+    assert.deepEqual(stopHook(input), { systemMessage: 'MarginCue · you set 2 · the agent chose 3 — 1 high · 0 mid · 2 low — [high] delivery: email customers · [low] week starts: Monday · [low] csv built: streamed — ctrl+g to switch one' })
+    saveSettings({ tiers: 'off' })
+    assert.deepEqual(stopHook(input), legacy)
+  } finally {
+    saveSettings({})
+  }
   assert.notEqual(JSON.parse(readFileSync(PATHS.turn, 'utf8')).endedAt, null)
 })
 
@@ -193,7 +201,7 @@ test('a message sent into the running turn keeps its decisions, and the receipt 
   const record = JSON.parse(readFileSync(PATHS.turn, 'utf8'))
   assert.deepEqual([record.decisions.length, record.startedAt, record.endedAt], [2, started, null])
   const stopped = stopHook({ session_id: 's', turn_id: 't-20', transcript_path: transcript }) as { systemMessage: string }
-  assert.match(stopped.systemMessage, /^MarginCue · you set 2 · the agent chose 2 · you switched 1 — 0 high · 0 mid · 2 low — \[low\] older invitations: event label only \(switched\) · /)
+  assert.equal(stopped.systemMessage, 'MarginCue · you set 2 · the agent chose 2 · you switched 1 — older invitations: event label only (switched) · week starts: Monday — ctrl+g to switch one')
   // A new turn starts afresh.
   promptHook({ session_id: 's', turn_id: 't-21', transcript_path: transcript, cwd: '/project', prompt: 'Now add a chart.' })
   assert.equal(JSON.parse(readFileSync(PATHS.turn, 'utf8')).decisions.length, 0)
@@ -297,7 +305,7 @@ test('the desktop hook gates new tasks on the widget and skips its follow-ups; t
   const stopped = stopHook({
     ...input, turn_id: 't-11', last_assistant_message: `I used ${OPEN}table layout: compact | full width${CLOSE}.`,
   }) as { systemMessage: string }
-  assert.equal(stopped.systemMessage, 'MarginCue · you set 1 · the agent chose 1 — 0 high · 0 mid · 1 low — [low] table layout: compact')
+  assert.equal(stopped.systemMessage, 'MarginCue · you set 1 · the agent chose 1 — table layout: compact')
 })
 
 test('Codex settings default to open and preserve a stored all', () => {
@@ -329,7 +337,7 @@ test('the IDE skips its default automatic text card in key mode', () => {
     assert.doesNotMatch(output, /margincue_card|Open choices|Decisions:/)
     assert.match(output, /Choices you make for the user/)
     const receipt = stopHook({ ...input, turn_id: 'ide-2', last_assistant_message: `I used ${OPEN}layout: compact | full width${CLOSE}.` })
-    assert.deepEqual(receipt, { systemMessage: 'MarginCue · you set 0 · the agent chose 1 — 0 high · 0 mid · 1 low — [low] layout: compact' })
+    assert.deepEqual(receipt, { systemMessage: 'MarginCue · you set 0 · the agent chose 1 — layout: compact' })
   } finally {
     saveSettings({})
   }
