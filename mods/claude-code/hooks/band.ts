@@ -14,6 +14,10 @@ export { layoutCard, tidySketch } from './card-view'
 const GAP = 2
 
 export function layoutBandRows(band: MargincueBand, columns: number, hint: string, maxRows = 14, palette: Palette = DARK): Segment[][] {
+  if (maxRows <= 0) return []
+  if (band.collapsedPaste) return [[text(truncate(band.language === 'fr'
+    ? 'MarginCue lit le texte collé quand vous appuyez sur Entrée.'
+    : 'MarginCue reads pasted text when you press Enter.', columns), { dim: true })]]
   const card = band.card
   if (!card && !band.reviewPending) {
     const row = layoutBand(band, columns, hint)
@@ -28,10 +32,12 @@ export function layoutBandRows(band: MargincueBand, columns: number, hint: strin
     if (marks.length) rows.push(marks)
   }
   if (band.reviewPending) rows.push([{ kind: 'progress', label: thinkingLabel(band.language) }])
+  const cardRows = !card ? 0 : card.stage === 'draft' && !card.collapsed && card.chapter ? (card.chapter.expanded ? 2 : 3) : 1
+  rows.length = Math.min(rows.length, Math.max(0, maxRows - cardRows))
   if (card) {
     // One empty row keeps the open card apart from the transcript above it.
     if (!card.collapsed && !rows.length && maxRows >= 12) rows.push([text(' ')])
-    rows.push(...layoutCard(card, columns, Math.max(3, maxRows - rows.length), {
+    rows.push(...layoutCard(card, columns, maxRows - rows.length, {
       // A standing guard cue holds the chords while it is shown.
       chords: !band.first,
       extra: [

@@ -549,6 +549,11 @@ function compile(rules) {
 }
 var FR = new Set("je tu vous le la les des du un une et pour dans avec sur puis pas cette ces aux peux faut voici stp".split(" "));
 var EN = new Set("i you the this these that a an and for in with on of then not please can must only".split(" "));
+function draftLanguage(text2, words = new Words(text2)) {
+  const fr = words.tokens.filter((t) => FR.has(t)).length;
+  const en = words.tokens.filter((t) => EN.has(t)).length;
+  return fr > en || fr === en && /[àâçéèêëîïôùûüœ]/i.test(text2) ? "fr" : "en";
+}
 var DELEGATE = [
   "don't ask",
   "do not ask",
@@ -588,9 +593,7 @@ var DecisionDraft = class {
     const words = new Words(body);
     this.items = items;
     this.words = (body.match(/[\p{L}\p{N}_]+(?:['’-][\p{L}\p{N}_]+)*/gu) ?? []).length;
-    const fr = words.tokens.filter((t) => FR.has(t)).length;
-    const en = words.tokens.filter((t) => EN.has(t)).length;
-    this.language = fr > en || fr === en && /[àâçéèêëîïôùûüœ]/i.test(body) ? "fr" : "en";
+    this.language = draftLanguage(body, words);
     this.rigor = inferRigor(words);
     this.directive = directive(words);
     this.followUp = FOLLOW_UP.test(body.trimStart());
@@ -2593,6 +2596,7 @@ var Core = class {
   text = "";
   atEnter = false;
   afterEnter = false;
+  transientDraft = false;
   cursor = 0;
   textAt = 0;
   /** When the person last acted without editing (a pick, accept all, switching on): latency counts from here too. */
@@ -2909,12 +2913,13 @@ var Core = class {
     }
     this.refreshChapter();
   }
-  onDraft({ text: text2, origin, edit, cursor, atEnter, afterEnter }) {
+  onDraft({ text: text2, origin, edit, cursor, atEnter, afterEnter, transient }) {
     const before2 = this.text;
     this.cursor = cursor === void 0 ? text2.length : Math.max(0, Math.min(text2.length, cursor));
     if (text2 === before2 && origin === "type") return;
     this.atEnter = atEnter === true;
     this.afterEnter = atEnter === true || afterEnter === true;
+    this.transientDraft = transient === true;
     const splice = edit !== void 0 && spliceFits(before2, text2, edit) ? edit : diffSplice(before2, text2);
     this.text = text2;
     if (text2 !== before2) {
@@ -3156,6 +3161,7 @@ ${target}` : asked;
     this.text = "";
     this.atEnter = false;
     this.afterEnter = false;
+    this.transientDraft = false;
     this.cursor = 0;
     this.textAt = this.now;
     this.cues = [];
@@ -3433,7 +3439,7 @@ Level: ${this.depthOf(profile)}`, cardContext, catalog].filter(Boolean).join("\n
   // it works (blanks), which the person can switch without stopping it; after
   // the turn, a receipt and one-key follow-ups.
   cardText(text2 = this.text) {
-    if (this.readSubmittedPrompt) return Boolean(text2.trim());
+    if (this.readSubmittedPrompt || this.transientDraft) return Boolean(text2.trim());
     return !isHostCommand(text2) && wordCount(text2) >= CARD_MIN_WORDS;
   }
   cardAllowed() {
@@ -3595,8 +3601,8 @@ Level: ${this.depthOf(profile)}`, cardContext, catalog].filter(Boolean).join("\n
       card.dirty = false;
     }
     const { system, prompt } = this.cardRequest(card);
-    const key = JSON.stringify([this.profileName, system, prompt]);
-    const cached = this.cardCache.get(key);
+    const key = this.transientDraft ? "" : JSON.stringify([this.profileName, system, prompt]);
+    const cached = key && this.cardCache.get(key);
     if (cached) {
       this.applyCard(card, cached, this.text);
       return;
@@ -3615,7 +3621,7 @@ Level: ${this.depthOf(profile)}`, cardContext, catalog].filter(Boolean).join("\n
 ${this.index.vocab.map}`);
     const lenses = this.lensBlocks();
     if (lenses.project) system.push(lenses.project);
-    const draft = this.text.length > DRAFT_MAX ? `${this.text.slice(0, DRAFT_MAX * 0.7)}
+    const draft = !this.transientDraft && this.text.length > DRAFT_MAX ? `${this.text.slice(0, DRAFT_MAX * 0.7)}
 [\u2026]
 ${this.text.slice(-DRAFT_MAX * 0.3)}` : this.text;
     const lines = ["Draft:", "<<<", draft, ">>>"];
@@ -3706,7 +3712,7 @@ ${lines.join("\n")}` : "";
     card.req = null;
     if (ok) {
       const parsed = parseCard(card.buffer);
-      this.cardCache.set(card.reqKey, parsed);
+      if (card.reqKey) this.cardCache.set(card.reqKey, parsed);
       this.applyCard(card, parsed, card.reqText);
       this.metric("card-reply", { req, card: card.id, ok, ms: this.now - card.reqAt, rows: parsed.rows.length, kind: parsed.kind, read: parsed.read !== null });
     } else {
@@ -3753,7 +3759,7 @@ ${lines.join("\n")}` : "";
       this.expert = { ...this.expert, items: this.expert.items.filter((item) => item.chosen !== void 0 || this.uncoveredChoice(card, item)) };
     }
     this.fixCardFocus();
-    if (!partial && this.sketchEnabled && this.assets.sketchSystem && canSketch(card.kind) && text2 === this.text) {
+    if (!partial && !this.transientDraft && this.sketchEnabled && this.assets.sketchSystem && canSketch(card.kind) && text2 === this.text) {
       card.sketchDue = this.now;
     }
   }
@@ -3826,7 +3832,7 @@ ${lines.join("\n")}` : "";
     this.actionAt = this.now;
     this.metric("card-pick", {
       card: card.id,
-      row: row.key,
+      ...!this.transientDraft && { row: row.key },
       origin: row.origin,
       stage: card.stage,
       option: next.join("+"),
@@ -3860,7 +3866,7 @@ ${lines.join("\n")}` : "";
     this.actionAt = this.now;
     this.metric("card-pick", {
       card: card.id,
-      row: row.key,
+      ...!this.transientDraft && { row: row.key },
       origin: row.origin,
       stage: card.stage,
       option: "said",
@@ -4052,7 +4058,7 @@ ${tidySketch(sketch.lines).join("\n")}
         reading: card ? card.req !== null : false,
         sketch: card?.sketch?.pinned ?? false
       });
-      for (const row of card?.rows ?? []) {
+      for (const row of this.transientDraft ? [] : card?.rows ?? []) {
         if (row.picked !== null && row.origin !== "repo" && row.type !== "many") {
           this.out.push({ type: "learn", key: row.key, label: rowValue(row, row.picked) });
         }
@@ -5123,7 +5129,7 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
       "notes": {
         "essentials": "Theory. A larger network can fit more patterns, including noise. Training progress and performance on fresh data answer different questions.\nWorkflow. Start from a simple baseline, choose when to stop using validation data, and evaluate the chosen checkpoint on untouched examples.\nChoice. Establish whether to optimize result quality or compare what can be achieved within a fixed budget.",
         "standard": "Theory. Backpropagation computes gradients by the chain rule. Early stopping, weight decay, and augmentation change the effective training procedure.\nWorkflow. Track learning curves, use a fixed model-selection rule, log data and seeds, and compare against a simpler model under a stated tuning budget.\nChoice. Decide whether model comparisons hold compute, data exposure, or search effort fixed.",
-        "research": "Theory. A reported run mixes architecture, optimization, data, checkpoint selection and run-to-run variance. Repeated checkpoint selection on the same set adapts the procedure to that set.\nWorkflow. Match the budget tied to the claim, cross or pair seeds where appropriate, and fix the selection and ablation protocol before final evaluation.\nChoice. Distinguish an architectural effect under controls from best achievable performance at a fixed resource budget."
+        "research": "Theory. A reported run mixes architecture, optimization, data, checkpoint selection and run-to-run variance. Repeated checkpoint selection on the same set adapts the procedure to that set.\nWorkflow. Match the budget tied to the claim, cross or pair seeds where appropriate, and fix the selection and ablation protocol before final evaluation.\nChoice. Separate a controlled comparison from a best-result claim at a fixed budget."
       }
     },
     {
@@ -10869,6 +10875,7 @@ var GAP = "  ";
 var MARK = 2;
 var MIN_ROWS_BESIDE = 52;
 var MIN_COLUMNS_BESIDE = 140;
+var CHAPTER_PAGE_LINES = 6;
 var EN2 = {
   inCode: "in code",
   preview: "preview",
@@ -10914,6 +10921,7 @@ var FR2 = {
   folded: (n) => `${n} ligne${n === 1 ? "" : "s"}, repli\xE9es`
 };
 function layoutCard(card, columns, budget, options2) {
+  if (budget <= 0) return [];
   const P3 = options2.palette ?? DARK;
   const labels = card.language === "fr" ? FR2 : EN2;
   const words = { ...labels, ...card.pickedOnly && { open: labels.toAgent }, readHint: options2.readHint ?? labels.readHint };
@@ -10933,9 +10941,8 @@ function layoutCard(card, columns, budget, options2) {
   }
   const g = grid(card, columns, words);
   const chapter = card.stage === "draft" && !card.collapsed ? card.chapter : void 0;
-  if (chapter?.expanded && budget === 3) return chapterLines(chapter, columns, budget, options2.chapterKeys, card.language);
-  const reference = chapter && budget >= 3 ? chapterLines(chapter, columns, budget - 1, options2.chapterKeys, card.language) : [];
-  const headBudget = budget - reference.length;
+  const showChapter = chapter && budget >= (chapter.expanded ? 2 : 3);
+  const headBudget = budget - (showChapter ? 2 : 0);
   const right = card.collapsed ? [] : status(card, words, open, P3);
   const available = columns - g.content - 3 - (card.awaitingRead ? cells(words.readHint) : 16);
   for (const button of controls) {
@@ -10945,11 +10952,16 @@ function layoutCard(card, columns, budget, options2) {
   const head = card.collapsed ? [withRight(collapsed(card, columns, P3, words, open), right, columns)] : header(card, g, right, P3, words, headBudget >= 10 ? 4 : headBudget >= 6 ? 2 : 1);
   head[0].push(...shortcuts, ...controls.filter((button) => !head[0].includes(button)).map((button) => ({ ...button, hidden: true })));
   if (card.collapsed) return head;
-  head.push(...reference);
-  const room = budget - head.length;
-  if (room <= 0) return head;
   const sketch = card.stage === "draft" ? card.sketch : void 0;
-  const drawing = sketch?.open ? tidySketch(sketch.lines) : [];
+  let room = budget - head.length;
+  if (showChapter) {
+    const bodyRows = card.rows.length + Number(Boolean(sketch));
+    const reference = chapterLines(chapter, columns, room, bodyRows, options2.chapterKeys, card.language);
+    head.push(...reference.lines);
+    room -= reference.height;
+  }
+  if (room <= 0) return head;
+  const drawing = sketch?.open && !chapter?.expanded ? tidySketch(sketch.lines) : [];
   const pictureWidth = Math.min(80, Math.max(36, ...drawing.map(cells)));
   if (drawing.length && columns >= MIN_COLUMNS_BESIDE && columns - pictureWidth - 3 - g.content >= MIN_ROWS_BESIDE) {
     const left2 = columns - pictureWidth - 3;
@@ -10972,64 +10984,64 @@ function layoutCard(card, columns, budget, options2) {
     const wide = Math.max(0, ...drawing.map(cells));
     const indent = g.content + wide <= columns ? g.content : wide + 2 <= columns ? columns - wide : -1;
     const shown = drawing.length && indent >= 0 && left >= Math.min(3, drawing.length) ? pictureLines(drawing, P3, words, left, options2.sketchKey) : [];
-    const note = drawing.length && !shown.length ? words.folded(drawing.length) : "";
+    const note = sketch.open && sketch.lines.length && !shown.length ? words.folded(sketch.lines.length) : "";
     out.push([...labelLead(words.preview, g, { dim: true }), ...captionLine(sketch, P3, words, columns - g.content, note)]);
     for (const line of shown) out.push([text(" ".repeat(indent)), ...line]);
   }
   return out;
 }
-function chapterLines(chapter, columns, budget, keys = "ctrl+x tab", language = "en") {
+function chapterLines(chapter, columns, budget, bodyRows, keys = "ctrl+x tab", language = "en") {
   const dim = { dim: true };
-  const lead = `  ${CHAPTER_MARK} `;
-  const room = columns - cells(lead);
-  const title = truncate(chapter.title, chapter.expanded ? room : Math.max(1, room - 25));
-  const summary = chapter.expanded ? title : `${title} \xB7 ${truncate(chapter.choice, room - cells(title) - 3)}`;
-  const toggle = chapter.expanded ? language === "fr" ? "replier" : "collapse" : language === "fr" ? "ouvrir" : "expand";
-  const drop = language === "fr" ? "masquer" : "drop";
-  const hint = [
-    text(keys ? `    ${keys}, ` : "    ", dim),
-    {
-      kind: "button",
-      key: "chapter-toggle",
-      label: toggle,
-      face: keys ? `${CHAPTER_KEY} ${toggle}` : toggle,
-      ...keys && { hotkey: CHAPTER_KEY },
-      dim: true,
-      action: { type: "chapter", action: "toggle" }
-    },
-    text(" \xB7 ", dim),
-    {
-      kind: "button",
-      key: "chapter-drop",
-      label: drop,
-      face: keys ? `${CHAPTER_DROP_KEY} ${drop}` : drop,
-      ...keys && { hotkey: CHAPTER_DROP_KEY },
-      dim: true,
-      action: { type: "chapter", action: "dismiss" }
-    }
-  ];
-  const out = [[text(lead, dim), text(summary, dim)], hint];
-  if (chapter.expanded) {
-    const width = columns - 4;
-    const notes = chapter.notes.split("\n").flatMap((paragraph) => wrapLines(paragraph, width, width, Infinity));
-    const size = budget - out.length;
-    const pages = Math.ceil(notes.length / size);
-    const page = chapter.page % pages;
-    if (pages > 1) {
-      const next = language === "fr" ? "suite" : "next";
-      hint.push(text(" \xB7 ", dim), {
-        kind: "button",
-        key: "chapter-next",
-        label: next,
-        face: `${keys ? `${CHAPTER_NEXT_KEY} ` : ""}${next} ${page + 1}/${pages}`,
-        ...keys && { hotkey: CHAPTER_NEXT_KEY },
-        dim: true,
-        action: { type: "chapter", action: "next" }
-      });
-    }
-    out.push(...notes.slice(page * size, (page + 1) * size).map((line) => [text(`    ${line}`, dim)]));
+  const title = [text(truncate(`  ${CHAPTER_MARK} ${chapter.title}`, columns), dim)];
+  const separateHint = chapter.expanded && budget >= 3;
+  const headingRows = separateHint ? 2 : 1;
+  const noteRoom = budget - headingRows;
+  const size = Math.min(CHAPTER_PAGE_LINES, noteRoom, Math.max(1, noteRoom - bodyRows));
+  const width = columns - 4;
+  const notes = chapter.expanded && size > 0 ? chapter.notes.split("\n").flatMap((paragraph) => wrapLines(paragraph, width, width, Infinity)) : [];
+  const pages = notes.length ? Math.ceil(notes.length / size) : 0;
+  const page = pages ? chapter.page % pages : 0;
+  const toggle = {
+    kind: "button",
+    key: "chapter-toggle",
+    label: chapter.expanded ? language === "fr" ? "replier" : "collapse" : language === "fr" ? "ouvrir" : "expand",
+    ...keys && { hotkey: CHAPTER_KEY },
+    dim: true,
+    action: { type: "chapter", action: "toggle" }
+  };
+  const drop = {
+    kind: "button",
+    key: "chapter-drop",
+    label: language === "fr" ? "masquer" : "drop",
+    ...keys && { hotkey: CHAPTER_DROP_KEY },
+    dim: true,
+    action: { type: "chapter", action: "dismiss" }
+  };
+  const next = pages > 1 ? {
+    kind: "button",
+    key: "chapter-next",
+    label: `${language === "fr" ? "suite" : "next"} ${page + 1}/${pages}`,
+    ...keys && { hotkey: CHAPTER_NEXT_KEY },
+    dim: true,
+    action: { type: "chapter", action: "next" }
+  } : void 0;
+  const separator = text(" \xB7 ", dim);
+  const buttons = next ? [toggle, drop, next] : [toggle, drop];
+  const short = [toggle, separator, drop, ...next ? [separator, next] : []];
+  const hints = keys ? [[text(`${keys}, `, dim), ...short], short] : [short];
+  if (next) hints.push([toggle, separator, next]);
+  hints.push([toggle]);
+  const hintRow = separateHint ? [text("    ", dim)] : title;
+  let fitted = hintRow;
+  for (const hint of hints) {
+    fitted = separateHint ? segmentsWidth(hintRow) + segmentsWidth(hint) <= columns ? [...hintRow, ...hint] : hintRow : withRight(hintRow, hint, columns);
+    if (fitted !== hintRow) break;
   }
-  return out;
+  fitted.push(...buttons.filter((button) => !fitted.includes(button)).map((button) => ({ ...button, hidden: true })));
+  const lines = separateHint ? [title, fitted] : [fitted];
+  if (!chapter.expanded) return { lines: [...lines, [text(`    ${truncate(chapter.choice, width)}`, dim)]], height: 2 };
+  lines.push(...notes.slice(page * size, (page + 1) * size).map((line) => [text(`    ${line}`, dim)]));
+  return { lines, height: headingRows + Math.min(size, notes.length) };
 }
 function grid(card, columns, words) {
   const widths = [
@@ -11104,7 +11116,9 @@ function bodyLines(card, g, width, P3, words, room) {
   if (!rows.length) return names.slice(0, room);
   const at = Math.max(0, focus);
   const most = Math.max(1, room - 1);
-  if (rows[at].length > most) rows[at] = rowLines(card.rows[at], at === focus, g, width, P3, words, most);
+  if (rows[at].length > most) {
+    rows[at] = rowLines(card.rows[at], at === focus, g, width, P3, words, most).slice(0, room);
+  }
   const keep = /* @__PURE__ */ new Set([at]);
   let used = rows[at].length + 1;
   for (let i = 0; i < rows.length; i++) {
@@ -11829,7 +11843,7 @@ import { spawn as spawn2 } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.30";
+var VERSION = "0.4.31";
 var MIN_CODEX = "0.171";
 function tooOld(output2) {
   const match = /codex-cli (\d+)\.(\d+)\.(\d+)/.exec(output2);
@@ -12187,6 +12201,7 @@ function drawLine(line, width, y, hits, frame = 0) {
     } else {
       if (segment.hidden) continue;
       text2 = segment.face ?? segment.label;
+      if (segment.action.type === "chapter" && segment.hotkey) text2 = `${segment.hotkey}: ${text2}`;
       style = segment.style ?? { ...segment.bold && { bold: true }, ...segment.dim && { dim: true }, ...segment.color && { color: segment.color } };
       if (segment.detail && !segment.face) text2 += ` ${segment.detail}`;
     }

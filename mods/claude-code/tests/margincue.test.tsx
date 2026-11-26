@@ -178,6 +178,53 @@ const cli = { origin: { kind: 'composer' as const }, presentation: { isFullscree
 
 const WIDE = { ...BAND, surface: 'terminal' as const, props: { ...BAND.props, maxRows: 18, bodyColumns: 100 } }
 
+test('the terminal mounts chapter shortcuts with one key prefix and handles paging and dismissal', async ($, on) => {
+  const { calls, store } = world(on)
+  store.set('settings', { read: 'key', user: { work: ['ml'], levels: { 'ml-research': 'expert' }, decide: [] } })
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  await composer($).edit(edit('Compare learning rates for a neural network using paired training seeds', '.'))
+  const ui = await $.ui.mount({ ...WIDE, props: { ...WIDE.props, maxRows: 14, bodyColumns: 80 } })
+  const control = async (key: string, hotkey: string, label: string) => {
+    const button = await ui.find({ key: `chapter-${key}` })
+    expect(button?.props).toMatchObject({ hotkey, label })
+    expect(button?.text).not.toMatch(/^[bnz]\s/)
+  }
+  await control('toggle', 'b', 'expand')
+  await ui.press({ key: 'chapter-toggle' })
+  await control('toggle', 'b', 'collapse')
+  await control('next', 'n', 'next 1/2')
+  await ui.press({ key: 'chapter-next' })
+  await control('next', 'n', 'next 2/2')
+  await ui.press({ key: 'chapter-next' })
+  await control('next', 'n', 'next 1/2')
+  await control('drop', 'z', 'drop')
+  await ui.press({ key: 'chapter-drop' })
+  expect(await ui.find({ type: 'Text', text: /§ Neural networks/ })).toBeUndefined()
+  expect(calls).toHaveLength(0)
+})
+
+test('chapter shortcuts still expand, page, and dismiss when their buttons are hidden', async ($, on) => {
+  const { store } = world(on)
+  store.set('settings', { read: 'key', user: { work: ['ml'], levels: { 'ml-research': 'expert' }, decide: [] } })
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  await composer($).edit(edit('Compare learning rates for a neural network using paired training seeds', '.'))
+  const ui = await $.ui.mount({ ...WIDE, props: { ...WIDE.props, maxRows: 3, bodyColumns: 54 } })
+  const pressHidden = async (key: string, hotkey: string) => {
+    expect((await ui.find({ type: 'Box', key }))?.props.display).toBe('none')
+    expect((await ui.find({ type: 'Button', key }))?.props.hotkey).toBe(hotkey)
+    await ui.press({ key })
+  }
+  await pressHidden('chapter-toggle', 'b')
+  expect(await ui.find({ type: 'Text', text: /Theory\./ })).toBeDefined()
+  const page = async () => (await ui.find({ type: 'Button', key: 'chapter-next' }))?.props.label
+  expect(await page()).toMatch(/^next 1\/\d+$/)
+  await pressHidden('chapter-next', 'n')
+  expect(await page()).toMatch(/^next 2\/\d+$/)
+  expect(await ui.find({ type: 'Text', text: /Theory\./ })).toBeUndefined()
+  await pressHidden('chapter-drop', 'z')
+  expect(await ui.find({ type: 'Text', text: /§ Neural networks/ })).toBeUndefined()
+})
+
 test('the card reads a draft, shows typed controls, and sends its whole plan with what the person set', async ($, on) => {
   const { clock, calls } = world(on, replies())
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
@@ -509,6 +556,242 @@ function panel(on: Engine, answer: (question: PanelSpec) => string | null) {
   return asked
 }
 const replyTo = (answers: Record<string, string>) => (question: PanelSpec) => answers[question.question] ?? null
+
+const PASTE = '[Pasted text #1 +9 lines]'
+const SINGLE_LINE_PASTE = '[Pasted text #2]'
+const PASTE_HINT = 'MarginCue reads pasted text when you press Enter.'
+const START_TERMINAL = { cwd: '/project', surface: 'terminal', isInteractive: true } as const
+
+const pasteInBox = ($: Parameters<TestBody>[0], text: string) => composer($).change({ text, cursor: text.length, origin: { kind: 'engine' } })
+const clearBox = ($: Parameters<TestBody>[0]) => composer($).change({ text: '', cursor: 0, origin: { kind: 'clear' } })
+
+test('a collapsed paste hides the old card, then Enter reads the expanded draft and sends the panel answers', async ($, on) => {
+  const privateText = 'unpublishedmetrics'
+  const { clock, calls, files, store } = world(on, replies(CARD.replace('export_rows', privateText)))
+  const asked = panel(on, replyTo({ 'Rows: export …?': 'all rows', 'Run it …?': 'from the terminal', 'Batch: write … per batch?': '100 rows' }))
+  const statuses: (string | undefined)[] = []
+  on('ui.status', (_, e) => {
+    statuses.push(e.text)
+    return { value: undefined }
+  })
+  await $.session.start(START_TERMINAL)
+  const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
+  const log = '/project/paste-log.jsonl'
+  await command(`log ${log}`)
+  const lead = `${DRAFT}.`
+  await composer($).edit(edit(DRAFT, '.'))
+  await clock.settle()
+  const ui = await $.ui.mount(WIDE)
+  expect(await ui.find({ key: 'card-c1-0' })).toBeDefined()
+  const before = calls.length
+  await pasteInBox($, `${lead} ${PASTE}`)
+  await clock.advance(2000)
+  expect(calls).toHaveLength(before)
+  expect((await ui.find({ type: 'Text', text: PASTE_HINT }))?.props.dimColor).toBe(true)
+  expect(await ui.find({ type: 'Button' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /You want a CSV export/ })).toBeUndefined()
+
+  const full = `${lead}\nUse the ${privateText} input for CSV.`
+  await clearBox($)
+  const pending = $.prompt.submit({ ...cli, text: full, wait: false })
+  await clock.settle()
+  expect(statuses.at(-1)).toBe('reading pasted text…')
+  expect(asked).toHaveLength(0)
+  await clock.advance(1000)
+  expect((await pending).text).toBe(`${full}\n\nDecisions:\n- Export all rows.\n- Run it from the terminal.\n- Write 100 rows per batch.`)
+  expect(asked.map(({ header }) => header)).toEqual(['Rows', 'Runs in', 'Batch'])
+  expect(statuses.at(-1)).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: PASTE_HINT })).toBeUndefined()
+  expect(calls.slice(before)).toHaveLength(1)
+  expect(calls[before]).toContain(`Draft:\n<<<\n${full}\n>>>`)
+  expect(store.get('learned:/project')).toBeUndefined()
+  await command('log off')
+  expect(files.get(log)).toContain('card-pick')
+  expect(files.get(log)).not.toContain(privateText)
+})
+
+test('paste only: the single-line placeholder waits, then a closed panel sends the expanded prompt', async ($, on) => {
+  const { clock, calls } = world(on, replies())
+  const asked = panel(on, () => null)
+  await $.session.start(START_TERMINAL)
+  const full = 'export'.repeat(1500)
+  await pasteInBox($, SINGLE_LINE_PASTE)
+  const ui = await $.ui.mount(WIDE)
+  expect(await ui.find({ type: 'Text', text: PASTE_HINT })).toBeDefined()
+  await clock.advance(2000)
+  expect(calls).toHaveLength(0)
+  await clearBox($)
+  const pending = $.prompt.submit({ ...cli, text: full, wait: false })
+  await clock.settle()
+  await clock.advance(1000)
+  expect(asked.map(({ header }) => header)).toEqual(['Rows'])
+  const sent = (await pending).text
+  expect(sent?.startsWith(`${full}${OPEN_CHOICES}`)).toBe(true)
+  expect(sent?.endsWith(EXPORT_QUESTION + RUN_QUESTION + BATCH_QUESTION)).toBe(true)
+  expect(calls).toHaveLength(1)
+  expect(calls[0]).toContain(`Draft:\n<<<\n${full}\n>>>`)
+})
+
+test('a submit whose placeholder text did not expand does not trigger the Enter reading', async ($, on) => {
+  const { calls, clock } = world(on, replies())
+  const asked = panel(on, () => null)
+  await $.session.start(START_TERMINAL)
+  await pasteInBox($, PASTE)
+  await clearBox($)
+  expect((await $.prompt.submit({ ...cli, text: PASTE, wait: false })).text).toBe(PASTE)
+  await clock.settle()
+  expect(calls).toHaveLength(0)
+  expect(asked).toHaveLength(0)
+})
+
+test('two collapsed pastes produce one reading, with no panel when nothing is open', async ($, on) => {
+  const { clock, calls, store } = world(on, replies('read | Vous voulez un export CSV.\nkind | build'))
+  store.set('settings', { language: 'auto' })
+  const asked = panel(on, () => null)
+  await $.session.start(START_TERMINAL)
+  const prefix = 'Voici les critères pour un export : '
+  await composer($).edit(edit('', prefix))
+  await pasteInBox($, prefix + PASTE)
+  await pasteInBox($, `${prefix}${PASTE} ${SINGLE_LINE_PASTE}`)
+  const ui = await $.ui.mount(WIDE)
+  expect((await ui.find({ type: 'Text', text: 'MarginCue lit le texte collé quand vous appuyez sur Entrée.' }))?.props.dimColor).toBe(true)
+  await clock.advance(2000)
+  expect(calls).toHaveLength(0)
+  const full = `${prefix}exporter les lignes filtrées. Utiliser les filtres de la page.`
+  await clearBox($)
+  const pending = $.prompt.submit({ ...cli, text: full, wait: false })
+  await clock.settle()
+  await clock.advance(1000)
+  expect((await pending).text).toBe(full)
+  expect(asked).toHaveLength(0)
+  expect(calls).toHaveLength(1)
+  expect(calls[0]).toContain(`Draft:\n<<<\n${full}\n>>>`)
+})
+
+test('removing the last collapsed paste restores the normal card for the remaining draft', async ($, on) => {
+  const { clock, calls, store } = world(on, replies())
+  store.set('settings', { sketch: false })
+  await $.session.start(START_TERMINAL)
+  const lead = `${DRAFT} `
+  await composer($).edit(edit('', lead))
+  await pasteInBox($, lead + PASTE)
+  const ui = await $.ui.mount(WIDE)
+  expect(await ui.find({ type: 'Text', text: PASTE_HINT })).toBeDefined()
+  await composer($).edit({ ...edit(lead + PASTE, ''), key: { key: 'backspace' }, start: lead.length })
+  await clock.advance(2000)
+  expect(await ui.find({ type: 'Text', text: PASTE_HINT })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /You want a CSV export/ })).toBeDefined()
+  expect(calls).toHaveLength(1)
+  expect(calls[0]).toContain(`Draft:\n<<<\n${lead}\n>>>`)
+  const sent = await $.prompt.submit({ ...cli, text: lead, wait: false })
+  expect(sent.text).toContain(EXPORT_QUESTION)
+  expect(calls).toHaveLength(1)
+})
+
+test('a collapsed paste with a stalled reading goes through as written within the hook budget', async ($, on) => {
+  let release!: (result: ModelCompleteResult) => void
+  const reply = new Promise<ModelCompleteResult>((resolve) => { release = resolve })
+  const { clock, calls } = world(on, replies(), { failure: () => reply })
+  const asked = panel(on, () => null)
+  const statuses: (string | undefined)[] = []
+  on('ui.status', (_, e) => {
+    statuses.push(e.text)
+    return { value: undefined }
+  })
+  await $.session.start(START_TERMINAL)
+  await pasteInBox($, PASTE)
+  await clearBox($)
+  const full = `${DRAFT}. Use the exact filters from the page.`
+  const pending = $.prompt.submit({ ...cli, text: full, wait: false })
+  await clock.settle()
+  expect(statuses.at(-1)).toBe('reading pasted text…')
+  await clock.advance(8000)
+  expect((await pending).text).toBe(full)
+  expect(statuses.at(-1)).toBeUndefined()
+  release({ isAnswered: true, text: CARD, usage: USAGE })
+  await clock.settle()
+  expect(asked).toHaveLength(0)
+  expect(calls).toHaveLength(1)
+  const ui = await $.ui.mount(WIDE)
+  expect(await ui.find({ type: 'Text', text: /You want a CSV export/ })).toBeUndefined()
+})
+
+for (const [name, settings] of [['mode off', { mode: 'off' }], ['read key', { read: 'key' }], ['card off', { sheet: false }]] as const) {
+  test(`a collapsed paste in ${name} goes straight through`, async ($, on) => {
+    const { clock, calls, store } = world(on, replies())
+    const asked = panel(on, () => null)
+    store.set('settings', settings)
+    await $.session.start(START_TERMINAL)
+    await pasteInBox($, `${DRAFT} ${PASTE}`)
+    await clock.advance(2000)
+    const ui = await $.ui.mount(WIDE)
+    expect(await ui.find({ type: 'Text', text: PASTE_HINT })).toBeUndefined()
+    await clearBox($)
+    const full = `${DRAFT} using the existing filters.`
+    expect((await $.prompt.submit({ ...cli, text: full, wait: false })).text).toBe(full)
+    expect(calls).toHaveLength(0)
+    expect(asked).toHaveLength(0)
+  })
+}
+
+test('a collapsed paste in shell mode or a slash or host command is sent without a reading', async ($, on) => {
+  const { calls, clock } = world(on, replies())
+  const asked = panel(on, () => null)
+  await $.session.start(START_TERMINAL)
+  const hint = { plugin: 'margincue', component: 'PromptHint', requestId: 'hint', surface: 'terminal' } as const
+  const shell = await $.ui.mount({ ...hint, props: { hint: 'shell mode', isWorking: false, isDraft: false } })
+  const shellText = 'git log --oneline --max-count=10'
+  await pasteInBox($, `${shellText} ${PASTE}`)
+  await clock.advance(2000)
+  await clearBox($)
+  expect((await $.prompt.submit({ ...cli, text: shellText, wait: false })).text).toBe(shellText)
+  await shell.unmount()
+  await $.ui.mount({ ...hint, props: { hint: 'Press ? for shortcuts', isWorking: false, isDraft: false } })
+  for (const [prefix, args] of [['/compact ', 'the database changes since yesterday'], ['# ', 'Remember the export requirements for later']] as const) {
+    await pasteInBox($, prefix + PASTE)
+    await clock.advance(2000)
+    await clearBox($)
+    const full = prefix + args
+    expect((await $.prompt.submit({ ...cli, text: full, wait: false })).text).toBe(full)
+  }
+  expect(calls).toHaveLength(0)
+  expect(asked).toHaveLength(0)
+})
+
+test('a collapsed paste sent while a turn is running does not hold the prompt for a reading', async ($, on) => {
+  const { calls, clock } = world(on, replies())
+  const asked = panel(on, () => null)
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  await $.session.start(START_TERMINAL)
+  await $.turn.start({ text: 'Implement the export.', turnId: 'running' })
+  await pasteInBox($, PASTE)
+  await clock.advance(2000)
+  const ui = await $.ui.mount(WIDE)
+  expect(await ui.find({ type: 'Text', text: PASTE_HINT })).toBeUndefined()
+  await clearBox($)
+  const full = `${DRAFT} using the existing filters.`
+  expect((await $.prompt.submit({ ...cli, text: full, wait: false })).text).toBe(full)
+  expect(calls).toHaveLength(0)
+  expect(asked).toHaveLength(0)
+})
+
+test('short uncollapsed pastes and typed mentions of a placeholder still get the normal draft reading', async ($, on) => {
+  const { calls, clock, store } = world(on, replies())
+  store.set('settings', { sketch: false })
+  await $.session.start(START_TERMINAL)
+  const paste = `${DRAFT}.`
+  await composer($).edit({ ...edit('', paste), key: undefined })
+  await clock.settle()
+  expect(calls).toHaveLength(1)
+  expect(calls[0]).toContain(`Draft:\n<<<\n${paste}\n>>>`)
+  const mention = ' Please preserve the literal [Pasted text #1] in the instructions.'
+  await composer($).edit(edit(paste, mention))
+  await clock.advance(1000)
+  expect(calls).toHaveLength(2)
+  expect(calls[1]).toContain(`Draft:\n<<<\n${paste}${mention}\n>>>`)
+  const ui = await $.ui.mount(WIDE)
+  expect(await ui.find({ type: 'Text', text: PASTE_HINT })).toBeUndefined()
+})
 
 test('in the desktop app the draft is unseen while typed: its open choices come at Enter, in Claude\'s own question panel', async ($, on) => {
   const { clock } = world(on, replies())

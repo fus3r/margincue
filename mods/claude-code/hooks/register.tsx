@@ -8,7 +8,7 @@
 import { atom, read } from 'claude-code'
 import type { Elements, EngineInterface, ModelCompleteResult, PromptDecoration, Register, RenderSurface } from 'claude-code'
 
-import { createCore, DEPTHS, isHostCommand, MODES, SCOPES, splitDecisions } from '../core/index'
+import { createCore, DEPTHS, draftLanguage, isHostCommand, MODES, SCOPES, splitDecisions } from '../core/index'
 import type { Assets, Core, Depth, Effect, Event, LanguageSetting, Mode, Origin, ReadingMode, Scope, SendSetting, StateLoad, Timing, View } from '../core/index'
 import { DEFAULT_SEND } from '../core/types'
 import type { MargincueBand, MargincueExpert, MargincueReceipt, MargincueRow } from '../types'
@@ -20,6 +20,7 @@ import { ASSETS } from './assets'
 import { DARK, currentOption, layoutBandRows, paletteFor, scopeLabel, thinkingLabel } from './band'
 import type { Action, Palette, Segment } from './band'
 import { layoutReceipt, layoutSent, splitSent } from './card-view'
+import { CollapsedPaste } from './collapsed-paste'
 import { CARD_KEEP_KEY, CARD_READ_KEY, RECEIPT_DIFF_KEY } from './segments'
 import { openChoiceEdits } from './edit-opener'
 import { rankReceiptEdits } from './receipt-impact'
@@ -75,8 +76,7 @@ const expert = atom({ plugin: 'margincue', key: 'expert' } as const, null)
 
 // The module's own state. A hot reload starts it over; session.start then
 // rebuilds the core from the stored settings and the box as it stands.
-/** How long a prompt sent from an app waits on its card before it goes as it stands. */
-/** Longest wait for the reading at Enter. A model call never counts against a hook's own 10 s, so this is wall time. */
+/** How long an app waits for a reading at Enter. Model calls do not count against the hook's own 10 s. */
 const READ_WAIT_MS = 60000
 /** Claude's own dialog under MarginCue's card in an app: send with the card, or as written; "Other" adds to the prompt. */
 const GATE_QUESTION = 'Which prompt should Claude use?'
@@ -106,6 +106,8 @@ const host = {
   watcher: null as { cancel: () => void } | null,
   scopes: new Map<string, Scope>(),
   lastDraft: '',
+  paste: new CollapsedPaste(),
+  readingPaste: false,
   restoring: false,
   /** During a turn: the focused agent choice's options, which a bare digit in the empty composer picks. */
   bandChoices: [] as { row: string; option: number }[],
@@ -175,6 +177,10 @@ function currentDepth(): Depth {
 }
 
 function enabled(): boolean { return host.settings.mode !== 'off' }
+
+function readsCollapsedPaste(): boolean {
+  return enabled() && host.settings.read === 'auto' && host.settings.sheet && host.arm !== 'control' && !host.shell && !host.activeTurn
+}
 
 function localDate(): string {
   const d = new Date()
@@ -262,7 +268,10 @@ function flushClear($: $): void {
   host.clear = null
   pending.timer.cancel()
   host.scopes.clear()
+  const hadPaste = host.paste.pending
+  host.paste.clear()
   run($, { type: 'draft', now: now(), text: '', origin: 'type', cursor: 0 })
+  if (hadPaste && host.view) publish($, host.view)
 }
 
 function dropClear(): void {
@@ -279,7 +288,7 @@ function fireTimer($: $, at: number): void {
 
 function repaint($: $): void {
   const view = host.view
-  if (!view) return
+  if (!view || host.readingPaste) return
   void $.prompt.paint({ text: view.text, decorations: decorate(view, view.text) }).catch(() => {})
 }
 
@@ -412,6 +421,7 @@ function selectedScope(slot: string, fallback: Scope): Scope {
 function publish($: $, v: View): void {
   const first = v.state?.first
   const canAmend = host.turn?.id && host.turn.id === host.activeTurn
+  const collapsedPaste = host.paste.pending && readsCollapsedPaste()
   const next: MargincueBand = {
     enabled: v.enabled,
     phase: v.phase,
@@ -423,13 +433,14 @@ function publish($: $, v: View): void {
     note: v.note,
     mode: v.state?.mode,
     depth: v.state?.depth,
-    language: v.state?.language,
+    language: collapsedPaste && host.settings.language === 'auto' ? draftLanguage(host.paste.text) : v.state?.language,
     marks: v.state?.marks,
     first: first ? { ...first, scope: selectedScope(first.slot, first.scope) } : null,
     open: v.state?.open,
     ...(canAmend && v.amendment && { amendment: v.amendment }),
+    ...(collapsedPaste && { collapsedPaste: true }),
     ...(v.canReadCard && { canReadCard: true }),
-    ...(v.card && (v.card.stage !== 'turn' || host.activeTurn !== null) && { card: v.card }),
+    ...(v.card && !host.readingPaste && (v.card.stage !== 'turn' || host.activeTurn !== null) && { card: v.card }),
     ...(v.expert?.phase === 'reviewing' && { reviewPending: true }),
     canReview: host.core?.canReview(v.profile) ?? false,
   }
@@ -593,31 +604,40 @@ type PanelQuestion = {
 }
 
 /**
- * The card for a prompt sent from an app whose draft MarginCue never saw (the desktop app, VS Code, a phone): read at
- * Enter, then its open choices asked in Claude's own question panel, one after another. Each keeps the panel's
+ * Read a draft first seen in full at Enter, then ask its open choices in Claude's own question panel. Each keeps the panel's
  * "Other", where the person adds what the question made them think of: their words go as that choice's Decision.
  * The panel is the engine's own (`$.ui.ask`), never counted against a hook's 10 s, so the person answers in their
  * own time. Closing it stops the questions; what is set so far goes. Nothing open: the prompt goes once read.
  */
-async function askAtEnter($: $, text: string): Promise<{ how: Held; addition?: string }> {
+async function askAtEnter($: $, text: string, pasteWaitMs?: number): Promise<{ how: Held; addition?: string }> {
+  const transient = pasteWaitMs !== undefined
+  if (transient && pasteWaitMs <= 0) return { how: 'raw' }
   const atEnter = !host.terminal && /desktop/i.test(host.appHost ?? '')
-  run($, { type: 'draft', now: now(), text, origin: 'paste', cursor: text.length, atEnter, afterEnter: true })
-  if (host.settings.read === 'key') return { how: 'send' }
-  const card = await readAtEnter($)
-  if (!card) return { how: 'send' }
-  if (host.appHost) return gateAtEnter($)
-  for (const question of panelQuestions(card)) {
-    let answer: string
-    try {
-      answer = await $.ui.ask(question.question, { options: question.labels, header: question.header, ...(question.many && { multiSelect: true as const }) })
-    } catch {
-      break
+  host.readingPaste = transient
+  try {
+    run($, { type: 'draft', now: now(), text, origin: 'paste', cursor: text.length, atEnter, afterEnter: true,
+      ...(transient && { transient: true }) })
+    if (host.settings.read === 'key') return { how: 'send' }
+    if (transient) $.ui.status(host.view?.state?.language === 'fr' ? 'lecture du texte collé…' : 'reading pasted text…')
+    const card = await readAtEnter($, pasteWaitMs).finally(() => {
+      if (transient) $.ui.status(undefined)
+    })
+    if (!card) return { how: transient && card === undefined ? 'raw' : 'send' }
+    if (host.appHost && !transient) return gateAtEnter($)
+    for (const question of panelQuestions(card)) {
+      let answer: string
+      try {
+        answer = await $.ui.ask(question.question, { options: question.labels, header: question.header, ...(question.many && { multiSelect: true as const }) })
+      } catch {
+        break
+      }
+      // Skip answers with a bracketed marker ("[No preference]"): that choice is left to Claude.
+      if (!skipped(answer)) answerRow($, question, answer)
     }
-    // Skip answers with a bracketed marker ("[No preference]"): that choice is left to Claude.
-    if (skipped(answer)) continue
-    answerRow($, question, answer)
+    return { how: 'asked' }
+  } finally {
+    host.readingPaste = false
   }
-  return { how: 'asked' }
 }
 
 /** The dialog's Skip answers "[No preference]"; typed text in brackets is still the person's words. */
@@ -797,18 +817,19 @@ function drawGateCard($: $, ui: Elements[RenderSurface], card: NonNullable<Margi
   )
 }
 
-/** The card once read, or null when nothing in it is open. A model call in flight costs the hook nothing. */
-function readAtEnter($: $): Promise<NonNullable<View['card']> | null> {
+/** The card once read, null when nothing is open, or undefined when the reading failed or timed out. */
+function readAtEnter($: $, pasteWaitMs?: number): Promise<NonNullable<View['card']> | null | undefined> {
   return new Promise((resolve) => {
-    const timer = $.clock.after(READ_WAIT_MS, () => finish(null))
+    const timer = $.clock.after(pasteWaitMs ?? READ_WAIT_MS, () => finish(undefined))
     const watch = $.clock.every(250, () => {
       const card = host.view?.card
       if (!card || card.stage !== 'draft') return finish(null)
       if (card.reading) return
+      if (pasteWaitMs !== undefined && card.error) return finish(undefined)
       const open = card.rows.length > 0 || card.mentions.some((mention) => mention.status === 'missing')
       finish(open ? card : null)
     })
-    const finish = (card: NonNullable<View['card']> | null) => {
+    const finish = (card: NonNullable<View['card']> | null | undefined) => {
       timer.cancel()
       watch.cancel()
       resolve(card)
@@ -1262,6 +1283,7 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
   host.interactive = interactive
   host.arm = null
   host.lastDraft = ''
+  host.paste.clear()
   host.restoring = false
   host.bandChoices = []
   host.scopes.clear()
@@ -1333,9 +1355,19 @@ async function reopen($: $): Promise<void> {
   if (box.text !== '') rememberDraft($, box.text, 'open', box.cursor)
 }
 
-function rememberDraft($: $, text: string, origin: Origin, cursor: number, edit?: { start: number; end: number; text: string }): void {
-  if (text.trim() && !isHostCommand(text)) host.lastDraft = text
-  run($, { type: 'draft', now: now(), text, origin, ...(edit && { edit }), cursor }, origin !== 'type' && origin !== 'paste')
+function rememberDraft($: $, text: string, origin: Origin, cursor: number, edit?: { start: number; end: number; text: string }, engineWrite = false): void {
+  const hadPaste = host.paste.pending
+  if (host.terminal && !host.shell && !isHostCommand(text)) host.paste.update(text, cursor, edit, engineWrite)
+  else host.paste.clear()
+  if (host.paste.pending) {
+    // An empty draft clears the old card and cancels any reading that was in flight.
+    host.lastDraft = ''
+    run($, { type: 'draft', now: now(), text: '', origin: 'type', cursor: 0 }, false)
+  } else {
+    if (text.trim() && !isHostCommand(text)) host.lastDraft = text
+    run($, { type: 'draft', now: now(), text, origin, ...(edit && { edit }), cursor }, origin !== 'type' && origin !== 'paste')
+  }
+  if ((hadPaste || host.paste.pending) && host.view) publish($, host.view)
 }
 
 async function review($: $, profile: string, fromCommand = false): Promise<string> {
@@ -1661,6 +1693,7 @@ export const register: Register = (on) => {
       host.blankOld.clear()
       host.receiptChoice = null
       host.lastDraft = ''
+      host.paste.clear()
       host.scopes.clear()
       run($, { type: 'sessionReset', now: now() })
       await Promise.all([host.eventLog.flush(logIO($)), host.trialLog.stop(logIO($))])
@@ -1711,7 +1744,8 @@ export const register: Register = (on) => {
     }
     flushClear($)
     const origin: Origin = host.restoring ? 'restore' : kind === 'history' || kind === 'undo' ? 'history' : kind === 'clear' ? 'type' : 'fill'
-    rememberDraft($, e.text, origin, e.cursor)
+    if (host.shell) rememberDraft($, `!${e.text}`, origin, e.cursor + 1)
+    else rememberDraft($, e.text, origin, e.cursor, undefined, kind === 'engine')
     log($, 'draft', { origin })
     return next(e)
   })
@@ -1722,14 +1756,20 @@ export const register: Register = (on) => {
       return next(e)
     }
     dropClear()
+    const hadPaste = host.paste.pending
+    const expandedPaste = hadPaste && host.paste.text !== e.text && readsCollapsedPaste() && e.origin.kind === 'composer'
+    host.paste.clear()
+    if (hadPaste && host.view) publish($, host.view)
     let addition: string | undefined
     let raw = false
     let plan = true
     // An app (desktop, VS Code, phone) never shows MarginCue the draft while it is typed: the card comes at Enter,
     // before Claude starts, and the prompt goes when the person sends it (or as written).
     // The engine stamps the desktop app's typed prompts `composer` as well: the app, not the stamp, says the draft was unseen.
-    if ((host.appHost || e.origin.kind !== 'composer') && !e.turnId && !host.activeTurn && host.view?.text !== e.text && host.settings.mode !== 'off') {
-      const asked = await askAtEnter($, e.text)
+    if ((host.appHost || e.origin.kind !== 'composer' || expandedPaste) && !e.turnId && !host.activeTurn && host.view?.text !== e.text && enabled()) {
+      // Leave time to clear the reading and hand the original prompt on if it times out.
+      const pasteWaitMs = expandedPaste ? Math.min(TIMEOUT_MS, next.budget.remainingMs - 500) : undefined
+      const asked = await askAtEnter($, e.text, pasteWaitMs)
       addition = asked.addition
       raw = asked.how === 'raw'
       plan = asked.how !== 'asked'
@@ -1842,9 +1882,9 @@ export const register: Register = (on) => {
       run($, { type: 'cardShown', now: now(), id: card.id }, false)
       return drawChoicesApp($, $.ui.resolve(e), card, e.props.maxRows ?? 12)
     }
-    const rows = state?.enabled && (state.hasDraft || state.amendment || card || state.reviewPending)
+    const rows = state?.enabled && (state.collapsedPaste || state.hasDraft || state.amendment || card || state.reviewPending)
       ? layoutBandRows(state, e.props.bodyColumns, 'ctrl+x tab', e.props.maxRows, host.palette) : []
-    if (state?.canReadCard) {
+    if (state?.canReadCard && (e.props.maxRows ?? 1) > 0) {
       const button: Segment = { kind: 'button', key: 'card-read', hotkey: CARD_READ_KEY, dim: true,
         label: state.language === 'fr' ? 'lire le brouillon' : 'read draft', action: { type: 'cardRead' } }
       if (rows.length) rows[0]!.push({ ...button, hidden: true })

@@ -120,6 +120,13 @@ function compile(rules: Rules): CompiledRules {
 
 const FR = new Set('je tu vous le la les des du un une et pour dans avec sur puis pas cette ces aux peux faut voici stp'.split(' '))
 const EN = new Set('i you the this these that a an and for in with on of then not please can must only'.split(' '))
+
+export function draftLanguage(text: string, words = new Words(text)): Language {
+  const fr = words.tokens.filter((t) => FR.has(t)).length
+  const en = words.tokens.filter((t) => EN.has(t)).length
+  return fr > en || (fr === en && /[àâçéèêëîïôùûüœ]/i.test(text)) ? 'fr' : 'en'
+}
+
 const DELEGATE = [
   "don't ask", 'do not ask', 'you decide', 'use your judgment', 'fais au mieux', 'décide toi-même',
   'ne me demande pas', 'carte blanche',
@@ -148,9 +155,7 @@ export class DecisionDraft {
     const words = new Words(body)
     this.items = items
     this.words = (body.match(/[\p{L}\p{N}_]+(?:['’-][\p{L}\p{N}_]+)*/gu) ?? []).length
-    const fr = words.tokens.filter((t) => FR.has(t)).length
-    const en = words.tokens.filter((t) => EN.has(t)).length
-    this.language = fr > en || (fr === en && /[àâçéèêëîïôùûüœ]/i.test(body)) ? 'fr' : 'en'
+    this.language = draftLanguage(body, words)
     this.rigor = inferRigor(words)
     // The later explicit instruction wins within the draft.
     this.directive = directive(words)

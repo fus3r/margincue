@@ -77,7 +77,9 @@ export type Event =
       eagerPlan: boolean
     }
   /** `atEnter`: the host can show the draft's card while holding the prompt at Enter. */
-  | { type: 'draft'; now: number; text: string; origin: Origin; edit?: Splice; cursor?: number; atEnter?: boolean; afterEnter?: true }
+  | { type: 'draft'; now: number; text: string; origin: Origin; edit?: Splice; cursor?: number; atEnter?: boolean; afterEnter?: true;
+      /** Read an expanded paste once, without a cached reading, a sketch or learned picks. */
+      transient?: true }
   | { type: 'timer'; now: number }
   | { type: 'reply'; now: number; req: number; text: string; done: boolean; ok?: boolean }
   | { type: 'pick'; now: number; cue: string; option: number | string | null; cycle?: true }

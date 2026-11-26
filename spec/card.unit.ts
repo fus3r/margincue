@@ -353,8 +353,8 @@ test('the general card request starts with the draft and contains no chapter not
   assert.equal(req?.kind, 'card')
   const general = createCore(ASSETS)
   general.handle(config())
-  const [generalReq] = requests(general.handle({ type: 'draft', text, now: 100, origin: 'paste' }))
-  // The default and indexed requests from e512752, including the full system and prompt.
+  const [generalReq] = requests(general.handle({ type: 'draft', text, now: 100, origin: 'type' }))
+  // The default typed request matches v0.4.30, including the full system and prompt.
   assert.equal(createHash('sha256').update(JSON.stringify(generalReq)).digest('hex'),
     '559f254c36cd48b28b79a88025b421dabf22ed3fc9d96bd3fc991ac89f764929')
   assert.equal(createHash('sha256').update(JSON.stringify(req)).digest('hex'),
@@ -362,6 +362,25 @@ test('the general card request starts with the draft and contains no chapter not
   assert.ok(req!.prompt.startsWith(`Draft:\n<<<\n${text}\n>>>`))
   assert.doesNotMatch([req!.prompt, ...req!.system].join('\n'),
     /Profile chapters|\[ml-research\] Resampling|\[product\] Experiments|Rows from the same person|Concurrent random assignment/)
+})
+
+test('a one-off reading at Enter sends a decision without a sketch, a learned pick or a cached reading', () => {
+  const core = createCore(ASSETS)
+  core.handle(config())
+  const draft = { type: 'draft', text: DRAFT, origin: 'paste' } as const
+  const [request] = requests(core.handle({ ...draft, now: 100, afterEnter: true, transient: true }))
+  assert.equal(request?.kind, 'card')
+  const effects = core.handle({ type: 'reply', now: 200, req: request!.req, text: READING, done: true })
+  assert.deepEqual(requests(effects), [])
+  const row = core.currentView().card!.rows[0]!
+  core.handle({ type: 'cardSet', now: 300, row: row.id, option: 1 })
+  const sent = core.handle({ type: 'submit', now: 400, text: DRAFT, plan: false, amendable: false })
+  assert.ok(sent.find((effect) => effect.type === 'submit')?.text.includes('Export all orders.'))
+  assert.equal(sent.some((effect) => effect.type === 'learn'), false)
+
+  const [normal] = requests(core.handle({ ...draft, now: 500 }))
+  assert.equal(normal?.kind, 'card')
+  assert.notEqual(normal!.req, request!.req)
 })
 
 const PRODUCT_DRAFT = 'Plan an A/B test for this feature and tell me what to measure.'
@@ -433,16 +452,18 @@ test('a reference updates to the field level, counts display and expansion, and 
   assert.equal(core.currentView().card?.chapter?.expanded, false)
 })
 
-test('chapter visibility and expansion leave both requests, Decisions, and the receipt byte-for-byte unchanged', () => {
+test('chapter visibility and expansion leave requests, Decisions, and the receipt byte-for-byte unchanged', () => {
   function flow(chapters: boolean) {
     const core = createCore(ASSETS)
-    core.handle(config({ ...PRODUCT_FIELD, chapters, read: 'key', sketch: false }))
+    core.handle(config({ ...PRODUCT_FIELD, chapters, read: 'key' }))
     core.handle({ type: 'draft', now: 100, origin: 'paste', text: PRODUCT_DRAFT })
     assert.equal(Boolean(core.currentView().card?.chapter), chapters)
     assert.deepEqual(requests(core.handle({ type: 'chapter', action: 'toggle' })), [])
     const [general] = requests(core.handle({ type: 'cardRead', now: 200 }))
     assert.equal(general?.kind, 'card')
-    core.handle({ type: 'reply', now: 300, req: general!.req, text: READING, done: true })
+    core.handle({ type: 'reply', now: 300, req: general!.req, text: READING.replace('kind | change', 'kind | build'), done: true })
+    const [sketch] = requests(core.handle({ type: 'timer', now: 300 }))
+    assert.equal(sketch?.kind, 'sketch')
     const [expert] = requests(core.handle({ type: 'review', now: 400, profile: 'product' }))
     assert.equal(expert?.kind, 'expert')
     core.handle({ type: 'cardSet', now: 500, row: core.currentView().card!.rows[0]!.id, option: 1 })
@@ -453,7 +474,7 @@ test('chapter visibility and expansion leave both requests, Decisions, and the r
     assert.ok(submit?.decisions.length)
     assert.deepEqual(receipt?.yours, submit.decisions)
     assert.equal(core.currentView().card?.chapter, undefined)
-    return { general, expert, submit, receipt }
+    return { general, sketch, expert, submit, receipt }
   }
   assert.deepEqual(flow(true), flow(false))
 })

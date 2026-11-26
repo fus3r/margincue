@@ -197,6 +197,7 @@ export function drawLine(line: Segment[], width: number, y: number, hits: Hit[],
     } else {
       if (segment.hidden) continue
       text = segment.face ?? segment.label
+      if (segment.action.type === 'chapter' && segment.hotkey) text = `${segment.hotkey}: ${text}`
       style = segment.style ?? { ...(segment.bold && { bold: true }), ...(segment.dim && { dim: true }), ...(segment.color && { color: segment.color }) }
       if (segment.detail && !segment.face) text += ` ${segment.detail}`
     }

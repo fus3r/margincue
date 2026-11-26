@@ -106,6 +106,7 @@ export type MargincueBand = {
   first?: MargincueStateCue | null
   open?: number
   amendment?: MargincueCue
+  collapsedPaste?: true
   canReadCard?: boolean
   card?: MargincueCard
   reviewPending?: boolean

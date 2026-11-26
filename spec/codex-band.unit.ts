@@ -67,7 +67,7 @@ test('the terminal band shows, updates, and dismisses a reference before any rea
   try {
     const draft = 'Design how reads should work when the read replica falls behind.'
     h.draft(draft)
-    assert.match(h.lines(), /§ Replication, consistency, and isolation · Decide whether to wait/)
+    assert.match(h.lines(), /§ Replication, consistency, and isolation +expand · drop\n {4}Decide whether to wait/)
     const click = (label: string) => {
       const lines = h.lines().split('\n')
       const y = lines.findIndex((line) => line.includes(label))
@@ -75,6 +75,7 @@ test('the terminal band shows, updates, and dismisses a reference before any rea
       h.band.receive({ t: 'click', x: lines[y]!.indexOf(label), y })
     }
     click('expand')
+    assert.match(h.lines(), /collapse · drop/)
     assert.match(h.lines(), /Theory\. Without a freshness guarantee/)
     saveSettings({ ...settings, user: { ...settings.user, levels: { 'system-design': 'expert' } } })
     await until(() => h.lines().includes('Gilbert–Lynch'))

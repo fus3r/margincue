@@ -270,7 +270,7 @@ neural network | neural networks | deep learning | checkpoint selection | early 
 
 **Theory.** A reported run mixes architecture, optimization, data, checkpoint selection and run-to-run variance. Repeated checkpoint selection on the same set adapts the procedure to that set.
 **Workflow.** Match the budget tied to the claim, cross or pair seeds where appropriate, and fix the selection and ablation protocol before final evaluation.
-**Choice.** Distinguish an architectural effect under controls from best achievable performance at a fixed resource budget.
+**Choice.** Separate a controlled comparison from a best-result claim at a fixed budget.
 
 ### Sources
 

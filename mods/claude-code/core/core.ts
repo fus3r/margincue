@@ -253,6 +253,7 @@ export class Core {
   private text = ''
   private atEnter = false
   private afterEnter = false
+  private transientDraft = false
   private cursor = 0
   private textAt = 0
   /** When the person last acted without editing (a pick, accept all, switching on): latency counts from here too. */
@@ -587,12 +588,13 @@ export class Core {
     this.refreshChapter()
   }
 
-  private onDraft({ text, origin, edit, cursor, atEnter, afterEnter }: Extract<Event, { type: 'draft' }>): void {
+  private onDraft({ text, origin, edit, cursor, atEnter, afterEnter, transient }: Extract<Event, { type: 'draft' }>): void {
     const before = this.text
     this.cursor = cursor === undefined ? text.length : Math.max(0, Math.min(text.length, cursor))
     if (text === before && origin === 'type') return
     this.atEnter = atEnter === true
     this.afterEnter = atEnter === true || afterEnter === true
+    this.transientDraft = transient === true
     const splice = edit !== undefined && spliceFits(before, text, edit) ? edit : diffSplice(before, text)
     this.text = text
     if (text !== before) {
@@ -850,6 +852,7 @@ export class Core {
     this.text = ''
     this.atEnter = false
     this.afterEnter = false
+    this.transientDraft = false
     this.cursor = 0
     this.textAt = this.now
     this.cues = []
@@ -1126,7 +1129,7 @@ export class Core {
 
   private cardText(text = this.text): boolean {
     // A host that only sees Enter can read short prompts and headings too.
-    if (this.readSubmittedPrompt) return Boolean(text.trim())
+    if (this.readSubmittedPrompt || this.transientDraft) return Boolean(text.trim())
     return !isHostCommand(text) && wordCount(text) >= CARD_MIN_WORDS
   }
 
@@ -1276,8 +1279,8 @@ export class Core {
       card.dirty = false
     }
     const { system, prompt } = this.cardRequest(card)
-    const key = JSON.stringify([this.profileName, system, prompt])
-    const cached = this.cardCache.get(key)
+    const key = this.transientDraft ? '' : JSON.stringify([this.profileName, system, prompt])
+    const cached = key && this.cardCache.get(key)
     if (cached) {
       this.applyCard(card, cached, this.text)
       return
@@ -1299,8 +1302,9 @@ export class Core {
     const lenses = this.lensBlocks()
     // The project's profiles are the same for every prompt in it: they sit with the cached system text.
     if (lenses.project) system.push(lenses.project)
-    // A pasted wall of text is read from its start and its end: that is where requests and their limits sit.
-    const draft = this.text.length > DRAFT_MAX ? `${this.text.slice(0, DRAFT_MAX * 0.7)}\n[…]\n${this.text.slice(-DRAFT_MAX * 0.3)}` : this.text
+    // Live readings bound the draft by keeping its start and end. A one-off reading at Enter takes the expanded text whole.
+    const draft = !this.transientDraft && this.text.length > DRAFT_MAX
+      ? `${this.text.slice(0, DRAFT_MAX * 0.7)}\n[…]\n${this.text.slice(-DRAFT_MAX * 0.3)}` : this.text
     const lines = ['Draft:', '<<<', draft, '>>>']
     const several = this.mentions.filter((m) => m.status === 'found' && (m.places?.length ?? 0) > 1)
     const found = this.mentions.filter((m) => m.status === 'found' && !several.includes(m)).slice(0, 8)
@@ -1398,7 +1402,7 @@ export class Core {
     card.req = null
     if (ok) {
       const parsed = parseCard(card.buffer)
-      this.cardCache.set(card.reqKey, parsed)
+      if (card.reqKey) this.cardCache.set(card.reqKey, parsed)
       this.applyCard(card, parsed, card.reqText)
       this.metric('card-reply', { req, card: card.id, ok, ms: this.now - card.reqAt, rows: parsed.rows.length, kind: parsed.kind, read: parsed.read !== null })
     } else {
@@ -1453,7 +1457,7 @@ export class Core {
     }
     this.fixCardFocus()
     // A reading for the draft as it stands means the draft has rested since it was asked: sketch at once.
-    if (!partial && this.sketchEnabled && this.assets.sketchSystem && canSketch(card.kind) && text === this.text) {
+    if (!partial && !this.transientDraft && this.sketchEnabled && this.assets.sketchSystem && canSketch(card.kind) && text === this.text) {
       card.sketchDue = this.now
     }
   }
@@ -1530,7 +1534,7 @@ export class Core {
     row.picked = !commit && card.stage === 'draft' && sameSelection(next, row.learned ?? row.defaults) ? null : next
     this.actionAt = this.now
     this.metric('card-pick', {
-      card: card.id, row: row.key, origin: row.origin, stage: card.stage, option: next.join('+'), commit,
+      card: card.id, ...(!this.transientDraft && { row: row.key }), origin: row.origin, stage: card.stage, option: next.join('+'), commit,
       ms: card.shownAt === null ? null : this.now - card.shownAt,
     })
     if (card.stage === 'turn') {
@@ -1560,7 +1564,7 @@ export class Core {
     row.said = said
     row.picked = []
     this.actionAt = this.now
-    this.metric('card-pick', { card: card.id, row: row.key, origin: row.origin, stage: card.stage, option: 'said', commit: true,
+    this.metric('card-pick', { card: card.id, ...(!this.transientDraft && { row: row.key }), origin: row.origin, stage: card.stage, option: 'said', commit: true,
       ms: card.shownAt === null ? null : this.now - card.shownAt })
   }
 
@@ -1746,7 +1750,7 @@ export class Core {
         picked: card?.rows.filter((row) => row.picked !== null).length ?? 0,
         reading: card ? card.req !== null : false, sketch: card?.sketch?.pinned ?? false,
       })
-      for (const row of card?.rows ?? []) {
+      for (const row of this.transientDraft ? [] : card?.rows ?? []) {
         if (row.picked !== null && row.origin !== 'repo' && row.type !== 'many') {
           this.out.push({ type: 'learn', key: row.key, label: rowValue(row, row.picked) })
         }

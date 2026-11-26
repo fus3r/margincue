@@ -6,7 +6,9 @@ import type { MargincueBand, MargincueCard, MargincueRow } from '../mods/claude-
 const { layoutBandRows, segmentsWidth, cells, tidySketch, DARK, LIGHT, paletteFor } = await import('../mods/claude-code/hooks/band')
 const { layoutCard, layoutReceipt, layoutSent, splitSent } = await import('../mods/claude-code/hooks/card-view')
 const { parseCard, parseSketch } = await import('../mods/claude-code/core/card')
+const { createCore } = await import('../mods/claude-code/core/index')
 const { ASSETS } = await import('../mods/claude-code/hooks/assets')
+const { drawLine } = await import('../mods/codex/src/terminal')
 
 type Seg = ReturnType<typeof layoutBandRows>[number][number]
 
@@ -56,10 +58,13 @@ const band = (card: MargincueCard): MargincueBand => ({
 
 const buttons = (rows: Seg[][]) => rows.flat().filter((s): s is Extract<Seg, { kind: 'button' }> => s.kind === 'button' && !s.hidden)
 const plain = (line: Seg[]) => line.map((s) => s.kind === 'text' ? s.text : s.kind === 'progress' ? `* ${s.label}` : s.hidden ? '' : s.face ?? s.label).join('')
+// Claude Code's plain Button prints the hotkey before the face or label.
+const chapterPlain = (line: Seg[]) => plain(line.map((s) => s.kind === 'button' && s.action.type === 'chapter' && s.hotkey
+  ? { ...s, face: `${s.hotkey}: ${s.face ?? s.label}` } : s))
 
 test('every level of every chapter fits the terminal widths and can be read in full', () => {
   const base: MargincueCard = { ...CARD, read: null, focus: null, rows: [], mentions: [], sketch: undefined }
-  for (const width of [60, 80, 120]) {
+  for (const width of [60, 76, 78, 80, 120]) {
     for (const { title, notes } of ASSETS.chapters!) {
       for (const note of Object.values(notes)) {
         const choice = note.split('\n')[2]!.slice('Choice. '.length)
@@ -67,16 +72,16 @@ test('every level of every chapter fits the terminal widths and can be read in f
           { ...base, chapter: { title, choice, notes: note, expanded, page } }, width, 8, { chords: true, extra: [] })
         const collapsed = render(false)
         assert.equal(collapsed.length, 3)
-        assert.match(plain(collapsed[1]!), /§ .+ · .+/)
-        assert.match(plain(collapsed[2]!), /b expand · z drop/)
+        assert.match(chapterPlain(collapsed[1]!), /§ /)
+        assert.ok(plain(collapsed[2]!).length > 0)
         assert.ok(collapsed.every((line) => segmentsWidth(line) <= width))
         const body: string[] = []
         for (let page = 0; ; page++) {
           const expanded = render(true, page)
           assert.ok(expanded.length <= 8 && expanded.every((line) => segmentsWidth(line) <= width))
-          assert.match(plain(expanded[2]!), /b collapse · z drop/)
+          assert.match(chapterPlain(expanded[2]!), /b: collapse · z: drop/)
           body.push(...expanded.slice(3).map((line) => plain(line).trim()))
-          const paging = buttons(expanded).find((button) => button.key === 'chapter-next')?.face
+          const paging = buttons(expanded).find((button) => button.key === 'chapter-next')?.label
           if (!paging || paging.endsWith(`/${page + 1}`)) break
           assert.ok(page < 4)
         }
@@ -84,6 +89,167 @@ test('every level of every chapter fits the terminal widths and can be read in f
       }
     }
   }
+})
+
+const ML_TITLE = 'Neural networks and training comparisons'
+const ML_CHOICE = 'Separate a controlled comparison from a best-result claim at a fixed budget.'
+const ML_CARD: MargincueCard = {
+  ...CARD, read: 'A paired learning-rate sweep.', mentions: [], focus: 'seeds',
+  rows: [
+    row('seeds', 'seeds', ['paired seeds', 'independent seeds'], [0], { origin: 'lens' }),
+    row('budget', 'budget', ['fixed GPU-hours', 'fixed trial count'], [0], { origin: 'lens' }),
+    row('metric', 'metric', ['validation loss', 'held-out accuracy'], [0], { origin: 'lens' }),
+    row('checkpoint', 'checkpoint', ['best validation step', 'last step'], [0], { origin: 'lens' }),
+  ],
+  sketch: { title: 'Sweep report', lines: [
+    '┌ Sweep report ────────────┐',
+    '│ Rate     Validation loss │',
+    '│ 0.001    0.23            │',
+    '└──────────────────────────┘',
+  ], drawing: false, pinned: false, open: true },
+}
+
+function mlChapter() {
+  const core = createCore(ASSETS)
+  core.handle({ type: 'config', enabled: true, mode: 'auto', profile: 'general', sheet: true, read: 'key',
+    prefer: ['ml-research'], depths: { 'ml-research': 'research' } })
+  core.handle({ type: 'draft', now: 100, origin: 'type',
+    text: 'Compare learning rates for a neural network using paired training seeds and a fixed compute budget.' })
+  assert.equal(core.currentView().card?.chapter?.title, ML_TITLE)
+  return core
+}
+
+const chapterPreview = (lines: string[]) => lines.filter((line) => /preview|Sweep report|Validation loss|0\.001|└─|more lines/.test(line))
+
+for (const columns of [60, 76, 78, 80, 120]) {
+  for (const maxRows of [10, 14, 24, 36, 38, 50]) {
+    test(`an expert chapter keeps its reading and pages within ${columns} columns and ${maxRows} rows`, () => {
+      const core = mlChapter()
+      const chapter = core.currentView().card!.chapter!
+      const render = () => layoutBandRows(band({ ...ML_CARD, chapter: core.currentView().card?.chapter }), columns, 'ctrl+x tab', maxRows)
+      const check = (lines: Seg[][]) => {
+        assert.ok(lines.length <= maxRows)
+        assert.ok(lines.every((line) => segmentsWidth(line) <= columns))
+        const text = lines.map(chapterPlain)
+        assert.doesNotMatch(text.join('\n'), /[bnz]: [bnz]\b/)
+        return text
+      }
+      const control = (lines: Seg[][], hotkey: string) => {
+        const matches = lines.flat().filter((s) => s.kind === 'button' && s.action.type === 'chapter' && s.hotkey === hotkey)
+        assert.equal(matches.length, 1, hotkey)
+        const button = matches[0]
+        assert.ok(button?.kind === 'button' && button.action.type === 'chapter')
+        return { ...button, action: button.action }
+      }
+      const collapsed = render()
+      const before = check(collapsed)
+      const title = before.findIndex((line) => line.includes(`§ ${chapter.title}`))
+      assert.ok(title > 0)
+      const width = columns - 4
+      assert.equal(before[title + 1], `    ${ML_CHOICE.length <= width ? ML_CHOICE : `${ML_CHOICE.slice(0, width - 1).trimEnd()}…`}`)
+      const toggle = control(collapsed, 'b')
+      assert.equal(toggle.hidden, undefined)
+      assert.equal(Boolean(control(collapsed, 'z').hidden), columns === 60)
+      const hint = before[title]!.slice(`  § ${chapter.title}`.length).trim()
+      assert.equal(hint, columns === 60 ? 'b: expand' : columns === 76 ? 'b: expand · z: drop' : 'ctrl+x tab, b: expand · z: drop')
+      assert.equal(before.filter((line) => line.includes('◆')).length, 4)
+      core.handle(toggle.action)
+
+      assert.ok(chapterPreview(before).length)
+      const first = render()
+      const firstText = check(first)
+      const chapterTitle = firstText.findIndex((line) => line.includes(`§ ${chapter.title}`))
+      assert.ok(chapterTitle > 0)
+      const pages = Number(/n: next 1\/(\d+)/.exec(firstText[chapterTitle + 1]!)?.[1] ?? 1)
+      if (maxRows >= 14) assert.match(chapterPreview(before).join('\n'), /Validation loss/)
+      const noteLines: string[] = []
+      for (let page = 1; page <= pages; page++) {
+        const expanded = render()
+        assert.deepEqual(expanded, render())
+        const lines = check(expanded)
+        assert.match(lines.slice(0, chapterTitle).join('\n'), /MarginCue.*A paired/)
+        assert.ok(lines[chapterTitle]?.includes(`§ ${chapter.title}`))
+        assert.equal(lines[chapterTitle + 1], `    ctrl+x tab, b: collapse · z: drop${pages > 1 ? ` · n: next ${page}/${pages}` : ''}`)
+        assert.equal(lines.filter((line) => line.includes('◆')).length, 4)
+        const preview = chapterPreview(lines)
+        assert.equal(preview.length, 1)
+        assert.match(preview[0]!, /preview\s+Sweep report/)
+        if (columns > 60) assert.match(preview[0]!, /4 lines, folded/)
+        const notes = expanded.slice(chapterTitle + 2).filter(([s]) => s?.kind === 'text' && s.style?.dim && /^ {4}\S/.test(s.text))
+        assert.ok(notes.length >= 1 && notes.length <= 6)
+        noteLines.push(...notes.map((line) => plain(line).trim()))
+        if (pages > 1) core.handle(control(expanded, 'n').action)
+      }
+      assert.equal(noteLines.join(' '), core.currentView().card?.chapter?.notes.replace(/\n/g, ' '))
+      assert.deepEqual(render(), first)
+      core.handle(control(first, 'b').action)
+      assert.deepEqual(render(), collapsed)
+      if (columns > 60) core.handle(toggle.action)
+      core.handle(control(render(), 'z').action)
+      assert.equal(core.currentView().card?.chapter, undefined)
+      const dismissed = check(render())
+      assert.doesNotMatch(dismissed.join('\n'), /§|n: next/)
+      if (maxRows >= 14) assert.deepEqual(chapterPreview(dismissed), chapterPreview(before))
+    })
+  }
+}
+
+test('a chapter sharing its title row with the expanded hint keeps paging visible before dismiss', () => {
+  const core = mlChapter()
+  core.handle({ type: 'chapter', action: 'toggle' })
+  const card = { ...ML_CARD, chapter: core.currentView().card?.chapter }
+  for (const columns of [60, 76, 78, 80, 86, 120]) {
+    const rows = layoutBandRows(band(card), columns, 'ctrl+x tab', 3)
+    const hint = chapterPlain(rows[1]!).slice(`  § ${ML_TITLE}`.length).trim()
+    if (columns === 60) assert.equal(hint, 'b: collapse')
+    else if (columns <= 80) assert.match(hint, /^b: collapse · n: next 1\/\d+$/)
+    else if (columns === 86) assert.match(hint, /^b: collapse · z: drop · n: next 1\/\d+$/)
+    else assert.match(hint, /^ctrl\+x tab, b: collapse · z: drop · n: next 1\/\d+$/)
+  }
+})
+
+test('French chapter hints use the same fallback order', () => {
+  const core = mlChapter()
+  const render = (columns: number, maxRows: number) => layoutBandRows(
+    band({ ...ML_CARD, language: 'fr', chapter: core.currentView().card?.chapter }), columns, 'ctrl+x tab', maxRows,
+  ).map(chapterPlain).find((line) => line.includes(`§ ${ML_TITLE}`))!.slice(`  § ${ML_TITLE}`.length).trim()
+  assert.equal(render(60, 38), 'b: ouvrir')
+  assert.equal(render(76, 38), 'b: ouvrir · z: masquer')
+  assert.equal(render(120, 38), 'ctrl+x tab, b: ouvrir · z: masquer')
+  core.handle({ type: 'chapter', action: 'toggle' })
+  assert.equal(render(60, 3), 'b: replier')
+  assert.match(render(76, 3), /^b: replier · n: suite 1\/\d+$/)
+  assert.match(render(120, 3), /^ctrl\+x tab, b: replier · z: masquer · n: suite 1\/\d+$/)
+})
+
+test('the expanded chapter gives the reading and title priority over standing cues at a tiny row budget', () => {
+  const core = mlChapter()
+  core.handle({ type: 'chapter', action: 'toggle' })
+  const card = { ...ML_CARD, chapter: core.currentView().card?.chapter }
+  const rows = layoutBandRows({ ...band(card), reviewPending: true }, 80, 'ctrl+x tab', 2)
+  assert.equal(rows.length, 2)
+  assert.match(plain(rows[0]!), /MarginCue.*A paired/)
+  assert.match(plain(rows[1]!), /§ Neural networks/)
+})
+
+test('a wrapped decision label cannot increase the expanded band past its row budget', () => {
+  const core = mlChapter()
+  core.handle({ type: 'chapter', action: 'toggle' })
+  const card = { ...ML_CARD, chapter: core.currentView().card?.chapter,
+    rows: ML_CARD.rows.map((r) => r.id === ML_CARD.focus ? { ...r, label: 'random seeds for repeated independent training runs' } : r) }
+  const rows = layoutBandRows(band(card), 60, 'ctrl+x tab', 10)
+  assert.ok(rows.length <= 10, rows.map(plain).join('\n'))
+  assert.match(rows.map(plain).join('\n'), /◆ random seeds/)
+})
+
+test('the Codex composer draws each chapter key once', () => {
+  const core = mlChapter()
+  const render = () => layoutCard({ ...ML_CARD, chapter: core.currentView().card?.chapter }, 80, 24,
+    { chords: true, extra: [], chapterKeys: 'tab' })
+    .map((line, y) => drawLine(line, 80, y, []).replace(/\x1b\[[0-9;:]*m/g, '')).join('\n')
+  assert.match(render(), /§ Neural networks and training comparisons .*tab, b: expand · z: drop/)
+  core.handle({ type: 'chapter', action: 'toggle' })
+  assert.match(render(), /tab, b: collapse · z: drop · n: next 1\/\d+/)
 })
 
 test('the card never draws wider than the band, at any width or height', () => {
