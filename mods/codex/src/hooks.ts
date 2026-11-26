@@ -1,19 +1,24 @@
 // Codex hooks. On each prompt: note the turn (for the composer) and ask the agent to mark
 // the choices it makes for the person, as in Claude Code. When the turn stops: the receipt.
 
+import { createHash } from 'node:crypto'
 import { parseBlanks } from '../../claude-code/core/card'
-import { choiceTier, rankedChoices, tierCounts } from '../../claude-code/core/choice-tier'
-import { FILE_REFERENCES_HEADING } from '../../claude-code/core/decisions'
+import { auditExpertProfiles, reviewExpertDecisions, reviewOrder, scoreChoice } from '../../claude-code/core/review-first'
+import type { ChoiceReview, ReviewContext } from '../../claude-code/core/review-first'
+import { reviewLogLine } from '../../claude-code/core/review-log'
+import { truncate } from '../../claude-code/hooks/segments'
+import { decisionLine, FILE_REFERENCES_HEADING } from '../../claude-code/core/decisions'
 import { startsSomethingNew } from '../../claude-code/core/kickoff'
 import { ASSETS } from '../../claude-code/hooks/assets'
-import { startCard } from './card-store'
-import { APP_MESSAGE, PATHS, appMessage, readJson, readSettings, sessionSource, turnMessages, writeJson } from './store'
+import { readRecord, startCard } from './card-store'
+import { cardConfig } from './card-config'
+import { APP_MESSAGE, PATHS, appMessage, appendReviewLog, auditEnabled, readJson, readLearned, readSettings, sessionSource, turnMessages, writeJson } from './store'
 import { turnAmendments } from './turn-card'
-import type { Settings, Source, TurnRecord } from './store'
+import type { ComposedPrompt, Settings, Source, TurnRecord } from './store'
 import { isCardFollowUp } from './widget-message'
 
 export type PromptInput = { session_id?: string; turn_id?: string; transcript_path?: string; cwd?: string; prompt?: string }
-export type StopInput = { session_id?: string; turn_id?: string; transcript_path?: string; last_assistant_message?: string | null }
+export type StopInput = { session_id?: string; turn_id?: string; transcript_path?: string; cwd?: string; last_assistant_message?: string | null }
 
 /** The Decisions block MarginCue appends to a prompt, as its lines (the list ends where the block does). */
 export function decisionsOf(prompt: string): string[] {
@@ -43,8 +48,7 @@ export const CARD_TOOL = 'mcp__margincue__margincue_card'
 /**
  * Naming the desktop card tool exactly spares a tool search, and the id spares copying the prompt.
  */
-function desktopCardFirst(prompt: string, settings: Settings, cwd?: string): string {
-  const id = cwd ? startCard(prompt, cwd, settings) : null
+function desktopCardFirst(settings: Settings, id: string | null, cwd?: string): string {
   const call = id
     ? [
         `Your first action must be this exact tool call, before any tool search, file read or message: \`${CARD_TOOL}\` with {"card": ${JSON.stringify(id)}}.`,
@@ -65,9 +69,30 @@ function desktopCardFirst(prompt: string, settings: Settings, cwd?: string): str
 const COMPOSED_FRESH_MS = 10 * 60 * 1000
 
 /** Whether the prompt went through the composer, whose card the person saw. */
-function composed(prompt: string): boolean {
-  const last = readJson<{ text: string; at: number } | null>(PATHS.composed, null)
-  return Boolean(last && last.text.trim() === prompt.trim() && Date.now() - last.at < COMPOSED_FRESH_MS)
+function composed(prompt: string): ComposedPrompt | null {
+  const last = readJson<ComposedPrompt | null>(PATHS.composed, null)
+  return last && last.text.trim() === prompt.trim()
+    && Date.now() - last.at < COMPOSED_FRESH_MS ? last : null
+}
+
+function reviewContext(prompt: string, seen: ComposedPrompt | null, previous: TurnRecord | null): ReviewContext {
+  if (seen?.review) return seen.review
+  if (isCardFollowUp(prompt) && previous?.reviewCardId) {
+    const card = readRecord(previous.reviewCardId)
+    if (card && card.cwd === previous.cwd) {
+      const note = /^Also: (.+)$/m.exec(prompt)?.[1]
+      const decisions = decisionsOf(prompt)
+      return {
+        prompt: note ? `${card.prompt}\n\n${note}` : card.prompt,
+        profiles: [...new Set(card.card.rows.flatMap(({ lens }) => lens ? [lens] : []))],
+        rows: card.card.rows.map(({ label, key, statement, options }) => ({
+          key: key ?? label, label, statement, options,
+          leftOpen: !options.some((option) => decisions.includes(decisionLine({ statement, option }))),
+        })),
+      }
+    }
+  }
+  return { prompt: prompt.split(/\n\n(?:Open choices \(|Target output, as sketched \()/, 1)[0] ?? prompt }
 }
 
 export function promptHook(input: PromptInput): object | null {
@@ -83,18 +108,20 @@ export function promptHook(input: PromptInput): object | null {
   // A scripted run (codex exec) has nobody to switch a choice: its output stays exactly as it would be without MarginCue.
   if (source === 'exec') return null
   const previous = readJson<TurnRecord | null>(PATHS.turn, null)
+  const seen = composed(prompt)
+  const related = previous && previous.session === (input.session_id ?? '') && previous.cwd === input.cwd ? previous : null
+  const audit = auditEnabled(settings)
+  let record: TurnRecord | undefined
   if (input.turn_id && input.transcript_path && input.cwd) {
     // A message sent into the running turn (an amendment) is part of that turn: the turn keeps
     // the decisions its prompt went with, and adds any this message carries.
-    const record: TurnRecord = previous && previous.turn === input.turn_id && previous.session === (input.session_id ?? '')
+    record = previous && previous.turn === input.turn_id && previous.session === (input.session_id ?? '')
       ? { ...previous, endedAt: null, decisions: [...new Set([...previous.decisions, ...decisionsOf(prompt)])] }
       : {
         session: input.session_id ?? '', turn: input.turn_id, transcript: input.transcript_path, cwd: input.cwd,
         startedAt: Date.now(), endedAt: null, decisions: decisionsOf(prompt), source,
+        ...(audit && { review: reviewContext(prompt, !seen?.cwd || seen.cwd === input.cwd ? seen : null, related) }),
       }
-    try {
-      writeJson(PATHS.turn, record)
-    } catch {}
   }
   const context: string[] = []
   if (settings.blanks !== false && ASSETS.blanksProtocol) context.push(ASSETS.blanksProtocol)
@@ -111,10 +138,16 @@ export function promptHook(input: PromptInput): object | null {
     ].join(' '))
   } else if (source === 'app' && isCardFollowUp(prompt)) {
     context.push('The user confirmed their previous prompt in MarginCue. Proceed with that prompt and any Decisions or addition in this message.')
-  } else if (!fromApp && settings.mode !== 'quiet' && !prompt.startsWith('Amendment to my last prompt:') && !composed(prompt) &&
+  } else if (!fromApp && settings.mode !== 'quiet' && !prompt.startsWith('Amendment to my last prompt:') && !seen &&
     startsSomethingNew(opening, { firstOfSession })) {
-    if (source === 'app') context.push(desktopCardFirst(prompt, settings, input.cwd))
-    else if (settings.read !== 'key') context.push(READING_FIRST)
+    if (source === 'app') {
+      const id = input.cwd ? startCard(prompt, input.cwd, settings) : null
+      if (audit && record && id) record.reviewCardId = id
+      context.push(desktopCardFirst(settings, id, input.cwd))
+    } else if (settings.read !== 'key') context.push(READING_FIRST)
+  }
+  if (record) {
+    try { writeJson(PATHS.turn, record) } catch {}
   }
   if (!context.length) return null
   return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: context.join('\n\n') } }
@@ -127,38 +160,60 @@ export function stopHook(input: StopInput): object | null {
   const source = input.transcript_path ? sessionSource(input.transcript_path) : 'unknown'
   if (source === 'exec') return null
   const record = readJson<TurnRecord | null>(PATHS.turn, null)
-  const mine = record?.turn === input.turn_id ? record : null
+  const mine = record?.turn === input.turn_id && (!input.session_id || record.session === input.session_id) ? record : null
+  const context = mine?.review
   if (mine) {
     mine.endedAt = Date.now()
-    try {
-      writeJson(PATHS.turn, mine)
-    } catch {}
+    delete mine.review
+    try { writeJson(PATHS.turn, mine) } catch {}
   }
   const messages = input.transcript_path ? turnMessages(input.transcript_path, input.turn_id) : []
+  const userMessages = input.transcript_path ? turnMessages(input.transcript_path, input.turn_id, 'UserMessage') : []
   if (input.last_assistant_message) messages.push(input.last_assistant_message)
-  const chosen = new Map<string, string>()
-  for (const message of messages) for (const blank of parseBlanks(message)) chosen.set(blank.label, blank.choice)
+  const chosen = new Map<string, ReturnType<typeof parseBlanks>[number]>()
+  for (const message of messages) for (const blank of parseBlanks(message)) chosen.set(blank.label, blank)
   // A choice the person switched while the agent worked shows the value they asked for.
-  const amended = input.transcript_path ? turnAmendments(turnMessages(input.transcript_path, input.turn_id, 'UserMessage')) : new Map<string, string>()
-  const choices = [...chosen].map(([label, original]) => {
+  const amended = turnAmendments(userMessages)
+  const choices = [...chosen].map(([label, blank]) => {
     const value = amended.get(label.toLowerCase())
-    return { label, value: value ?? original, switched: value !== undefined }
+    const options = [...new Set([blank.choice, ...blank.alternatives, ...(value === undefined ? [] : [value])])]
+    return { label, value: value ?? blank.choice, switched: value !== undefined, options }
   })
   const yours = mine?.decisions.length ?? 0
   if (!chosen.size && !yours) return null
-  return { systemMessage: receiptLine(yours, choices, source, settings.tiers === 'on') }
+  if (!auditEnabled(settings)) return { systemMessage: receiptLine(yours, choices, source) }
+  const root = mine?.cwd ?? input.cwd ?? ''
+  const submitted = context ?? reviewContext(userMessages[0] ?? '', null, null)
+  const depths = cardConfig(settings).depths ?? {}
+  const reviewInput: ReviewContext = {
+    ...submitted, learned: root ? readLearned(root) : {},
+    expert: reviewExpertDecisions(ASSETS.bundles ?? [], [...new Set([...submitted.profiles ?? [], ...auditExpertProfiles(submitted.prompt)])], 'en',
+      (profile) => depths[profile] ?? 'standard'),
+  }
+  const scored = choices.map((choice) => ({ ...choice, review: scoreChoice(choice, reviewInput) }))
+  if (root) {
+    try {
+      const hash = createHash('sha256').update(root).digest('hex')
+      appendReviewLog(reviewLogLine(input.turn_id, 'codex', hash, submitted.prompt, scored))
+    } catch {}
+  }
+  return { systemMessage: receiptLine(yours, scored, source) }
 }
 
-export function receiptLine(yours: number, agent: { label: string; value: string; switched?: boolean }[], source: Source = 'cli',
-  tiers = false): string {
+export function receiptLine(yours: number, agent: { label: string; value: string; switched?: boolean;
+  options?: string[]; review?: ChoiceReview }[], source: Source = 'cli'): string {
   const switched = agent.filter((choice) => choice.switched).length
-  const parts = [`MarginCue · you set ${yours} · the agent chose ${agent.length}${switched ? ` · you switched ${switched}` : ''}`]
+  const flagged = agent.filter((choice) => choice.review?.flagged).length
+  const parts = [`MarginCue · you set ${yours} · the agent chose ${agent.length}${switched ? ` · you switched ${switched}` : ''}${flagged ? ` · ${flagged} to review first` : ''}`]
   if (agent.length) {
     const format = ({ label, value, switched }: typeof agent[number]) => `${label}: ${value}${switched ? ' (switched)' : ''}`
-    if (tiers) {
-      const choices = rankedChoices(agent.map((choice) => ({ ...choice, tier: choiceTier(`${choice.label}: {}`, choice.value) })))
-      parts.push(tierCounts(choices), choices.map((choice) => `[${choice.tier}] ${format(choice)}`).join(' · '))
-    } else parts.push(agent.map(format).join(' · '))
+    const ordered = flagged ? reviewOrder(agent) : agent
+    if (flagged) parts.push(`Review first: ${ordered.slice(0, flagged).map((choice) => {
+      const review = choice.review!
+      const alternatives = choice.options?.filter((option) => option !== choice.value).map((option) => `→ ${option}`) ?? []
+      return `${format(choice)} (${[truncate(review.reason, 59), review.evidence, ...alternatives].join(' · ')})`
+    }).join(' · ')}`)
+    if (ordered.length > flagged) parts.push(ordered.slice(flagged).map(format).join(' · '))
     // Under margincue-relay the agent's choices are already listed under Codex's prompt.
     if (source === 'cli' || source === 'unknown') {
       parts.push(process.env['MARGINCUE_CARD'] === 'prompt' ? 'alt+↓ under the prompt to switch one' : 'ctrl+g to switch one')

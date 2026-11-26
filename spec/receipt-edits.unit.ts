@@ -8,7 +8,9 @@ import type { EditedFile, Hunk } from '../mods/claude-code/hooks/turn-edits.ts'
 import './ts-resolve.ts'
 
 const { capturedChoiceEdits, editedFiles, finishEdits, recordToolEdit, startEdits } = await import('../mods/claude-code/hooks/turn-edits')
+const { scoreChoice } = await import('../mods/claude-code/core/review-first')
 const { editorSides, readHunks, relatedPatch } = await import('../mods/claude-code/hooks/edit-patch')
+const { collectVocabulary, referencedNames } = await import('../mods/claude-code/hooks/repo-index')
 const { relateEdits } = await import('../mods/claude-code/hooks/edit-relation')
 const { openRelatedFiles } = await import('../mods/claude-code/hooks/edit-opener')
 const { layoutReceipt } = await import('../mods/claude-code/hooks/card-view')
@@ -79,7 +81,7 @@ test('Git capture keeps pre-existing changes out and includes new, deleted and p
   await turn.after
   put(join(cwd, 'src', 'export.ts'), 'later turn\n')
 
-  const impact = await capturedChoiceEdits(turn)
+  const impact = await capturedChoiceEdits(io, turn)
   assert.deepEqual(impact.filter(({ deleted }) => deleted).map(({ path }) => path), ['delete me.txt'])
   assert.ok(!impact.some(({ path }) => path === 'owner.txt'))
   const edits = await editedFiles(io, turn)
@@ -106,8 +108,75 @@ test('captured native edits distinguish an exported interface change from an imp
     ['api.ts', 'export interface Result {\n  value: string\n}\n', 'export interface Result {\n  value: number\n}\n'],
     ['parser.ts', 'export function parse(s: string) { return s }', 'export function parse(s: string) { return s.trim() }'],
   ]) recordToolEdit(io, turn, path, ++turn.position, { originalFile, content })
-  assert.deepEqual((await capturedChoiceEdits(finishEdits(io, turn))).map(({ path, publicInterface }) => [path, publicInterface]),
+  assert.deepEqual((await capturedChoiceEdits(io, finishEdits(io, turn))).map(({ path, publicInterface }) => [path, publicInterface]),
     [['api.ts', true], ['parser.ts', false]])
+})
+
+test('dependency evidence tracks entries, and delivery evidence tracks changed effects', async (t) => {
+  const cwd = temp(t)
+  const turn = startEdits(io, cwd)
+  for (const [path, originalFile, content] of [
+    ['packages/typo/package.json', '{"description":"a typo","dependencies":{"a":"1","b":"2"}}',
+      '{"description":"fixed","dependencies":{"b":"2","a":"1"}}'],
+    ['packages/update/package.json', '{"dependencies":{"a":"1"}}', '{"dependencies":{"a":"2"}}'],
+    ['pyproject.toml', '[project]\nname="sample"\ndependencies = [\n "numpy",\n]\n',
+      '[project]\nname="sample"\ndependencies = [\n "numpy",\n "pandas",\n]\n'],
+    ['requirements.txt', '# Basics\nnumpy==1\n', '# Basics\nnumpy==2\n'],
+    ['src/receipt.ts', 'let message = emailTemplate\n', 'let message = emailTemplate\nmailer.send(message)\n'],
+    ['src/keep.ts', 'sendEmail(message)\nconst limit = 1\n', 'sendEmail(message)\nconst limit = 2\n'],
+  ]) recordToolEdit(io, turn, path, ++turn.position, { originalFile, content })
+  const result = await capturedChoiceEdits(io, finishEdits(io, turn))
+  assert.deepEqual(result.filter((edit) => edit.dependencies).map(({ path }) => path),
+    ['packages/update/package.json', 'pyproject.toml', 'requirements.txt'])
+  assert.deepEqual(result.filter((edit) => edit.sendsOutside).map(({ path }) => path), ['src/receipt.ts'])
+  assert.equal(result.find(({ path }) => path === 'packages/typo/package.json')?.matched, true)
+})
+
+test('captured dependency, shared config, test and docs edits receive their path costs', async (t) => {
+  const cwd = temp(t)
+  const turn = startEdits(io, cwd)
+  const choice = { label: 'cache', value: 'in memory', options: ['in memory', 'Redis'] }
+  const requirements = '# Runtime dependencies\nnumpy==1\n'
+  const pyproject = '[project]\ndescription = "A smple tool"\ndependencies = ["numpy==1"]\n'
+  const cargo = '[package]\ndescription = "A smple tool"\n[dependencies]\nserde = "1"\n'
+  const go = 'module example.com/tool\n\ngo 1.24.0\n\nrequire (\n\t// Runtime dependency\n\texample.com/dependency v1.0.0 // indirect\n)\n'
+  const cases = [
+    ['requirements.txt', requirements, requirements.replace('==1', '==2'), 'changes dependencies', 3],
+    ['comments/requirements.txt', requirements, requirements.replace('Runtime', 'Production'), 'local edit', 1],
+    ['pyproject.toml', pyproject, pyproject.replace('==1', '==2'), 'changes dependencies', 3],
+    ['metadata/pyproject.toml', pyproject, pyproject.replace('smple', 'simple'), 'local edit', 1],
+    ['Cargo.toml', cargo, cargo.replace('"1"', '"2"'), 'changes dependencies', 3],
+    ['metadata/Cargo.toml', cargo, cargo.replace('smple', 'simple'), 'local edit', 1],
+    ['go.mod', go, go.replace('v1.0.0', 'v1.1.0'), 'changes dependencies', 3],
+    ['comments/go.mod', go, go.replace('Runtime', 'Production'), 'local edit', 1],
+    ['.github/workflows/ci.yml', 'name: Check\n', 'name: Build\n', 'changes shared config', 3],
+    ['docker-compose.yml', 'services: {}\n', 'services:\n  app:\n    image: app\n', 'changes shared config', 3],
+    ['.env.example', 'CACHE_SIZE=32\n', 'CACHE_SIZE=64\n', 'changes shared config', 3],
+    ['tests/cache.test.ts', 'assert.equal(size, 32)\n', 'assert.equal(size, 64)\n', 'local edit', 1],
+    ['docs/cache.md', 'Cache size is 32.\n', 'Cache size is 64.\n', 'local edit', 1],
+  ] as const
+  for (const [path, originalFile, content] of cases) {
+    recordToolEdit(io, turn, path, ++turn.position, { originalFile, content })
+  }
+  const edits = await capturedChoiceEdits(io, finishEdits(io, turn))
+  for (const [path, , , reason, cost] of cases) {
+    const edit = edits.find((edit) => edit.path === path)
+    assert.ok(edit?.matched, path)
+    const review = scoreChoice(choice, { prompt: '' }, { kind: 'named', edits: [edit] })
+    assert.deepEqual([review.costReason, review.c, review.flagged], [reason, cost, cost === 3], path)
+  }
+})
+
+test('the which-file index finds actual cross-file uses of declarations in edited files', { skip: !gitAvailable }, async (t) => {
+  const cwd = temp(t)
+  await gitIn(cwd)('init', '-q')
+  put(join(cwd, 'core.ts'), 'function makeReport() { return 1 }\nfunction unusedHelper() { return 2 }\n')
+  put(join(cwd, 'consumer.ts'), 'const result = makeReport()\n')
+  put(join(cwd, 'duplicate.ts'), 'function unusedHelper() { return 3 }\n')
+  const engine = { process: { run }, env: { get: async () => undefined } }
+  const vocab = await collectVocabulary(engine, cwd)
+  assert.ok(vocab)
+  assert.deepEqual([...await referencedNames(engine, cwd, vocab, new Set(['core.ts']))], [['core.ts', 'makeReport']])
 })
 
 test('outside Git, successful tool results keep both sides without attributing other files', async (t) => {

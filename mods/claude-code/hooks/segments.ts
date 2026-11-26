@@ -50,7 +50,6 @@ export type Action =
   | Extract<import('../core/types').Event, { type: 'chapter' }>
   | { type: 'sketch'; action: 'toggle' | 'pin' | 'refresh' }
   | { type: 'receiptPick'; receipt: number; item: number; option: number }
-  | { type: 'receiptLow'; receipt: number }
   | { type: 'sessionChoices' }
   | { type: 'receiptReview'; receipt: number }
   | { type: 'receiptDiff'; receipt: number; choice: number }

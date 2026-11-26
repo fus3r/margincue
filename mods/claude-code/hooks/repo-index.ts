@@ -111,3 +111,37 @@ async function fromRipgrep($: IndexEngine, root: string): Promise<Vocabulary | n
     grep(DECLARATIONS, 200), grep([NAMES], 100), quiet(IMPORTS, IMPORT_FILES), quiet(DECLARED, DECLARED_FILES)])
   return { ...buildVocabulary({ files, declarations, names }), libs: countLibraries(`${imports}\n${declared}`) }
 }
+
+/** Search the indexed source files for uses of a name declared in an edited file. */
+export async function referencedNames($: IndexEngine, root: string, vocab: Vocabulary, paths: ReadonlySet<string>): Promise<Map<string, string>> {
+  const definitions = new Map<string, Set<string>>()
+  for (const entry of vocab.entries) {
+    if (entry.kind !== 'symbol' || !/^[A-Za-z_][A-Za-z0-9_]{2,}$/.test(entry.name)) continue
+    const files = entry.files.map((id) => vocab.files[id]!)
+    if (files.length === 1 && paths.has(files[0]!)) definitions.set(entry.name, new Set(files))
+  }
+  if (!definitions.size) return new Map()
+  const args = [...definitions.keys()].flatMap((name) => ['-e', name])
+  const options = { cwd: root, timeoutMs: 5000 }
+  let found = await $.process.run(['git', '-C', root, 'grep', '--untracked', '-I', '-n', '-w', '-F',
+    ...args, '--', ...SOURCES, ...EXCLUDE], options).catch(() => null)
+  if (!found || found.exitCode === null || found.exitCode > 1) {
+    found = await $.process.run(['rg', '--no-require-git', '--with-filename', '-n', '-w', '-F',
+      ...args, ...SOURCES.flatMap((glob) => ['-g', glob]), ...RG_EXCLUDE.flatMap((glob) => ['-g', glob]), '.'], options).catch(() => null)
+  }
+  const indexed = new Set(vocab.files)
+  const used = new Set<string>()
+  for (const line of slashed(found?.stdout ?? '').split('\n')) {
+    const match = /^(?:\.\/)?(.+?):\d+:(.*)$/.exec(line)
+    if (!match || !indexed.has(match[1]!) || /^\s*(?:\/\/|\/\*|\*|#|--)/.test(match[2]!)) continue
+    const code = match[2]!.replace(/["'`][^"'`]*["'`]/g, '').split(/\s(?:\/\/|#|--)/, 1)[0]!
+    for (const word of code.match(/[A-Za-z_$][\w$]*/g) ?? []) {
+      if (definitions.has(word) && !definitions.get(word)!.has(match[1]!)) used.add(word)
+    }
+  }
+  const result = new Map<string, string>()
+  for (const [name, files] of definitions) if (used.has(name)) {
+    for (const file of files) if (paths.has(file) && !result.has(file)) result.set(file, name)
+  }
+  return result
+}

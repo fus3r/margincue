@@ -23,7 +23,7 @@ import { joinList, sameSelection } from '../core/card'
 import { splitDecisions } from '../core/decisions'
 import { closesFrame, tidySketch } from '../core/frame'
 import type { MargincueCard, MargincueReceipt, MargincueRow } from '../types'
-import { rankedChoices, tierCounts } from '../core/choice-tier'
+import { reviewOrder } from '../core/review-first'
 import { CARD_KEEP_KEY, CARD_READ_KEY, CHAPTER_DROP_KEY, CHAPTER_KEY, CHAPTER_NEXT_KEY, CHORD_NEXT, CHORD_SWAP, DARK, RECEIPT_DIFF_KEY, cells, segmentsWidth, text, truncate, wrapLines } from './segments'
 import type { Color, Palette, Segment, Style } from './segments'
 
@@ -608,13 +608,15 @@ function hiddenButtons(card: MargincueCard, chords: boolean): Line {
 
 /** What travelled with the prompt and what the agent chose; one press on another option writes the follow-up. */
 export function layoutReceipt(receipt: MargincueReceipt, columns: number, P: Palette = DARK, edits = false,
-  { tiers = false, showLow = false, sessionChoices = false } = {}): Line[] {
+  { audit = false, sessionChoices = false } = {}): Line[] {
   const width = cells(TAG)
   const content = MARK + width + GAP.length
   const room = Math.max(20, columns - content)
   const lead = (name: string): Line => [text(' '.repeat(MARK + width - cells(name))), text(name, { dim: true }), text(GAP)]
-  const summary = `you set ${receipt.yours.length} · the agent chose ${receipt.agent.length}`
-  const heading = edits && cells(summary) > room ? `you ${receipt.yours.length} · agent ${receipt.agent.length}` : summary
+  const flagged = audit ? receipt.agent.filter((choice) => choice.review?.flagged).length : 0
+  const reviewCount = flagged ? ` · ${flagged} to review first` : ''
+  const summary = `you set ${receipt.yours.length} · the agent chose ${receipt.agent.length}${reviewCount}`
+  const heading = (edits || flagged) && cells(summary) > room ? `you ${receipt.yours.length} · agent ${receipt.agent.length}${reviewCount}` : summary
   const out: Line[] = [[text(' '.repeat(MARK)), text(TAG, P.tag), text(GAP), text(heading, { dim: true })]]
   const diff = (choice: number): Segment => ({ kind: 'button', key: `receipt-diff-${choice}`, label: 'diff',
     dim: true, action: { type: 'receiptDiff', receipt: receipt.id, choice } })
@@ -624,16 +626,12 @@ export function layoutReceipt(receipt: MargincueReceipt, columns: number, P: Pal
       : [...lead('you'), text('✓ ', { color: 'success' }), text(part), ...(edits ? [text(GAP), diff(i)] : [])]))
   }
   const indexed = receipt.agent.map((item, i) => ({ ...item, i }))
-  const tiered = tiers ? indexed.flatMap((item) => item.tier ? [{ ...item, tier: item.tier }] : []) : []
-  const ranked = tiered.length > 0 && tiered.length === indexed.length
-  const choices = ranked ? rankedChoices(tiered) : indexed
-  if (ranked) out.push([text(' '.repeat(content)), text(tierCounts(tiered), { dim: true })])
-  const lows = tiered.filter((item) => item.tier === 'low').length
-  const foldLow = ranked && tiered.length > 4 && lows > 0
-  const fit = (value: string, width: number) => ranked ? truncate(value, width) : value
+  const choices = flagged ? reviewOrder(indexed) : indexed
+  if (flagged) out.push([text(' '.repeat(content)), text('Review first', { dim: true })])
   for (const item of choices) {
-    if (foldLow && !showLow && item.tier === 'low') continue
-    const { i, tier } = item
+    const { i } = item
+    const review = flagged && item.review?.flagged ? item.review : undefined
+    const fit = (value: string, width: number) => review ? truncate(value, width) : value
     const value = item.was ? P.yours : P.agent
     const label = fit(item.label, Math.floor(room / 2))
     const groups: Line[] = [
@@ -645,12 +643,14 @@ export function layoutReceipt(receipt: MargincueReceipt, columns: number, P: Pal
         action: { type: 'receiptPick', receipt: receipt.id, item: i, option: j },
       }]]),
     ]
-    flow(groups, room, 3, 2, (n) => [text(`+${n}`, { dim: true })]).lines
-      .forEach((line, k) => out.push(k ? [text(' '.repeat(content)), ...line] : [...lead(ranked && tier ? tier : 'agent'), ...line]))
+    flow(groups, room, review ? groups.length : 3, 2, (n) => [text(`+${n}`, { dim: true })]).lines
+      .forEach((line, k) => out.push(k ? [text(' '.repeat(content)), ...line] : [...lead('agent'), ...line]))
+    if (review) {
+      const detail = `${truncate(review.reason, 59)} · ${review.evidence}`
+      wrapLines(detail, room, room, 3)
+        .forEach((line) => out.push([text(' '.repeat(content)), text(line, { dim: true })]))
+    }
   }
-  if (foldLow) out.push([text(' '.repeat(content)), { kind: 'button', key: 'receipt-low',
-    label: showLow ? 'Hide low choices' : `Show ${lows} low choice${lows === 1 ? '' : 's'}`,
-    dim: true, action: { type: 'receiptLow', receipt: receipt.id } }])
   if (edits) {
     const review: Segment = { kind: 'button', key: 'receipt-review', label: 'Review choices', dim: true,
       action: { type: 'receiptReview', receipt: receipt.id } }
@@ -660,7 +660,7 @@ export function layoutReceipt(receipt: MargincueReceipt, columns: number, P: Pal
       out.push([indent, review], [indent, text(truncate(hint, room), { dim: true })])
     } else out.push([indent, review, text(` · ${hint}`, { dim: true })])
   }
-  if (sessionChoices && ranked) out.push([text(' '.repeat(content)), { kind: 'button', key: 'receipt-session',
+  if (sessionChoices && flagged) out.push([text(' '.repeat(content)), { kind: 'button', key: 'receipt-session',
     label: 'Session choices', dim: true, action: { type: 'sessionChoices' } }])
   return out
 }

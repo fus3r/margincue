@@ -44,7 +44,9 @@ While Claude works:
 - **Its choices become switches.** Claude marks the choices it makes for you as it goes. Switch one and the change reaches it at its next step, without stopping it.
 - **A receipt.** After the turn, what you set and what Claude chose. Switch one and the follow-up prompt is written for you.
 
-Choice ranking is an opt-in preview enabled with `/margincue tiers on` in Claude Code or `"tiers": "on"` in Codex's `~/.margincue/settings.json`.
+Review first is an opt-in preview enabled with `/margincue audit on` in Claude Code or `"audit": "on"` in Codex's `~/.margincue/settings.json`. It puts flagged choices first and shows the reason and evidence for each flag.
+
+The pilot log stays local and records prompts and choices only while audit is on. It uses `~/.margincue/review-first.jsonl` by default or `$MARGINCUE_HOME/review-first.jsonl` when set.
 
 It adapts to you and to the project. The first run asks what you work on and your level in each field. A data challenge or a research repository brings in the matching expert decisions (statistics and machine learning, system design), at the depth you asked for.
 

@@ -5,7 +5,7 @@
 import type { Depth, Language, Mode, ProfileBundle, Scope } from './bundle'
 import type { CardKind, RowType } from './card'
 import type { ChapterView, ProfileChapter } from './chapters'
-import type { ChoiceTier } from './choice-tier'
+import type { ChoiceReview, ReviewContext, ReviewDecision } from './review-first'
 import type { Mention, Vocabulary } from './grounding'
 import type { DecisionView, StateChange, StateCue, StateLoad } from './state'
 
@@ -50,8 +50,8 @@ export type Event =
       sheet?: boolean
       /** Show a matching reference chapter on the draft card (default true). */
       chapters?: boolean
-      /** Collect and rank choices for the receipt preview (default false). */
-      tiers?: boolean
+      /** Score choices for the Review first preview (default false). */
+      reviewFirst?: boolean
       /** When to read a draft card (default auto). */
       read?: ReadingMode
       /** Draw a sketch of the deliverable under the card (default true). */
@@ -87,7 +87,7 @@ export type Event =
   | { type: 'acceptAll'; now?: number }
   | { type: 'focus'; dir?: 1 | -1; cue?: string }
   /** `plan: false`: only explicit picks bind (the person was asked each choice in turn). */
-  | { type: 'submit'; now: number; text: string; amendable?: boolean; plan?: boolean }
+  | { type: 'submit'; now: number; text: string; amendable?: boolean; plan?: boolean; reviewPrompt?: string; reviewRows?: ReviewDecision[] }
   | { type: 'loadState'; now: number; state: StateLoad }
   | { type: 'set'; now: number; at?: number; slot: string; option: string; scope?: Scope; text?: string }
   | { type: 'delegate'; now: number; at?: number; slot: string; scope?: Scope }
@@ -96,7 +96,7 @@ export type Event =
   | { type: 'review'; now: number; profile?: string }
   | { type: 'expertPick'; now: number; at?: number; review: number; key: string; option: string; scope?: Scope }
   | { type: 'amend'; now: number; cue: string; option: number }
-  | { type: 'turnStart'; now: number }
+  | { type: 'turnStart'; now: number; text?: string }
   | { type: 'endAmendment'; now: number }
   /** The project's names, collected by the host; null when there is no index. */
   | { type: 'vocabulary'; vocab: Vocabulary | null }
@@ -214,7 +214,8 @@ export type CardView = {
 export type ReceiptView = {
   id: number
   yours: string[]
-  agent: { label: string; value: string; was?: string; options: string[]; tier?: ChoiceTier }[]
+  agent: { label: string; value: string; was?: string; options: string[]; review?: ChoiceReview }[]
+  reviewContext?: ReviewContext
 }
 
 export type ExpertItem = StateCue & {

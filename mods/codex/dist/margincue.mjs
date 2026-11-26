@@ -2,7 +2,7 @@
 
 // src/cli.ts
 import { spawn as spawn5, spawnSync as spawnSync3 } from "node:child_process";
-import { copyFileSync as copyFileSync2, existsSync as existsSync2, mkdirSync as mkdirSync4, readFileSync as readFileSync5, appendFileSync } from "node:fs";
+import { copyFileSync as copyFileSync2, existsSync as existsSync2, mkdirSync as mkdirSync4, readFileSync as readFileSync5, appendFileSync as appendFileSync2 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { dirname as dirname3, join as join5 } from "node:path";
 import { createInterface as createInterface4 } from "node:readline";
@@ -1562,42 +1562,6 @@ function isHardToUndo(statement, option) {
   }));
 }
 
-// ../claude-code/core/choice-tier.ts
-var CHOICE_TIERS = ["high", "mid", "low"];
-var DEPENDENCIES = /^(?:(?:package(?:-lock)?|npm-shrinkwrap|composer)\.json|pnpm-lock\.yaml|(?:yarn|uv|poetry|composer|pipfile|gemfile|cargo|mix)\.lock|bun\.lockb?|(?:cargo|pyproject)\.toml|pipfile|gemfile|go\.(?:mod|sum)|requirements(?:-[\w-]+)?\.txt|pom\.xml|build\.gradle(?:\.kts)?|mix\.exs|package\.resolved)$/;
-var SCHEMA = /(?:^|\/)(?:migrations?|alembic\/versions)\/|(?:^|[/._-])schemas?(?:\.\w+)?\.(?:json|ya?ml|sql|prisma|graphql|gql)$|\.(?:prisma|proto)$/;
-var POLICY = /(?:^|\/)(?:auth|authentication|authorization|permissions?|rbac)\/|(?:^|\/)(?:(?:auth|authentication|authorization|permissions?|rbac|iam)(?:[.-](?:config|policy|rules?))?\.[\w.]+|codeowners|firestore\.rules|storage\.rules|\.htaccess)$/;
-var INTERFACE = /^(?:openapi|swagger)(?:[-.]v?\d+)?\.(?:json|ya?ml)$|\.d\.[cm]?ts$/;
-var SHARED_CONFIG = /(?:^|\/)(?:\.github\/workflows|\.circleci|\.config)\/|(?:^|\/)(?:\.gitignore|\.gitattributes|\.editorconfig|\.env(?:\.example)?|dockerfile|(?:docker-)?compose\.ya?ml|(?:tsconfig|jsconfig)(?:\.[\w-]+)?\.json|(?:eslint|prettier|vite|webpack|next|babel|jest|vitest)\.config\.[\w.]+|pnpm-workspace\.yaml)$/;
-var DATA_FORMAT = /^(?:serialization|deserialization|wire-format)\.[\w.]+$|\.(?:csv|tsv|jsonl|ndjson|parquet|avro)$/;
-var SUPPORT = /(?:^|\/)(?:__tests__|tests?|specs?|fixtures?|examples?|docs)\/|\.(?:test|spec)\.[\w.]+$/;
-function choiceTier(statement, value, edits = []) {
-  if (isHardToUndo(statement, value)) return "high";
-  const paths = /* @__PURE__ */ new Set();
-  const modules = /* @__PURE__ */ new Set();
-  let shared = false;
-  for (const edit of edits) {
-    if (edit.deleted || edit.publicInterface) return "high";
-    const path = edit.path.replace(/\\/g, "/").toLowerCase();
-    paths.add(path);
-    if (SUPPORT.test(path)) continue;
-    const slash2 = path.lastIndexOf("/");
-    const name = path.slice(slash2 + 1);
-    if (DEPENDENCIES.test(name) || SCHEMA.test(path) || POLICY.test(path) || INTERFACE.test(name)) return "high";
-    if (SHARED_CONFIG.test(path) || DATA_FORMAT.test(name)) shared = true;
-    if (slash2 !== -1) modules.add(path.slice(0, slash2));
-  }
-  return shared || paths.size >= 3 || modules.size >= 2 ? "mid" : "low";
-}
-function rankedChoices(choices) {
-  return CHOICE_TIERS.flatMap((tier) => choices.filter((choice) => choice.tier === tier));
-}
-function tierCounts(choices) {
-  const counts = { high: 0, mid: 0, low: 0 };
-  for (const { tier } of choices) counts[tier]++;
-  return CHOICE_TIERS.map((tier) => `${counts[tier]} ${tier}`).join(" \xB7 ");
-}
-
 // ../claude-code/core/grounding.ts
 var STOP = /* @__PURE__ */ new Set(["of", "the", "a", "an", "and", "to", "in", "on", "for", "de", "la", "le", "du", "des", "et"]);
 var WHERE_RANK = { symbol: 0, name: 1, path: 2 };
@@ -2276,6 +2240,118 @@ function repoMap(files, dirs, budget = 3200) {
   return lines.join("\n");
 }
 
+// ../claude-code/core/review-first.ts
+var REVIEW_WEIGHTS = {
+  chance: { contradiction: 1, learnedConflict: 0.8, silent: 0.5, leftOpen: 0.3, learnedMatch: 0.1, switched: 0 },
+  cost: {
+    pinned: 9,
+    rework: 3,
+    // Silence alone does not flag a choice with no link or a nearby local edit.
+    unlinked: 2,
+    local: 1
+  },
+  threshold: 1.5
+};
+var LEARNED_AFTER = 2;
+var LENS_WORDS = [
+  ["ml-research", /\b(?:train(?:ing)?|dataset|accuracy|auc|cross-?valid\w*|overfit\w*|leak\w*|regression|classif\w*|features?|labels?|benchmark\w*|baselines?|hyperparam\w*|predict\w*|evaluat\w*|metrics?|test set|validation|fine-?tun\w*|embedding\w*)\b/gi],
+  ["system-design", /\b(?:services?|queues?|cach\w+|databases?|scal(?:e|ing|ability)|latency|throughput|replica\w*|shard\w*|load balanc\w*|microservices?|kafka|redis|postgres\w*|consistency|availability|rate limit\w*|backpressure|idempoten\w*|retries|webhooks?)\b/gi]
+];
+function draftExpertProfiles(text2) {
+  return LENS_WORDS.filter(([, words]) => new Set((text2.match(words) ?? []).map((word) => word.toLowerCase())).size >= 2).map(([profile]) => profile);
+}
+function auditExpertProfiles(prompt) {
+  const profiles = draftExpertProfiles(prompt);
+  if (/\bbacktests?\b/i.test(prompt) && !profiles.includes("ml-research")) profiles.push("ml-research");
+  return profiles;
+}
+var MIGRATION = /(?:^|\/)(?:migrations?|alembic\/versions)\//i;
+var SCHEMA = /(?:^|\/)schemas\/|(?:^|[/._-])schemas?(?:\.\w+)?\.(?:json|ya?ml|sql|prisma|graphql|gql|[cm]?[jt]s|py|rb)$|\.(?:prisma|proto)$/;
+var POLICY = /(?:^|\/)(?:auth|authentication|authorization|permissions?|rbac|security[-_]polic(?:y|ies))\/|(?:^|\/)(?:(?:auth|authentication|authorization|permissions?|rbac|iam|security[-_]policy)(?:[.-](?:config|policy|rules?))?\.[\w.]+|codeowners|firestore\.rules|storage\.rules|\.htaccess)$/;
+var INTERFACE = /^(?:openapi|swagger)(?:[-.]v?\d+)?\.(?:json|ya?ml)$|\.d\.[cm]?ts$/;
+var SHARED_CONFIG = /(?:^|\/)(?:\.github\/workflows|\.circleci|\.config|configs?)\/|(?:^|\/)(?:\.gitignore|\.gitattributes|\.editorconfig|\.env(?:\.example)?|dockerfile|(?:docker-)?compose\.ya?ml|(?:tsconfig|jsconfig)(?:\.[\w-]+)?\.json|(?:eslint|prettier|vite|webpack|next|babel|jest|vitest)\.config\.[\w.]+|pnpm-workspace\.yaml)$/;
+var DATA_FORMAT = /^(?:serializ\w*|deserializ\w*|wire[-_]format)\.[\w.]+$|\.(?:csv|tsv|jsonl|ndjson|parquet|avro)$/;
+var ACCESS_WORDS = /\b(?:access|sign[ -]in|log in|login|logout|sessions?|permissions?|roles?|admin|privileges?|passwords?|tokens?|2fa|mfa|auth|acces|connexion|se connecter|administrateur|mots? de passe|jetons?|authentification)\b/;
+var ACCESS_CUES = /\b(?:allow|deny|block|grant|revoke|restrict|can|cannot|can['’]t|out of|until|keep|lose|autoriser|refuser|bloquer|accorder|revoquer|restreindre|peut|ne peut pas|garder|perdre)\b/;
+var WORDS = /don['’]t(?![\p{L}\p{N}_])|[\p{L}\p{N}_]+/gu;
+var NEGATION = /(?:^| )(?:no|without|don['’]t use|not|avoid|instead of|rather than|except|never|sans|pas(?: de)?|au lieu de|plutot que|jamais)(?: \S+){0,2}$/;
+var fold = (text2) => text2.normalize("NFD").replace(new RegExp("\\p{M}", "gu"), "").toLowerCase();
+function isMigrationPath(path) {
+  return MIGRATION.test(path.replace(/\\/g, "/"));
+}
+function contradiction(prompt, value, alternatives) {
+  if (!alternatives.length) return null;
+  const options2 = [value, ...alternatives].map((option) => fold(option).match(WORDS) ?? []);
+  const alts = options2.slice(1);
+  const shared = new Set(options2[0].filter((word) => alts.every((option) => option.includes(word))));
+  const distinctive = (word) => word.length >= 3 && !shared.has(word);
+  const submitted = fold(prompt).split(/[.!?,;\r\n]+/).flatMap((clause) => {
+    const words = clause.match(WORDS) ?? [];
+    return words.flatMap((word, i) => distinctive(word) ? [{ word, negated: NEGATION.test(words.slice(Math.max(0, i - 5), i).join(" ")) }] : []);
+  });
+  const names = (tokens) => {
+    const terms = tokens.filter(distinctive);
+    return terms.length > 0 && submitted.some(({ negated }, i) => !negated && terms.every((term, offset) => submitted[i + offset]?.word === term));
+  };
+  if (names(options2[0])) return null;
+  const mentioned = alternatives.filter((_, i) => names(alts[i]));
+  return mentioned.length === 1 ? mentioned[0] : null;
+}
+function sameDecision(row, label) {
+  const key = nameKey(label);
+  return !!key && [row.key, row.label, row.statement].some((part) => nameKey(part) === key);
+}
+function reviewExpertDecisions(bundles, profiles, language, depthOf) {
+  return bundles.filter(({ profile }) => profiles.includes(profile)).flatMap(({ profile, slots }) => slots.map((slot) => {
+    const cue = stateCue({ slot, options: slot.options }, language, depthOf(profile));
+    return { key: slot.id, label: cue.label, statement: cue.statement, options: cue.options.map((option) => option.label), profile };
+  }));
+}
+function scoreChoice(choice, context, link) {
+  const { label, value, options: options2, switched = false } = choice;
+  const alternatives = options2.filter((option) => normalize(option) !== normalize(value));
+  const contradicted = contradiction(context.prompt, value, alternatives);
+  const row = context.rows?.find((entry) => sameDecision(entry, label));
+  const exactExpert = context.expert?.find((entry) => sameDecision(entry, label));
+  const expert = exactExpert ?? context.expert?.find((entry) => entry.key === "feature_fallback" && /\b(?:availability|available|timing|point.in.time)\b/i.test(label) && options2.some((option) => /\b(?:filing date|publication date|(?:fiscal )?period end|point.in.time)\b/i.test(option)) || nearExpertDecision(entry, { key: label, statement: row?.statement ?? label, options: options2 }));
+  const learned = context.learned ?? {};
+  const habit = [row?.key, exactExpert?.key, ...Object.keys(learned).filter((key) => nameKey(key) === nameKey(label))].filter((key) => key !== void 0).map((key) => Object.hasOwn(learned, key) ? learned[key] : void 0).find((pick3) => pick3 && pick3.count >= LEARNED_AFTER);
+  const learnedMatch = habit !== void 0 && normalize(habit.label) === normalize(value);
+  const learnedConflict = habit && !learnedMatch ? habit.label : null;
+  const silent = row === void 0;
+  const leftOpen = row?.leftOpen === true;
+  const signals = { contradiction: contradicted, learnedConflict, learnedMatch, silent, leftOpen, switched };
+  const odds = REVIEW_WEIGHTS.chance;
+  const d = switched ? odds.switched : contradicted ? odds.contradiction : learnedConflict ? odds.learnedConflict : learnedMatch ? odds.learnedMatch : silent ? odds.silent : odds.leftOpen;
+  const edits = link?.edits ?? [];
+  const linkKind = link?.edits.length ? link.kind : "none";
+  const evidence = linkKind === "named" ? "matched edit" : linkKind === "timing" ? "nearby edit" : "agent's word";
+  const paths = [...new Set(edits.map((edit) => edit.path))];
+  const changes = edits.map((edit) => ({ ...edit, file: edit.path.replace(/\\/g, "/").toLowerCase() }));
+  const fileName = (file) => file.slice(file.lastIndexOf("/") + 1);
+  const changesAccess = [value, ...alternatives].some((option) => {
+    const wording = fold(option);
+    return ACCESS_WORDS.test(wording) && ACCESS_CUES.test(wording);
+  });
+  const filePin = changes.some((edit) => edit.deleted) ? "deletes a file" : changes.some(({ file }) => isMigrationPath(file) || SCHEMA.test(file)) ? "changes a migration" : changes.some(({ file }) => POLICY.test(file)) ? "changes access rules" : changes.some(({ file, publicInterface }) => publicInterface || INTERFACE.test(fileName(file))) ? "changes a public interface" : changes.some((edit) => edit.sendsOutside) ? "sends outside" : "";
+  const referenced = changes.find((edit) => edit.referencedName)?.referencedName;
+  const fileRework = changes.some(({ file }) => DATA_FORMAT.test(fileName(file))) ? "changes a data format" : referenced ? `other files use ${referenced}` : changes.some((edit) => edit.dependencies) ? "changes dependencies" : changes.some(({ file }) => SHARED_CONFIG.test(file)) ? "changes shared config" : "";
+  const pinnedReason = changesAccess ? "changes access" : linkKind === "named" && filePin || (isHardToUndo("{}", value) || isHardToUndo(row?.statement ?? `${label}: {}`, value) ? "hard to undo" : "");
+  const detail = linkKind === "named" && fileRework || (expert?.profile ? `\u25C6 ${expert.profile} decision` : "");
+  const nearbyRework = linkKind === "timing" && (filePin !== "" || fileRework !== "");
+  const pinned = pinnedReason !== "";
+  const cost = REVIEW_WEIGHTS.cost;
+  const c = pinned ? cost.pinned : detail || nearbyRework ? cost.rework : linkKind === "named" ? cost.local : cost.unlinked;
+  const costReason = pinnedReason || detail || (nearbyRework ? "nearby edit may need rework" : linkKind === "named" ? "local edit" : linkKind === "timing" ? "nearby edit" : "no related edit");
+  const score = Number((d * c).toPrecision(12));
+  const flagged = !switched && (pinned || contradicted !== null || score >= REVIEW_WEIGHTS.threshold);
+  const reason = contradicted ? `your prompt said "${contradicted}"` : pinnedReason || (learnedConflict ? `you usually pick ${learnedConflict}` : linkKind !== "timing" && detail || (silent ? "not on the card" : leftOpen ? "you left it open" : learnedMatch ? "matches your usual pick" : "on the card"));
+  return { signals, d, c, score, pinned, flagged, reason, costReason, evidence, linkKind, paths };
+}
+function reviewOrder(choices) {
+  return [...choices.filter((choice) => choice.review?.flagged).sort((a, b) => b.review.score - a.review.score), ...choices.filter((choice) => !choice.review?.flagged)];
+}
+
 // ../claude-code/core/project.ts
 var LENS_THRESHOLD = 4;
 var ML_NAME_LONG = [
@@ -2510,7 +2586,6 @@ var CARD_IDLE_MS = 900;
 var CARD_MIN_WORDS = 6;
 var SKETCH_DELAY_MS = 700;
 var AMEND_DELAY_MS = 1500;
-var LEARNED_AFTER = 2;
 var DRAFT_MAX = 8e3;
 var REFS_MAX = 4;
 var STAKES = {
@@ -2519,10 +2594,6 @@ var STAKES = {
   compete: "a challenge or competition, scored on held-out data",
   study: "research meant to stand up to review"
 };
-var LENS_WORDS = [
-  ["ml-research", /\b(?:train(?:ing)?|dataset|accuracy|auc|cross-?valid\w*|overfit\w*|leak\w*|regression|classif\w*|features?|labels?|benchmark\w*|baselines?|hyperparam\w*|predict\w*|evaluat\w*|metrics?|test set|validation|fine-?tun\w*|embedding\w*)\b/gi],
-  ["system-design", /\b(?:services?|queues?|cach\w+|databases?|scal(?:e|ing|ability)|latency|throughput|replica\w*|shard\w*|load balanc\w*|microservices?|kafka|redis|postgres\w*|consistency|availability|rate limit\w*|backpressure|idempoten\w*|retries|webhooks?)\b/gi]
-];
 var EMPTY_PROFILE = { name: "general", description: "", maxCues: 3, rubric: "", examples: [] };
 function createCore(assets, options2) {
   return new Core(assets, options2);
@@ -2562,7 +2633,7 @@ var Core = class {
   sheetEnabled;
   readMode = "auto";
   chaptersEnabled = true;
-  tiersEnabled = false;
+  reviewFirst = false;
   profileSelected = false;
   sketchEnabled = true;
   refsEnabled = true;
@@ -2574,6 +2645,7 @@ var Core = class {
   /** The running turn's card (the agent's own choices), kept while a follow-up is being written over it. */
   turnCard = null;
   /** Decisions of a message typed during a turn: the engine queues it, so they belong to the turn that runs it. */
+  pendingReviews = [];
   pendingSent = [];
   nextCard = 1;
   cardCache = new Lru(24);
@@ -2657,7 +2729,7 @@ var Core = class {
         this.onFocus(event.dir, event.cue);
         break;
       case "submit":
-        this.onSubmit(event.text, event.amendable !== false, event.plan !== false);
+        this.onSubmit(event.text, event.amendable !== false, event.plan !== false, event.reviewPrompt, event.reviewRows);
         break;
       case "loadState":
         this.state.load(event.state);
@@ -2691,6 +2763,11 @@ var Core = class {
           this.turnCard = this.newCard("turn");
           this.turnCard.submittedAt = this.now;
           this.turnCard.sent = this.pendingSent;
+          if (this.reviewFirst) {
+            const at = this.pendingReviews.findIndex(({ sent }) => sent === event.text);
+            const queued = at >= 0 ? this.pendingReviews.splice(at, 1)[0] : void 0;
+            this.turnCard.reviewContext = queued?.context ?? this.reviewContext(event.text ?? "", null);
+          }
           this.pendingSent = [];
           if (this.card?.stage !== "draft") {
             this.reviewAt = null;
@@ -2813,7 +2890,7 @@ var Core = class {
     const sheetChanged = sheetEnabled !== this.sheetEnabled;
     this.sheetEnabled = sheetEnabled;
     this.chaptersEnabled = e.chapters !== false;
-    this.tiersEnabled = e.tiers === true;
+    this.reviewFirst = e.reviewFirst === true;
     this.profileSelected = e.profileSelected === true;
     const readMode = e.read ?? "auto";
     const readModeChanged = this.readMode !== readMode;
@@ -3111,7 +3188,7 @@ var Core = class {
     const step = dir === -1 ? -1 : 1;
     this.focus = visible[(at + step + visible.length) % visible.length].id;
   }
-  onSubmit(text2, amendable, plan = true) {
+  onSubmit(text2, amendable, plan = true, reviewPrompt, reviewRows) {
     const prompt = !isHostCommand(text2) && text2.trim() !== "";
     const isPrompt = this.enabled && prompt;
     if (this.mode !== void 0 && text2 !== this.text) this.refreshState(text2);
@@ -3129,7 +3206,7 @@ ${open}` : attached.text;
     const sent = target ? `${asked.replace(/\s+$/, "")}
 
 ${target}` : asked;
-    if (this.sheetEnabled !== void 0) this.onCardSubmit(prompt, exact, amendable, added);
+    if (this.sheetEnabled !== void 0) this.onCardSubmit(prompt, exact, amendable, added, reviewPrompt ?? text2, sent, reviewRows);
     if (this.mode !== void 0) {
       this.dropAmendment("new-submit");
       if (isPrompt && amendable && text2 === this.text && this.cloudAllowed() && !this.cues.some((cue) => !cue.stale && !cue.provisional)) {
@@ -3180,6 +3257,7 @@ ${target}` : asked;
     this.turnCard = null;
     this.pendingSent = [];
     this.receipt = null;
+    this.pendingReviews = [];
     this.turnRunning = false;
     this.resetDraft();
     this.state.reset();
@@ -3654,14 +3732,11 @@ ${settled.map((line) => `- ${line}`).join("\n")}`);
     return this.depthOf(this.state.profileFor(slot) ?? this.profileName);
   }
   /** Profiles for this reading: the project's, the one the person picked, and any the draft's own words call for. */
-  lensProfiles() {
+  lensProfiles(text2 = this.text) {
     const profiles = /* @__PURE__ */ new Set();
     for (const lens of this.projectLenses) if (this.state.forProfile(lens.profile).length) profiles.add(lens.profile);
     if (this.profileName !== "general" && this.state.forProfile(this.profileName).length) profiles.add(this.profileName);
-    for (const [profile, words] of LENS_WORDS) {
-      const hits = new Set((this.text.match(words) ?? []).map((word) => word.toLowerCase()));
-      if (hits.size >= 2 && this.state.forProfile(profile).length) profiles.add(profile);
-    }
+    for (const profile of draftExpertProfiles(text2)) if (this.state.forProfile(profile).length) profiles.add(profile);
     return [...profiles];
   }
   /**
@@ -3879,7 +3954,7 @@ ${lines.join("\n")}` : "";
     const row = card?.rows.find((entry) => entry.id === rowId);
     if (!card || !row) return;
     card.dismissed.add(row.key);
-    if (this.tiersEnabled && card.stage === "turn" && row.origin === "agent") (card.dismissedAgent ??= []).push(row);
+    if (this.reviewFirst && card.stage === "turn" && row.origin === "agent") (card.dismissedAgent ??= []).push(row);
     card.rows = card.rows.filter((entry) => entry !== row);
     this.fixCardFocus();
     this.metric("card-dismissed", { card: card.id, row: row.key, origin: row.origin, stage: card.stage });
@@ -4048,8 +4123,22 @@ ${tidySketch(sketch.lines).join("\n")}
 \`\`\``;
   }
   // ---- after Enter: the agent's own choices, then the receipt ----------------------
-  onCardSubmit(prompt, exact, amendable, added) {
+  reviewContext(prompt, card) {
+    return {
+      prompt,
+      rows: card?.rows.map(({ key, label, statement, options: options2, picked }) => ({ key, label, statement, options: [...options2], leftOpen: picked === null })),
+      expert: reviewExpertDecisions(
+        this.assets.bundles ?? [],
+        [.../* @__PURE__ */ new Set([...this.lensProfiles(prompt), ...auditExpertProfiles(prompt)])],
+        this.wordingLanguage(),
+        (profile) => this.depthOf(profile)
+      )
+    };
+  }
+  onCardSubmit(prompt, exact, amendable, added, typed, sent, reviewRows) {
     const card = exact && this.card?.stage === "draft" ? this.card : null;
+    const context = this.reviewFirst && prompt ? this.reviewContext(typed, card) : void 0;
+    if (context && reviewRows) context.rows = reviewRows;
     if (prompt && this.enabled) {
       this.metric("card-submitted", {
         ...card && { card: card.id },
@@ -4067,6 +4156,7 @@ ${tidySketch(sketch.lines).join("\n")}
     if (this.turnRunning) {
       if (this.card?.stage === "draft") this.clearCard();
       this.pendingSent.push(...added.filter((line) => !line.startsWith(FILE_REFERENCES_HEADING)));
+      if (context && !typed.startsWith("Amendment to my last prompt:")) this.pendingReviews.push({ sent, context });
       if (this.turnCard) this.card = this.turnCard;
       return;
     }
@@ -4075,6 +4165,7 @@ ${tidySketch(sketch.lines).join("\n")}
     if (!this.turnRunning) return;
     this.card = this.turnCard = this.newCard("turn");
     this.card.submittedAt = this.now;
+    this.card.reviewContext = context;
     this.card.sent = added.filter((line) => !line.startsWith(FILE_REFERENCES_HEADING));
   }
   onBlank(label, choice, alternatives) {
@@ -4093,9 +4184,14 @@ ${tidySketch(sketch.lines).join("\n")}
     const row = card.rows.find((entry) => entry.key === key);
     if (row) {
       if (normalize(row.options[0] ?? "") === normalize(choice)) return;
-      Object.assign(row, { options: options2, defaults: [0], picked: null, sent: void 0 });
+      if (this.reviewFirst && row.sent) {
+        const value = row.options[row.sent[0] ?? 0];
+        let selected = options2.findIndex((option) => normalize(option) === normalize(value));
+        if (selected === -1) selected = options2.push(value) - 1;
+        Object.assign(row, { options: options2, defaults: [0], picked: [selected], sent: [selected] });
+      } else Object.assign(row, { options: options2, defaults: [0], picked: null, sent: void 0 });
     } else {
-      if (!this.tiersEnabled && card.rows.length >= 8 || card.dismissed.has(key)) return;
+      if (!this.reviewFirst && card.rows.length >= 8 || card.dismissed.has(key)) return;
       card.rows.push({
         id: this.newId(),
         key,
@@ -4133,21 +4229,19 @@ ${tidySketch(sketch.lines).join("\n")}
       return;
     }
     const agent = card.rows.filter((row) => row.origin === "agent");
-    const recorded = this.tiersEnabled ? [...agent, ...card.dismissedAgent ?? []] : agent;
+    const recorded = this.reviewFirst ? [...agent, ...card.dismissedAgent ?? []].sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1))) : agent;
+    const context = this.reviewFirst ? { ...card.reviewContext ?? this.reviewContext("", null), learned: this.learned } : null;
     if (card.sent.length || recorded.length) {
       this.receipt = {
         id: this.nextReceipt++,
         yours: card.sent,
+        ...context && { reviewContext: context },
         agent: recorded.map((row) => {
           const now3 = (row.sent ?? row.defaults)[0] ?? 0;
           const value = row.options[now3];
-          const ranked = this.tiersEnabled ? { label: row.statement.replace(/: \{\}$/, ""), tier: choiceTier(row.statement, value) } : { label: row.label };
-          return {
-            ...ranked,
-            value,
-            ...now3 !== 0 && { was: row.options[0] },
-            options: [...row.options]
-          };
+          const label = context ? row.statement.replace(/: \{\}$/, "") : row.label;
+          const choice = { label, value, ...now3 !== 0 && { was: row.options[0] }, options: [...row.options] };
+          return context ? { ...choice, review: scoreChoice({ ...choice, switched: row.sent !== void 0 }, context) } : choice;
         })
       };
       this.metric("receipt", { id: this.receipt.id, yours: card.sent.length, agent: recorded.length, changed: recorded.filter((row) => row.sent).length });
@@ -4564,9 +4658,9 @@ function expertChoice(item) {
   return { key: item.key, statement: item.statement, options: item.options.map((option) => option.label) };
 }
 function duplicatesCardRow(rows, choice) {
-  return rows.some((row) => sameDecision(row, choice)) || asksPlaces(rows, choice);
+  return rows.some((row) => sameDecision2(row, choice)) || asksPlaces(rows, choice);
 }
-function sameDecision(row, item) {
+function sameDecision2(row, item) {
   if (normalizeTopic(row.key) === normalizeTopic(item.key) || normalizeTopic(row.statement) === normalizeTopic(item.statement)) return true;
   if (row.type !== "one") return false;
   if (sameOptions(row.options, item.options) && row.options.some((option) => !/^(?:yes|no|on|off)$/i.test(option.trim()))) return true;
@@ -11519,13 +11613,46 @@ ${declared}`) };
 
 // src/store.ts
 import { spawn } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync as statSync2, unwatchFile, watchFile, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync as statSync2, unwatchFile, watchFile, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+
+// ../claude-code/core/review-log.ts
+var REVIEW_LOG_FILE = "review-first.jsonl";
+function reviewLogLine(receiptId, host, projectRootHash, prompt, choices, time = (/* @__PURE__ */ new Date()).toISOString()) {
+  const chars = Array.from(prompt);
+  const excerpt = chars.length <= 4e3 ? prompt : chars.slice(0, 1999).join("") + "\n\u2026\n" + chars.slice(-1998).join("");
+  return JSON.stringify({
+    receiptId,
+    time,
+    host,
+    projectRootHash,
+    prompt: excerpt,
+    choices: choices.flatMap(({ label, value, options: options2, review }) => review ? [{
+      label,
+      chosen: value,
+      alternatives: options2.filter((option) => option !== value),
+      signals: review.signals,
+      costReason: review.costReason,
+      d: review.d,
+      c: review.c,
+      score: review.score,
+      pinned: review.pinned,
+      flagged: review.flagged,
+      reason: review.reason,
+      evidence: review.evidence,
+      linkKind: review.linkKind,
+      paths: review.paths
+    }] : [])
+  });
+}
+
+// src/store.ts
 var HOME = process.env["MARGINCUE_HOME"] ?? join(homedir(), ".margincue");
 var PATHS = {
   settings: join(HOME, "settings.json"),
   learned: join(HOME, "learned.json"),
+  audit: join(HOME, REVIEW_LOG_FILE),
   turn: join(HOME, "codex", "turn.json"),
   /** The last prompt the composer handed back: its card was seen before sending. */
   composed: join(HOME, "codex", "composed.json"),
@@ -11546,6 +11673,14 @@ function writeJson(file, value) {
   renameSync(temp, file);
 }
 var readSettings = () => readJson(PATHS.settings, {});
+var auditEnabled = (settings) => (settings.audit ?? settings.tiers) === "on";
+function appendReviewLog(line) {
+  mkdirSync(HOME, { recursive: true, mode: 448 });
+  if (lstatSync(HOME).isSymbolicLink() || lstatSync(PATHS.audit, { throwIfNoEntry: false })?.isSymbolicLink()) {
+    throw new Error("The audit log path is a symbolic link");
+  }
+  appendFileSync(PATHS.audit, line + "\n", { mode: 384 });
+}
 var saveSettings = (settings) => writeJson(PATHS.settings, settings);
 function watchSettings(changed) {
   const update = () => changed(readSettings());
@@ -11843,7 +11978,7 @@ import { spawn as spawn2 } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.31";
+var VERSION = "0.4.32";
 var MIN_CODEX = "0.171";
 function tooOld(output2) {
   const match = /codex-cli (\d+)\.(\d+)\.(\d+)/.exec(output2);
@@ -12518,20 +12653,24 @@ async function compose(file) {
   }
   function submit() {
     if (inAgent() || !draft.text.trim()) return finish(draft.text);
+    const card = view?.text === draft.text ? view?.card : void 0;
     const effects = core.handle({ type: "submit", now: now(), text: draft.text, amendable: false });
     const sent = effects.find((fx) => fx.type === "submit");
-    finish(sent?.text ?? draft.text);
+    finish(sent?.text ?? draft.text, false, card?.stage === "draft" ? card : void 0);
   }
   function cancel() {
     finish(seed, true);
   }
-  function finish(text2, unchanged = false) {
+  function finish(text2, unchanged = false, card) {
     if (finished) return;
     finished = true;
     if (!unchanged || text2 !== seed) writeFileSync2(file, text2);
     if (!unchanged && text2.trim()) {
       try {
-        writeJson(PATHS.composed, { text: text2, at: Date.now() });
+        writeJson(PATHS.composed, { text: text2, at: Date.now(), ...auditEnabled(settings) && {
+          cwd,
+          review: { prompt: draft.text, profiles: card?.lenses, rows: card?.rows.map(({ key, label, statement, options: options2, chosen }) => ({ key, label, statement, options: options2, leftOpen: !chosen })) }
+        } });
       } catch {
       }
     }
@@ -12708,6 +12847,9 @@ async function compose(file) {
   } else if (draft.text.trim()) run({ type: "draft", now: now(), text: draft.text, origin: "open", cursor: draft.cursor });
   draw();
 }
+
+// src/hooks.ts
+import { createHash } from "node:crypto";
 
 // ../claude-code/core/kickoff.ts
 var HOST_COMMAND = /^(?:\/[a-z][\w:-]*(?:\s|$)|(?:\$|>)\s|```|(?:git|gh|npm|npx|pnpm|yarn|bun|docker|kubectl|cargo|pip|uv|brew|sudo|cd|ls|rm|mv|cp|grep|rg|curl|wget|chmod|chown)\s+\S|(?:python3?|node|bash|zsh)\s+(?:[./~-]|\S+\.[a-z]+\b)|@\S+\s*$)/;
@@ -12916,8 +13058,7 @@ var READING_FIRST = [
   '- The choices the prompt leaves open that you settle now, each marked as described in "Choices you make for the user".'
 ].join("\n");
 var CARD_TOOL = "mcp__margincue__margincue_card";
-function desktopCardFirst(prompt, settings, cwd) {
-  const id = cwd ? startCard(prompt, cwd, settings) : null;
+function desktopCardFirst(settings, id, cwd) {
   const call = id ? [
     `Your first action must be this exact tool call, before any tool search, file read or message: \`${CARD_TOOL}\` with {"card": ${JSON.stringify(id)}}.`,
     `In code mode, that is: await tools.${CARD_TOOL}({ card: ${JSON.stringify(id)} })`
@@ -12932,7 +13073,31 @@ function desktopCardFirst(prompt, settings, cwd) {
 var COMPOSED_FRESH_MS = 10 * 60 * 1e3;
 function composed(prompt) {
   const last = readJson(PATHS.composed, null);
-  return Boolean(last && last.text.trim() === prompt.trim() && Date.now() - last.at < COMPOSED_FRESH_MS);
+  return last && last.text.trim() === prompt.trim() && Date.now() - last.at < COMPOSED_FRESH_MS ? last : null;
+}
+function reviewContext(prompt, seen, previous) {
+  if (seen?.review) return seen.review;
+  if (isCardFollowUp(prompt) && previous?.reviewCardId) {
+    const card = readRecord(previous.reviewCardId);
+    if (card && card.cwd === previous.cwd) {
+      const note = /^Also: (.+)$/m.exec(prompt)?.[1];
+      const decisions = decisionsOf(prompt);
+      return {
+        prompt: note ? `${card.prompt}
+
+${note}` : card.prompt,
+        profiles: [...new Set(card.card.rows.flatMap(({ lens }) => lens ? [lens] : []))],
+        rows: card.card.rows.map(({ label, key, statement, options: options2 }) => ({
+          key: key ?? label,
+          label,
+          statement,
+          options: options2,
+          leftOpen: !options2.some((option) => decisions.includes(decisionLine({ statement, option })))
+        }))
+      };
+    }
+  }
+  return { prompt: prompt.split(/\n\n(?:Open choices \(|Target output, as sketched \()/, 1)[0] ?? prompt };
 }
 function promptHook(input) {
   if (process.env["MARGINCUE_READER"]) return null;
@@ -12944,8 +13109,12 @@ function promptHook(input) {
   const prompt = fromApp && input.transcript_path ? appMessage(input.transcript_path) ?? typed : typed;
   if (source === "exec") return null;
   const previous = readJson(PATHS.turn, null);
+  const seen = composed(prompt);
+  const related = previous && previous.session === (input.session_id ?? "") && previous.cwd === input.cwd ? previous : null;
+  const audit = auditEnabled(settings);
+  let record;
   if (input.turn_id && input.transcript_path && input.cwd) {
-    const record = previous && previous.turn === input.turn_id && previous.session === (input.session_id ?? "") ? { ...previous, endedAt: null, decisions: [.../* @__PURE__ */ new Set([...previous.decisions, ...decisionsOf(prompt)])] } : {
+    record = previous && previous.turn === input.turn_id && previous.session === (input.session_id ?? "") ? { ...previous, endedAt: null, decisions: [.../* @__PURE__ */ new Set([...previous.decisions, ...decisionsOf(prompt)])] } : {
       session: input.session_id ?? "",
       turn: input.turn_id,
       transcript: input.transcript_path,
@@ -12953,12 +13122,9 @@ function promptHook(input) {
       startedAt: Date.now(),
       endedAt: null,
       decisions: decisionsOf(prompt),
-      source
+      source,
+      ...audit && { review: reviewContext(prompt, !seen?.cwd || seen.cwd === input.cwd ? seen : null, related) }
     };
-    try {
-      writeJson(PATHS.turn, record);
-    } catch {
-    }
   }
   const context = [];
   if (settings.blanks !== false && ASSETS.blanksProtocol) context.push(ASSETS.blanksProtocol);
@@ -12974,9 +13140,18 @@ function promptHook(input) {
     ].join(" "));
   } else if (source === "app" && isCardFollowUp(prompt)) {
     context.push("The user confirmed their previous prompt in MarginCue. Proceed with that prompt and any Decisions or addition in this message.");
-  } else if (!fromApp && settings.mode !== "quiet" && !prompt.startsWith("Amendment to my last prompt:") && !composed(prompt) && startsSomethingNew(opening, { firstOfSession })) {
-    if (source === "app") context.push(desktopCardFirst(prompt, settings, input.cwd));
-    else if (settings.read !== "key") context.push(READING_FIRST);
+  } else if (!fromApp && settings.mode !== "quiet" && !prompt.startsWith("Amendment to my last prompt:") && !seen && startsSomethingNew(opening, { firstOfSession })) {
+    if (source === "app") {
+      const id = input.cwd ? startCard(prompt, input.cwd, settings) : null;
+      if (audit && record && id) record.reviewCardId = id;
+      context.push(desktopCardFirst(settings, id, input.cwd));
+    } else if (settings.read !== "key") context.push(READING_FIRST);
+  }
+  if (record) {
+    try {
+      writeJson(PATHS.turn, record);
+    } catch {
+    }
   }
   if (!context.length) return null;
   return { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: context.join("\n\n") } };
@@ -12988,36 +13163,66 @@ function stopHook(input) {
   const source = input.transcript_path ? sessionSource(input.transcript_path) : "unknown";
   if (source === "exec") return null;
   const record = readJson(PATHS.turn, null);
-  const mine = record?.turn === input.turn_id ? record : null;
+  const mine = record?.turn === input.turn_id && (!input.session_id || record.session === input.session_id) ? record : null;
+  const context = mine?.review;
   if (mine) {
     mine.endedAt = Date.now();
+    delete mine.review;
     try {
       writeJson(PATHS.turn, mine);
     } catch {
     }
   }
   const messages = input.transcript_path ? turnMessages(input.transcript_path, input.turn_id) : [];
+  const userMessages = input.transcript_path ? turnMessages(input.transcript_path, input.turn_id, "UserMessage") : [];
   if (input.last_assistant_message) messages.push(input.last_assistant_message);
   const chosen = /* @__PURE__ */ new Map();
-  for (const message of messages) for (const blank of parseBlanks(message)) chosen.set(blank.label, blank.choice);
-  const amended = input.transcript_path ? turnAmendments(turnMessages(input.transcript_path, input.turn_id, "UserMessage")) : /* @__PURE__ */ new Map();
-  const choices = [...chosen].map(([label, original]) => {
+  for (const message of messages) for (const blank of parseBlanks(message)) chosen.set(blank.label, blank);
+  const amended = turnAmendments(userMessages);
+  const choices = [...chosen].map(([label, blank]) => {
     const value = amended.get(label.toLowerCase());
-    return { label, value: value ?? original, switched: value !== void 0 };
+    const options2 = [.../* @__PURE__ */ new Set([blank.choice, ...blank.alternatives, ...value === void 0 ? [] : [value]])];
+    return { label, value: value ?? blank.choice, switched: value !== void 0, options: options2 };
   });
   const yours = mine?.decisions.length ?? 0;
   if (!chosen.size && !yours) return null;
-  return { systemMessage: receiptLine(yours, choices, source, settings.tiers === "on") };
+  if (!auditEnabled(settings)) return { systemMessage: receiptLine(yours, choices, source) };
+  const root = mine?.cwd ?? input.cwd ?? "";
+  const submitted = context ?? reviewContext(userMessages[0] ?? "", null, null);
+  const depths = cardConfig(settings).depths ?? {};
+  const reviewInput = {
+    ...submitted,
+    learned: root ? readLearned(root) : {},
+    expert: reviewExpertDecisions(
+      ASSETS.bundles ?? [],
+      [.../* @__PURE__ */ new Set([...submitted.profiles ?? [], ...auditExpertProfiles(submitted.prompt)])],
+      "en",
+      (profile) => depths[profile] ?? "standard"
+    )
+  };
+  const scored = choices.map((choice) => ({ ...choice, review: scoreChoice(choice, reviewInput) }));
+  if (root) {
+    try {
+      const hash = createHash("sha256").update(root).digest("hex");
+      appendReviewLog(reviewLogLine(input.turn_id, "codex", hash, submitted.prompt, scored));
+    } catch {
+    }
+  }
+  return { systemMessage: receiptLine(yours, scored, source) };
 }
-function receiptLine(yours, agent, source = "cli", tiers = false) {
+function receiptLine(yours, agent, source = "cli") {
   const switched = agent.filter((choice) => choice.switched).length;
-  const parts = [`MarginCue \xB7 you set ${yours} \xB7 the agent chose ${agent.length}${switched ? ` \xB7 you switched ${switched}` : ""}`];
+  const flagged = agent.filter((choice) => choice.review?.flagged).length;
+  const parts = [`MarginCue \xB7 you set ${yours} \xB7 the agent chose ${agent.length}${switched ? ` \xB7 you switched ${switched}` : ""}${flagged ? ` \xB7 ${flagged} to review first` : ""}`];
   if (agent.length) {
     const format = ({ label, value, switched: switched2 }) => `${label}: ${value}${switched2 ? " (switched)" : ""}`;
-    if (tiers) {
-      const choices = rankedChoices(agent.map((choice) => ({ ...choice, tier: choiceTier(`${choice.label}: {}`, choice.value) })));
-      parts.push(tierCounts(choices), choices.map((choice) => `[${choice.tier}] ${format(choice)}`).join(" \xB7 "));
-    } else parts.push(agent.map(format).join(" \xB7 "));
+    const ordered = flagged ? reviewOrder(agent) : agent;
+    if (flagged) parts.push(`Review first: ${ordered.slice(0, flagged).map((choice) => {
+      const review = choice.review;
+      const alternatives = choice.options?.filter((option) => option !== choice.value).map((option) => `\u2192 ${option}`) ?? [];
+      return `${format(choice)} (${[truncate(review.reason, 59), review.evidence, ...alternatives].join(" \xB7 ")})`;
+    }).join(" \xB7 ")}`);
+    if (ordered.length > flagged) parts.push(ordered.slice(flagged).map(format).join(" \xB7 "));
     if (source === "cli" || source === "unknown") {
       parts.push(process.env["MARGINCUE_CARD"] === "prompt" ? "alt+\u2193 under the prompt to switch one" : "ctrl+g to switch one");
     }
@@ -13134,12 +13339,13 @@ function cardOf(core, seed, sketchOn, refsOn) {
     const row = view?.rows.find((row2) => row2.origin === "repo" && row2.statement === `"${mention.phrase}" is {}`);
     return { phrase: mention.phrase, candidates: mention.near, ...row && { rowId: row.id } };
   });
-  const rows = (view?.rows ?? []).map(({ id: id2, key, origin, learned, label, type, statement, options: options2, selected, openOnSend }) => {
+  const rows = (view?.rows ?? []).map(({ id: id2, key, origin, learned, lens, label, type, statement, options: options2, selected, openOnSend }) => {
     const mention = missing.find((name) => name.rowId === id2);
     return {
       id: id2,
       key,
       origin,
+      ...lens && { lens },
       ...learned && { learned },
       label,
       type,
@@ -13439,7 +13645,7 @@ async function serveMcp() {
 // src/relay.ts
 import { spawn as spawn4, spawnSync as spawnSync2 } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync as mkdirSync3, renameSync as renameSync3, writeFileSync as writeFileSync4 } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 import { dirname as dirname2, join as join4, resolve } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
@@ -13519,7 +13725,9 @@ var Band = class {
     for (const abort of this.inflight.values()) abort.abort();
     this.model.close();
   }
+  audit = false;
   configure(settings) {
+    this.audit = auditEnabled(settings);
     const config = cardConfig(settings);
     this.readOnDemand = settings.mode !== "off" && config.read === "key";
     this.sendOpen = config.send === "open";
@@ -13648,6 +13856,7 @@ var Band = class {
       this.coreText = text2;
       this.run({ type: "draft", now: now2(), text: text2, origin: "type", edit: diffSplice(this.view?.text ?? "", text2), cursor: text2.length });
     }
+    const card = this.view?.text === text2 ? this.view.card : void 0;
     let sent = text2;
     let decisions = [];
     for (const fx of this.core.handle({ type: "submit", now: now2(), text: text2, amendable: false })) {
@@ -13667,7 +13876,7 @@ var Band = class {
     else if (!approx) answer = { t: "enter", do: "replace", text: sent };
     else answer = { t: "enter", do: "pass" };
     const final = answer.do === "append" ? `${head}${answer.text}` : answer.do === "replace" ? sent : text2;
-    this.mark(final, true);
+    this.mark(final, true, text2, card);
     this.send(answer);
   }
   onKey(key) {
@@ -13742,11 +13951,14 @@ var Band = class {
     this.send({ t: "write", id: ++this.writes, text: text2, ...expect !== void 0 && { expect } });
   }
   /** Mark the prompt as one whose card was seen, for the prompt hook. */
-  mark(text2, force = false) {
+  mark(text2, force = false, typed = text2, card = this.view?.card) {
     if (!text2.trim() || !force && text2 === this.marked) return;
     this.marked = text2;
     try {
-      writeJson(PATHS.composed, { text: text2, at: Date.now() });
+      writeJson(PATHS.composed, { text: text2, at: Date.now(), ...this.audit && {
+        cwd: this.cwd,
+        review: { prompt: typed, profiles: card?.lenses, rows: card?.stage === "draft" ? card.rows.map(({ key, label, statement, options: options2, chosen }) => ({ key, label, statement, options: options2, leftOpen: !chosen })) : void 0 }
+      } });
     } catch {
     }
   }
@@ -14032,7 +14244,7 @@ async function installRelay(say, source = sourceRoot()) {
       const url = `${RELEASES}/v${VERSION}/${name}`;
       const [binary, sum] = await Promise.all([fetchBytes(url), fetchBytes(`${url}.sha256`)]);
       const expected = sum.toString("utf8").trim().split(/\s+/)[0];
-      if (createHash("sha256").update(binary).digest("hex") !== expected) throw new Error("checksum mismatch");
+      if (createHash2("sha256").update(binary).digest("hex") !== expected) throw new Error("checksum mismatch");
       const temp = `${RELAY}.download`;
       writeFileSync4(temp, binary);
       chmodSync(temp, 493);
@@ -14261,11 +14473,11 @@ function readText(file) {
 }
 function appendProfile(file, text2) {
   if (process.platform !== "win32") {
-    appendFileSync(file, text2);
+    appendFileSync2(file, text2);
     return;
   }
   const before2 = existsSync2(file) ? readFileSync5(file) : Buffer.alloc(0);
-  appendFileSync(file, before2.length ? text2 : `\uFEFF${text2}`, hasUtf16LeBom(before2) ? "utf16le" : "utf8");
+  appendFileSync2(file, before2.length ? text2 : `\uFEFF${text2}`, hasUtf16LeBom(before2) ? "utf16le" : "utf8");
 }
 function powershellProfiles() {
   const files = /* @__PURE__ */ new Set();
@@ -14306,7 +14518,7 @@ function status2() {
   const settings = readSettings();
   const user = readUser(settings.user);
   process.stdout.write([
-    `MarginCue for Codex: ${settings.mode ?? "auto"} \xB7 sketch ${settings.sketch === false ? "off" : "on"} \xB7 blanks ${settings.blanks === false ? "off" : "on"}`,
+    `MarginCue for Codex: ${settings.mode ?? "auto"} \xB7 sketch ${settings.sketch === false ? "off" : "on"} \xB7 blanks ${settings.blanks === false ? "off" : "on"} \xB7 audit ${auditEnabled(settings) ? "on" : "off"}`,
     `Read: ${settings.read === "key" ? "key" : "auto"} \xB7 Send: ${sendSetting(settings)} \xB7 Chapters: ${settings.chapters === false ? "off" : "on"}`,
     user ? `You: ${describeUser(user)}` : "Run margincue setup to set your level and the kinds of choices you make.",
     `Composer: ${existsSync2(STABLE) ? STABLE : "not installed (margincue setup)"}`

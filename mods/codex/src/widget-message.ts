@@ -5,7 +5,7 @@ import type { CardRowView, SendSetting } from '../../claude-code/core/types'
 import { DEFAULT_SEND } from '../../claude-code/core/types'
 
 export type WidgetRow = Pick<CardRowView, 'id' | 'label' | 'type' | 'statement' | 'options'> &
-  Partial<Pick<CardRowView, 'key' | 'origin' | 'learned' | 'openOnSend'>> & {
+  Partial<Pick<CardRowView, 'key' | 'origin' | 'learned' | 'openOnSend' | 'lens'>> & {
   assumed: number[]
   files?: string[]
 }

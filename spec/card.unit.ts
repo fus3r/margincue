@@ -32,6 +32,18 @@ const requests = (effects: Effect[]) => effects.filter((effect): effect is Extra
 const lastView = (effects: Effect[]): View | undefined =>
   effects.filter((effect): effect is Extract<Effect, { type: 'view' }> => effect.type === 'view').at(-1)?.view
 
+test('a normal typed draft sends the v0.4.31 card request byte for byte', () => {
+  for (const reviewFirst of [false, true]) {
+    const core = createCore(ASSETS)
+    core.handle(config({ reviewFirst }))
+    const request = requests(core.handle({ type: 'draft', now: 100, text: DRAFT, origin: 'type' }))
+      .find(({ kind }) => kind === 'card')
+    assert.ok(request)
+    assert.equal(createHash('sha256').update(JSON.stringify(request)).digest('hex'),
+      'fdb751b9c493bbeb795f681f33c5f5380affb305ca6f716e3137dd086730cbbf')
+  }
+})
+
 test('card replies parse into typed rows and skip what is malformed', () => {
   const parsed = card.parseCard([
     'Here is the card:', READING,
@@ -1025,7 +1037,7 @@ test('during a turn, switching a marked choice sends one amendment after the las
 
 test('the receipt keeps every marked choice, including a switch dismissed during the turn', () => {
   const core = createCore(ASSETS)
-  core.handle(config({ tiers: true }))
+  core.handle(config({ reviewFirst: true }))
   core.handle({ type: 'turnStart', now: 10 })
   for (let i = 0; i < 9; i++) {
     core.handle({ type: 'blank', now: 11 + i, label: `setting ${i}`, choice: 'on', alternatives: ['off'] })
@@ -1037,6 +1049,45 @@ test('the receipt keeps every marked choice, including a switch dismissed during
   assert.equal(view.receipt?.agent.length, 9)
   assert.equal(view.receipt?.agent.find((item) => item.label === 'setting 0')?.value, 'on')
   assert.equal(view.card?.rows.length, 8)
+})
+
+test('a receipt uses the card at send time, the original prompt and the learned decision at turn end', () => {
+  const core = createCore(ASSETS)
+  const prompt = 'Keep the results available quickly for everyone on the dashboard.'
+  core.handle(config({ reviewFirst: true }))
+  const [req] = requests(core.handle({ type: 'draft', now: 100, text: prompt, origin: 'paste' }))
+  core.handle({ type: 'reply', now: 500, req: req!.req, done: true, text: [
+    'read | Keep the dashboard fast.',
+    'row | cache_backend | cache | one | Cache results in {} | local memory | Redis',
+    'row | expiration_time | lifetime | one | Keep cached results for {} | thirty seconds | one minute',
+  ].join('\n') })
+  core.handle({ type: 'submit', now: 700, text: prompt })
+  core.handle({ type: 'turnStart', now: 710, text: 'This is the rewritten prompt.' })
+  core.handle({ type: 'draft', now: 720, origin: 'type', text: 'Use local memory in the other tool.' })
+  core.handle({ type: 'learned', picks: { cache_backend: { label: 'Redis', count: 2 } } })
+  core.handle({ type: 'blank', now: 800, label: 'cache', choice: 'local memory', alternatives: ['Redis'] })
+  core.handle({ type: 'blank', now: 801, label: 'lifetime', choice: 'one minute', alternatives: ['thirty seconds'] })
+  core.handle({ type: 'endAmendment', now: 900 })
+  const receipt = core.currentView().receipt!
+  assert.equal(receipt.reviewContext?.prompt, prompt)
+  assert.deepEqual(receipt.agent.map(({ review }) => [review?.signals.leftOpen, review?.reason, review?.flagged]),
+    [[true, 'you usually pick Redis', true], [true, 'you left it open', false]])
+})
+
+test('restated choices retain a switch, including a switch back to the original value', () => {
+  const core = createCore(ASSETS)
+  core.handle(config({ reviewFirst: true }))
+  core.handle({ type: 'turnStart', now: 10, text: 'Use thirty seconds for the initial timeout.' })
+  core.handle({ type: 'blank', now: 11, label: 'timeout', choice: 'thirty seconds', alternatives: ['one minute', 'two minutes'] })
+  const row = core.currentView().card!.rows[0]!.id
+  core.handle({ type: 'cardSet', now: 20, row, option: 1 })
+  core.handle({ type: 'timer', now: 1600 })
+  core.handle({ type: 'cardSet', now: 1610, row, option: 0 })
+  core.handle({ type: 'timer', now: 3200 })
+  core.handle({ type: 'blank', now: 3210, label: 'timeout', choice: 'two minutes', alternatives: ['one minute'] })
+  core.handle({ type: 'endAmendment', now: 3300 })
+  const [item] = core.currentView().receipt!.agent
+  assert.deepEqual([item?.value, item?.review?.signals.switched, item?.review?.flagged], ['thirty seconds', true, false])
 })
 
 test('expert words bring a profile catalog into the reading, and its decisions keep the catalog wording', () => {

@@ -3,10 +3,12 @@
 // composer can show the agent's choices during and after a turn).
 
 import { spawn } from 'node:child_process'
-import { closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, unwatchFile, watchFile, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, unwatchFile, watchFile, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { ReadingMode, SendSetting } from '../../claude-code/core/types'
+import type { ReviewContext } from '../../claude-code/core/review-first'
+import { REVIEW_LOG_FILE } from '../../claude-code/core/review-log'
 import { DEFAULT_SEND } from '../../claude-code/core/types'
 import type { UserProfile } from '../../claude-code/hooks/onboarding'
 
@@ -15,6 +17,7 @@ export const HOME = process.env['MARGINCUE_HOME'] ?? join(homedir(), '.margincue
 export const PATHS = {
   settings: join(HOME, 'settings.json'),
   learned: join(HOME, 'learned.json'),
+  audit: join(HOME, REVIEW_LOG_FILE),
   turn: join(HOME, 'codex', 'turn.json'),
   /** The last prompt the composer handed back: its card was seen before sending. */
   composed: join(HOME, 'codex', 'composed.json'),
@@ -28,6 +31,7 @@ export type Settings = {
   sketch?: boolean
   refs?: boolean
   chapters?: boolean
+  audit?: 'on' | 'off'
   tiers?: 'on' | 'off'
   blanks?: boolean
   user?: UserProfile
@@ -44,6 +48,8 @@ export type TurnRecord = {
   endedAt: number | null
   /** The Decisions the prompt carried. */
   decisions: string[]
+  review?: ReviewContext
+  reviewCardId?: string
   source: Source
 }
 export type Source = 'cli' | 'app' | 'ide' | 'exec' | 'unknown'
@@ -65,6 +71,18 @@ export function writeJson(file: string, value: unknown): void {
 }
 
 export const readSettings = () => readJson<Settings>(PATHS.settings, {})
+export const auditEnabled = (settings: Settings) => (settings.audit ?? settings.tiers) === 'on'
+
+export function appendReviewLog(line: string): void {
+  mkdirSync(HOME, { recursive: true, mode: 0o700 })
+  if (lstatSync(HOME).isSymbolicLink() || lstatSync(PATHS.audit, { throwIfNoEntry: false })?.isSymbolicLink()) {
+    throw new Error('The audit log path is a symbolic link')
+  }
+  appendFileSync(PATHS.audit, line + '\n', { mode: 0o600 })
+}
+
+export type ComposedPrompt = { text: string; at: number; cwd?: string; review?: ReviewContext }
+
 export const saveSettings = (settings: Settings) => writeJson(PATHS.settings, settings)
 
 export function watchSettings(changed: (settings: Settings) => void): () => void {

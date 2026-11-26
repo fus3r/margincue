@@ -1,6 +1,6 @@
 // `claude plugin test mods/claude-code`: the mod's hooks against the engine's
 // own test kit. Every hook the test registers with `on` stands for the engine.
-import type { ModelCompleteInput, ModelCompleteResult, On, PromptChangeInput, PromptChangeResult, PromptEditInput, PromptEditResult, RenderNode } from 'claude-code'
+import type { EngineInterface, ModelCompleteInput, ModelCompleteResult, On, PromptChangeInput, PromptChangeResult, PromptEditInput, PromptEditResult, RenderNode } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { MountSelectTarget, TestBody } from 'claude-code/testing'
 import { ASSETS } from '../hooks/assets'
@@ -62,7 +62,8 @@ const composer = ($: { prompt: unknown }) => $.prompt as Composer
 function world(on: Engine, reply: string | ((prompt: string, system: string) => Promise<string>) = REPLY,
   options: { git?: (args: string) => string | undefined; env?: Record<string, string>; submitted?: { text: string; origin: string }[]
     /** The model call failing: its result in place of a reply, or a throw or a promise that never settles. */
-    failure?: ModelFailure } = {}) {
+    failure?: ModelFailure; auditLog?: boolean
+    stat?: EngineInterface['fs']['stat'] } = {}) {
   const clock = mock.clock(on, { now: 1000 })
   const store = new Map<string, unknown>()
   const files = new Map<string, string>()
@@ -88,7 +89,8 @@ function world(on: Engine, reply: string | ((prompt: string, system: string) => 
     value: [...files.keys()].filter((path) => path.slice(0, path.lastIndexOf('/')) === norm(e.path).replace(/\/+$/, ''))
       .map((path) => ({ name: path.slice(path.lastIndexOf('/') + 1), kind: 'file' as const, size: 1, mtimeMs: 1, isLink: false })),
   }))
-  on('fs.stat', (_, e) => {
+  on('fs.stat', async (_, e) => {
+    if (options.stat) return { value: await options.stat(e.path) }
     if (!files.has(norm(e.path))) throw new Error('ENOENT')
     return { value: { kind: 'file' as const, size: files.get(norm(e.path))!.length, mtimeMs: writes.length, isLink: false } }
   })
@@ -153,6 +155,14 @@ function world(on: Engine, reply: string | ((prompt: string, system: string) => 
   })
   // No repository unless a test gives one: git answers as outside a work tree.
   on('process.run', (_, e) => {
+    const auditAction = e.init?.env?.MARGINCUE_AUDIT_ACTION ?? (e.argv.includes('margincue-audit') ? e.argv.at(-1) : undefined)
+    if (options.auditLog && auditAction) {
+      const path = e.init?.env?.MARGINCUE_AUDIT_LOG ?? e.argv.at(-2)!
+      if (auditAction === 'append') files.set(path, (files.get(path) ?? '') + e.init?.stdin)
+      else if (auditAction === 'clear') files.delete(path)
+      const count = (files.get(path) ?? '').trim().split('\n').filter(Boolean).length
+      return { value: { exitCode: 0, stdout: String(count), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
     const out = options.git?.(e.argv.join(' '))
     return { value: { exitCode: out === undefined ? 128 : 0, stdout: out ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
@@ -1441,7 +1451,7 @@ function textFrame(node: RenderNode): string {
     : children.join('\n'.repeat(1 + Number(node.props?.rowGap ?? 0)))
 }
 
-test('the default terminal receipt matches v0.4.28 and switches an older choice without naming the turn', async ($, on) => {
+test('the default terminal receipt matches v0.4.31 and switches an older choice without naming the turn', async ($, on) => {
   const { clock, box } = world(on)
   mock.session(on)
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
@@ -1463,7 +1473,7 @@ test('the default terminal receipt matches v0.4.28 and switches an older choice 
   }
   const receipt = await $.ui.mount({ plugin: 'margincue', component: 'Placed', requestId: 'receipt-1', surface: 'terminal',
     props: { id: 'receipt-1', plugin: 'margincue' } })
-  // Rendered with the same test against f6d765d.
+  // Rendered with the same test against 29a4c88.
   expect(textFrame(await receipt.drawn())).toBe([
     '   MarginCue   you set 0 · the agent chose 8',
     '        agent  layout  compact   [diff]  [→ roomy]',
@@ -1481,88 +1491,93 @@ test('the default terminal receipt matches v0.4.28 and switches an older choice 
   await receipt.unmount()
 })
 
-test('the terminal receipt folds low choices and session choices can switch an older turn', async ($, on) => {
-  const { clock, box, calls, panes, store } = world(on, '[]')
+test('session choices put flags first across three turns and switch an older choice', async ($, on) => {
+  const { clock, box, calls, panes, store, files } = world(on, '[]', { auditLog: true })
   mock.session(on)
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('ui.place', (_, e) => ({ value: { isPlaced: true, requestId: e.id } }))
-  on('tool.run', { tool: 'Write' }, () => ({ result: { type: 'update', filePath: '/project/tsconfig.json',
-    content: '{"compilerOptions":{}}\n', originalFile: '{}\n', structuredPatch: [], userModified: false } }))
+  on('tool.run', { tool: 'Write' }, () => ({ result: { type: 'update', filePath: '/project/layout.css',
+    content: 'gap: 2px; /* private hunk */\n', originalFile: 'gap: 4px;\n', structuredPatch: [], userModified: false } }))
+  const logPath = '/test-home/.margincue/review-first.jsonl'
   await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
   const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
-  expect((await command('choices')).text).toBe('Turn on choice ranking with /margincue tiers on.')
+  expect((await command('choices')).text).toBe('Turn on Review first with /margincue audit on.')
+  expect((await command('status')).text).toContain('audit off')
+  expect((await command('audit log')).text).toBe(`${logPath} · 0 receipts`)
   expect(panes).toHaveLength(0)
-  expect((await command('tiers on')).text).toBe('MarginCue tiers on.')
-  expect(store.get('settings')).toMatchObject({ tiers: true })
+  expect((await command('tiers on')).text).toBe('MarginCue audit on.')
+  expect(store.get('settings')).toMatchObject({ audit: true })
   expect((await command('choices')).text).toBe('No agent choices to review.')
-  const layout = '⟦layout: compact | roomy⟧'
-  const first = `${layout}. In tsconfig.json use ⟦build settings: compiler default | strict settings⟧.`
+  const layout = 'In layout.css use ⟦layout: compact | roomy⟧.'
   const answers = [
-    `${first} ⟦delivery: email customers | draft an email⟧. ⟦heading: Results | Report⟧. ⟦color: blue | gray⟧.`,
+    `${layout} ⟦cache: in memory | Redis⟧. ⟦delivery: email customers | draft an email⟧.`,
     '⟦rollout: run a schema migration | add a compatibility layer⟧.',
-    `${layout}. ⟦order: newest first | oldest first⟧.`,
+    layout,
   ]
+  const longPrompt = `Use Redis. START ${'x'.repeat(4200)} END`
   for (const [i, answer] of answers.entries()) {
     const turnId = `audit-${i}`
-    await $.turn.start({ text: DRAFT, turnId })
-    if (i === 0) {
-      await $.session.append({ door: 'response', uuid: 'build-settings', origin: { kind: 'model', model: 'current' },
-        message: { type: 'assistant', content: [{ type: 'text', text: first }] } })
-      await $.tool.run({ tool: 'Write', tool_use_id: 'build-config', file_path: '/project/tsconfig.json', content: '{"compilerOptions":{}}\n' })
+    const text = i === 0 ? longPrompt : DRAFT
+    await $.turn.start({ text, turnId })
+    if (i !== 1) {
+      await $.session.append({ door: 'response', uuid: `layout-${i}`, origin: { kind: 'model', model: 'current' },
+        message: { type: 'assistant', content: [{ type: 'text', text: layout }] } })
+      await $.tool.run({ tool: 'Write', tool_use_id: `layout-${i}`, file_path: '/project/layout.css', content: 'gap: 2px;\n' })
     }
     await $.turn.complete({ turnId, reason: 'answer', answer, durationMs: 1000, isAborted: false })
     await clock.settle()
   }
+
+  expect((await command('audit log')).text).toBe(`${logPath} · 3 receipts`)
+  const lines = files.get(logPath)!.trim().split('\n')
+  expect(lines).toHaveLength(3)
+  const logged = JSON.parse(lines[0]!)
+  expect(logged).toMatchObject({ receiptId: 'audit-0', host: 'claude-code' })
+  expect(logged.prompt).toHaveLength(4000)
+  expect(logged.prompt).toMatch(/^Use Redis\. START[\s\S]+END$/)
+  expect(logged.choices[0]).toMatchObject({ label: 'layout', evidence: 'matched edit', linkKind: 'named', paths: ['layout.css'] })
+  expect(lines.join('')).not.toContain('private hunk')
+
   const receipt = await $.ui.mount({ plugin: 'margincue', component: 'Placed', requestId: 'receipt-1', surface: 'terminal',
     props: { id: 'receipt-1', plugin: 'margincue' } })
   expect(textFrame(await receipt.drawn())).toBe([
-    '   MarginCue   you set 0 · the agent chose 5',
-    '               1 high · 1 mid · 3 low',
-    '         high  delivery  email customers   [diff]  [→ draft an email]',
-    '          mid  build settings  compiler default   [diff]  [→ strict settings]',
-    '               [Show 3 low choices]',
+    '   MarginCue   you set 0 · the agent chose 3 · 2 to review first',
+    '               Review first',
+    '        agent  delivery  email customers   [diff]  [→ draft an email]',
+    "               hard to undo · agent's word",
+    '        agent  cache  in memory   [diff]  [→ Redis]',
+    `               your prompt said "Redis" · agent's word`,
+    '        agent  layout  compact   [diff]  [→ roomy]',
     '               [Review choices] · e opens related edits',
     '               [Session choices]',
   ].join('\n'))
-  expect(await receipt.find({ key: 'agent-0-1' })).toBeUndefined()
-  await receipt.press({ key: 'receipt-low' })
-  expect(await receipt.find({ key: 'agent-0-1' })).toBeDefined()
-  await receipt.press({ key: 'agent-0-1' })
-  expect(box.text).toBe('Revisit turn 1. Change layout: roomy instead of compact. Keep everything else as it is.')
-  await receipt.press({ key: 'receipt-low' })
-  expect(await receipt.find({ key: 'agent-0-1' })).toBeUndefined()
-
+  const zero = await $.ui.mount({ plugin: 'margincue', component: 'Placed', requestId: 'receipt-3', surface: 'terminal',
+    props: { id: 'receipt-3', plugin: 'margincue' } })
+  expect(await zero.find({ key: 'receipt-session' })).toBeUndefined()
   await receipt.press({ key: 'receipt-session' })
   expect(panes.at(-1)).toMatchObject({ id: 'margincue-choices', focus: true })
   const paneCount = panes.length
   expect((await command('choices')).text).toBe('')
   expect(panes).toHaveLength(paneCount + 1)
-  expect(panes.at(-1)).toMatchObject({ id: 'margincue-choices', focus: true })
   const pane = await $.ui.mount({ plugin: 'margincue', component: 'Pane', requestId: 'margincue-choices', surface: 'terminal',
     props: { title: 'MarginCue session choices', isFocused: true, bodyColumns: 80, placement: 'inline', scroll: { offset: 0, bodyRows: 18 }, view: {} } })
   expect(textFrame(await pane.drawn())).toBe([
-    'HIGH · 2',
+    'Review first',
     'Turn 2 · rollout: run a schema migration',
+    "hard to undo · agent's word",
     '[→ add a compatibility layer]',
     'Turn 1 · delivery: email customers',
+    "hard to undo · agent's word",
     '[→ draft an email]  [diff]',
+    'Turn 1 · cache: in memory',
+    `your prompt said "Redis" · agent's word`,
+    '[→ Redis]  [diff]',
     '',
-    'MID · 1',
-    'Turn 1 · build settings: compiler default',
-    '[→ strict settings]  [diff]',
-    '',
-    'LOW · 5',
     'Turn 3 · layout: compact',
-    '[→ roomy]',
-    'Turn 3 · order: newest first',
-    '[→ oldest first]',
+    '[→ roomy]  [diff]',
     'Turn 1 · layout: compact',
     '[→ roomy]  [diff]',
-    'Turn 1 · heading: Results',
-    '[→ Report]  [diff]',
-    'Turn 1 · color: blue',
-    '[→ gray]  [diff]',
   ].join('\n'))
   box.text = 'My next draft'
   await pane.press({ key: 'switch-1-0-1' })
@@ -1571,15 +1586,125 @@ test('the terminal receipt folds low choices and session choices can switch an o
   await pane.press({ key: 'switch-1-0-1' })
   expect(box.text).toBe('Revisit turn 1. Change layout: roomy instead of compact. Keep everything else as it is.')
   expect(calls).toHaveLength(0)
-  expect((await command('tiers off')).text).toBe('MarginCue tiers off.')
-  expect(store.get('settings')).toMatchObject({ tiers: false })
-  expect((await command('choices')).text).toBe('Turn on choice ranking with /margincue tiers on.')
-  expect(await receipt.find({ key: 'receipt-low' })).toBeUndefined()
+  expect((await command('audit off')).text).toBe('MarginCue audit off.')
+  expect(store.get('settings')).toMatchObject({ audit: false })
+  expect((await command('choices')).text).toBe('Turn on Review first with /margincue audit on.')
   expect(await receipt.find({ key: 'receipt-session' })).toBeUndefined()
   expect(await receipt.find({ key: 'agent-0-1' })).toBeDefined()
   expect(await pane.find({ key: 'switch-1-0-1' })).toBeUndefined()
+
+  await $.turn.start({ text: DRAFT, turnId: 'off' })
+  await $.turn.complete({ turnId: 'off', reason: 'answer', answer: '⟦theme: light | dark⟧', durationMs: 1000, isAborted: false })
+  expect((await command('audit log')).text).toBe(`${logPath} · 3 receipts`)
+  expect((await command('audit log clear')).text).toBe('MarginCue audit log cleared.')
+  expect(files.has(logPath)).toBe(false)
+  expect((await command('audit log')).text).toBe(`${logPath} · 0 receipts`)
   await pane.unmount()
+  await zero.unmount()
   await receipt.unmount()
+})
+
+test('the audit log writes to the configured directory and reports that path', async ($, on) => {
+  const { clock, files } = world(on, '[]', { auditLog: true, env: { MARGINCUE_HOME: '/audit data/' } })
+  mock.session(on)
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('ui.place', (_, e) => ({ value: { isPlaced: true, requestId: e.id } }))
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
+  await command('audit on')
+  await $.turn.start({ text: DRAFT, turnId: 'custom-log' })
+  await $.turn.complete({ turnId: 'custom-log', reason: 'answer', answer: '⟦theme: light | dark⟧', durationMs: 1000, isAborted: false })
+  await clock.settle()
+
+  const path = '/audit data/review-first.jsonl'
+  expect((await command('audit log')).text).toBe(`${path} · 1 receipt`)
+  expect(JSON.parse(files.get(path)!)).toMatchObject({ receiptId: 'custom-log' })
+  expect(files.has('/test-home/.margincue/review-first.jsonl')).toBe(false)
+  expect((await command('audit log clear')).text).toBe('MarginCue audit log cleared.')
+  expect(files.has(path)).toBe(false)
+})
+
+test('the audit receipt stays unflagged while a named local change is verified', async ($, on) => {
+  const path = '/project/layout.css'
+  let settleEdit = () => {}
+  const pending = new Promise<void>((resolve) => { settleEdit = resolve })
+  const { files, clock, calls } = world(on, '[]', { auditLog: true, stat: async (file) => {
+    if (path !== file) throw new Error('ENOENT')
+    await pending
+    return { kind: 'file', size: 10, mtimeMs: 1, isLink: false, realPath: path }
+  } })
+  mock.session(on)
+  files.set(path, 'gap: 2px;\n')
+  on('tool.run', { tool: 'Edit' }, () => ({ result: { filePath: path, originalFile: 'gap: 4px;\n',
+    structuredPatch: [], oldString: '4px', newString: '2px', userModified: false, replaceAll: false } }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('ui.place', (_, e) => ({ value: { isPlaced: true, requestId: e.id } }))
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
+  await command('audit on')
+  await $.turn.start({ text: DRAFT, turnId: 'settle' })
+  const answer = 'In layout.css use ⟦layout: compact | roomy⟧.'
+  await $.session.append({ door: 'response', uuid: 'layout', origin: { kind: 'model', model: 'current' },
+    message: { type: 'assistant', content: [{ type: 'text', text: answer }] } })
+  await $.tool.run({ tool: 'Edit', tool_use_id: 'edit', file_path: path, old_string: '4px', new_string: '2px' })
+  await $.turn.complete({ turnId: 'settle', reason: 'answer', answer, durationMs: 1000, isAborted: false })
+  const receipt = await $.ui.mount({ plugin: 'margincue', component: 'Placed', requestId: 'receipt-1', surface: 'terminal',
+    props: { id: 'receipt-1', plugin: 'margincue' } })
+  expect(textFrame(await receipt.drawn())).not.toContain('Review first')
+  settleEdit()
+  await clock.settle()
+  expect((await command('audit log')).text).toContain('1 receipt')
+  expect(textFrame(await receipt.drawn())).not.toContain('Review first')
+  const logged = JSON.parse(files.get('/test-home/.margincue/review-first.jsonl')!)
+  expect(logged.choices[0]).toMatchObject({ evidence: 'matched edit', linkKind: 'named', c: 1, flagged: false, paths: ['layout.css'] })
+  expect(calls).toHaveLength(0)
+  await receipt.unmount()
+})
+
+test('a nearby migration shows a chance reason in the receipt and audit log', async ($, on) => {
+  const path = 'lib/db/migrations/0001_x.sql'
+  const answer = '⟦hide removed members: members list and all membership lookups | members list only | also the activity feed⟧'
+  const { clock, files } = world(on, '[]', { auditLog: true })
+  mock.session(on)
+  on('tool.run', { tool: 'Write' }, () => ({ result: { type: 'create', filePath: `/project/${path}`,
+    content: 'ALTER TABLE members ADD removed_at timestamp;\n', structuredPatch: [], userModified: false } }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('ui.place', (_, e) => ({ value: { isPlaced: true, requestId: e.id } }))
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
+  await command('audit on')
+  const turnId = 'nearby-migration'
+  await $.turn.start({ text: DRAFT, turnId })
+  await $.session.append({ door: 'response', uuid: turnId, origin: { kind: 'model', model: 'current' },
+    message: { type: 'assistant', content: [{ type: 'text', text: answer }] } })
+  await $.tool.run({ tool: 'Write', tool_use_id: 'migration', file_path: `/project/${path}`, content: 'ALTER TABLE members ADD removed_at timestamp;\n' })
+  await $.turn.complete({ turnId, reason: 'answer', answer, durationMs: 1000, isAborted: false })
+  await clock.settle()
+  expect((await command('audit log')).text).toContain('1 receipt')
+
+  const receipt = await $.ui.mount({ plugin: 'margincue', component: 'Placed', requestId: 'receipt-1', surface: 'terminal',
+    props: { id: 'receipt-1', plugin: 'margincue' } })
+  const frame = textFrame(await receipt.drawn())
+  expect(frame).toContain('1 to review first')
+  expect(frame).toContain('not on the card · nearby edit')
+  expect(frame).not.toContain('changes a migration')
+  const logged = JSON.parse(files.get('/test-home/.margincue/review-first.jsonl')!)
+  expect(logged.choices[0]).toMatchObject({ evidence: 'nearby edit', linkKind: 'timing', c: 3, pinned: false, paths: [path] })
+  await receipt.unmount()
+})
+
+test('the stored tiers setting enables audit unless the new setting is present', async ($, on) => {
+  const { store } = world(on)
+  store.set('settings', { tiers: true })
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  const status = () => $.command.run({ ...cli, command: 'margincue', args: 'status' })
+  expect((await status()).text).toContain('audit on')
+  store.set('settings', { tiers: true, audit: false })
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  expect((await status()).text).toContain('audit off')
 })
 
 const MARKED_EXPORT = [

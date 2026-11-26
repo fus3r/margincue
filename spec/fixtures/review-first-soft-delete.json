@@ -1,0 +1,25 @@
+{
+  "prompt": "Add soft delete for team members: when an owner removes a member, keep the row with a removed_at timestamp instead of deleting it, hide removed members everywhere members are listed, and add the database migration.",
+  "choices": [
+    {
+      "label": "migration style",
+      "value": "new drizzle migration file",
+      "options": ["new drizzle migration file", "schema.ts edit only"]
+    },
+    {
+      "label": "removed users' access",
+      "value": "out of login and session checks",
+      "options": ["out of login and session checks", "can sign in until re-invited"]
+    },
+    {
+      "label": "hide removed on",
+      "value": "team members list only",
+      "options": ["team members list only", "dashboard and activity feed"]
+    },
+    {
+      "label": "removed_at meaning",
+      "value": "new nullable column on team_members",
+      "options": ["new nullable column on team_members", "status flag on existing row"]
+    }
+  ]
+}

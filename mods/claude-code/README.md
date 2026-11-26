@@ -34,7 +34,9 @@ The first time MarginCue starts in an interactive session with an empty prompt, 
 
 **After the turn.** A receipt under the answer lists the choices you set and those the agent made, with what you switched. Switch one again, on the receipt or on the card, and the follow-up prompt is written into the composer for you to send.
 
-Choice ranking and the `/margincue choices` command are an opt-in preview enabled with `/margincue tiers on`.
+Enable the Review first preview with `/margincue audit on`. Flagged choices come first with a reason and an evidence label, and every choice remains visible. Use `/margincue choices` to see the last 20 receipts' choices.
+
+The pilot log stays local and records prompts and choices only while audit is on. It uses `~/.margincue/review-first.jsonl` by default or `$MARGINCUE_HOME/review-first.jsonl` when set. Use `/margincue audit log` to see its path and receipt count, or `/margincue audit log clear` to delete it.
 
 In the terminal, use **diff** beside a choice or open **Review choices** (also `/margincue edits` for the latest receipt). Focus a choice with Tab and press `e` to open its related edits. VS Code, Cursor and Windsurf open a diff for each related file when their CLI is on `PATH`. The diff starts from the file at the beginning of the turn and shows the related hunks or the whole file change when the receipt can only match the file. Other terminals open a temporary `.diff` through `$VISUAL` or `$EDITOR` or show its path in the transcript.
 

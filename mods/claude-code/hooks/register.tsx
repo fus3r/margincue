@@ -11,26 +11,31 @@ import type { Elements, EngineInterface, ModelCompleteResult, PromptDecoration, 
 import { createCore, DEPTHS, draftLanguage, isHostCommand, MODES, SCOPES, splitDecisions } from '../core/index'
 import type { Assets, Core, Depth, Effect, Event, LanguageSetting, Mode, Origin, ReadingMode, Scope, SendSetting, StateLoad, Timing, View } from '../core/index'
 import { DEFAULT_SEND } from '../core/types'
-import type { MargincueBand, MargincueExpert, MargincueReceipt, MargincueRow } from '../types'
+import type { ReceiptView } from '../core/types'
+import type { MargincueBand, MargincueExpert, MargincueRow } from '../types'
 import { BLANK_CLOSE, BLANK_OPEN, parseBlanks, renderBlanks } from '../core/card'
 import type { ParsedBlank } from '../core/card'
 import { nameKey } from '../core/grounding'
-import { CHOICE_TIERS } from '../core/choice-tier'
+import type { Vocabulary } from '../core/grounding'
+import { reviewOrder } from '../core/review-first'
+import type { ReviewDecision } from '../core/review-first'
+import { reviewLogLine, reviewRootHash } from '../core/review-log'
+import { reviewLogIO, reviewLogPath } from './review-log'
 import { ASSETS } from './assets'
 import { DARK, currentOption, layoutBandRows, paletteFor, scopeLabel, thinkingLabel } from './band'
 import type { Action, Palette, Segment } from './band'
 import { layoutReceipt, layoutSent, splitSent } from './card-view'
 import { CollapsedPaste } from './collapsed-paste'
-import { CARD_KEEP_KEY, CARD_READ_KEY, RECEIPT_DIFF_KEY } from './segments'
+import { CARD_KEEP_KEY, CARD_READ_KEY, RECEIPT_DIFF_KEY, truncate } from './segments'
 import { openChoiceEdits } from './edit-opener'
-import { rankReceiptEdits } from './receipt-impact'
+import { reviewReceiptEdits } from './receipt-impact'
 import { capturedChoiceEdits, finishEdits, recordToolEdit, startEdits, toolChoiceEdits } from './turn-edits'
 import type { EditCapture, TurnEdits } from './turn-edits'
 import { EventLog, loggedArm, trialCounts } from './event-log'
 import type { Arm, LogIO } from './event-log'
 import { describeUser, interview, preferredProfiles, readUser, userDepths } from './onboarding'
 import type { UserProfile } from './onboarding'
-import { collectVocabulary } from './repo-index'
+import { collectVocabulary, referencedNames } from './repo-index'
 import { optionalText, personalAssets, readAccount, readInstructionSlots, readLearned, readProject, saveDecision, saveLearned } from './storage'
 
 type $ = EngineInterface
@@ -52,14 +57,14 @@ const EAGER_PLAN = false
 
 type Settings = {
   mode: Mode; profile: string; language: LanguageSetting; inline: boolean; sheet: boolean; ab: boolean; depths: Record<string, Depth>
-  read: ReadingMode; sketch: boolean; refs: boolean; blanks: boolean; chapters: boolean; tiers: boolean; profileSelected: boolean
+  read: ReadingMode; sketch: boolean; refs: boolean; blanks: boolean; chapters: boolean; audit: boolean; profileSelected: boolean
   send: SendSetting; sendExplicit: boolean
   /** The first-run interview's answers, and whether it ran (or was closed, which is not asked again). */
   user: UserProfile | null; onboarded: 'done' | 'skipped' | null
 }
 const DEFAULTS: Settings = {
   mode: 'auto', profile: 'general', language: 'en', inline: false, sheet: true, ab: false, depths: {},
-  read: 'auto', sketch: true, refs: true, blanks: true, chapters: true, tiers: false, profileSelected: false, user: null, onboarded: null,
+  read: 'auto', sketch: true, refs: true, blanks: true, chapters: true, audit: false, profileSelected: false, user: null, onboarded: null,
   send: DEFAULT_SEND, sendExplicit: false,
 }
 /** Re-read the project's names after a turn at most this often. */
@@ -69,7 +74,9 @@ const REVIEW_PANE = 'margincue-review'
 const RECEIPT_PANE = 'margincue-receipt'
 const CHOICES_PANE = 'margincue-choices'
 const RECEIPT_LIMIT = 20
-type Receipt = MargincueReceipt & { turn: number; edits?: TurnEdits; hasCapturedEdits?: boolean; showLow?: boolean }
+type Receipt = Omit<ReceiptView, 'reviewContext'> & { turn: number; edits?: TurnEdits; hasCapturedEdits?: boolean }
+
+let auditWriter = Promise.resolve()
 
 const band = atom({ plugin: 'margincue', key: 'band' } as const, null)
 const expert = atom({ plugin: 'margincue', key: 'expert' } as const, null)
@@ -124,6 +131,7 @@ const host = {
   indexedAt: -Infinity,
   /** The last index run found a project to index (not the home folder, an empty folder, or one git and ripgrep can't read). */
   indexed: false,
+  vocabulary: null as Vocabulary | null,
   indexing: false,
   /** The follow-up text MarginCue last put in the composer; only that (or an empty box) is ever replaced. */
   lastFill: '',
@@ -195,7 +203,7 @@ function configEvent(): Event {
     language: host.settings.language,
     sheet: host.settings.sheet && host.arm !== 'control',
     chapters: host.settings.chapters,
-    tiers: host.settings.tiers,
+    reviewFirst: host.settings.audit,
     read: host.settings.read,
     sketch: host.settings.sketch,
     refs: host.settings.refs,
@@ -906,7 +914,7 @@ function answerRow($: $, question: PanelQuestion, answer: string): void {
  * What a prompt carries once the person sends it: the Decisions they set (and the sketch they attached), with the
  * turn noted for the switches and the follow-up.
  */
-async function submitted($: $, typed: string, turnId?: string, addition?: string, raw = false, plan = true): Promise<{ text: string; amendable: boolean }> {
+async function submitted($: $, typed: string, turnId?: string, addition?: string, raw = false, plan = true, reviewRows?: ReviewDecision[]): Promise<{ text: string; amendable: boolean }> {
   const core = ensure($)
   const values = core.storedDecisions()
   if (host.settings.mode !== 'off' && values.some((value) => value.scope === 'model')) {
@@ -918,7 +926,8 @@ async function submitted($: $, typed: string, turnId?: string, addition?: string
   host.lastDraft = ''
   host.scopes.clear()
   const amendable = !turnId && !host.activeTurn && !host.turn
-  const effects = run($, { type: 'submit', now: now(), text: typed, amendable, plan }, false)
+  const effects = run($, { type: 'submit', now: now(), text: typed, amendable, plan,
+    ...(addition && { reviewPrompt: `${typed}\n\n${addition}` }), ...(reviewRows && { reviewRows }) }, false)
   const sent = effects.find((fx): fx is SubmitEffect => fx.type === 'submit')
   // As written means exactly as typed: no picks, no standing preference, no sketch.
   const decided = raw ? typed : sent?.text ?? typed
@@ -967,13 +976,6 @@ function act($: $, action: Action): void | Promise<void> {
   else if (action.type === 'chapter') run($, action)
   else if (action.type === 'sketch') run($, { type: 'sketch', now: t, action: action.action })
   else if (action.type === 'receiptPick') return followUp($, action.receipt, action.item, action.option)
-  else if (action.type === 'receiptLow') {
-    const receipt = host.receipts.get(action.receipt)
-    if (host.settings.tiers && receipt) {
-      receipt.showLow = !receipt.showLow
-      $.ui.invalidate('ui.render')
-    }
-  }
   else if (action.type === 'sessionChoices') return reviewSessionChoices($)
   else if (action.type === 'receiptReview') return reviewReceipt($, action.receipt)
   else if (action.type === 'receiptDiff') void openReceiptDiff($, action.receipt, action.choice)
@@ -1022,14 +1024,14 @@ async function fillComposer($: $, text: string, replaces: string | null): Promis
 
 /** A choice switched on a receipt in the transcript: the follow-up prompt that asks for it. */
 async function followUp($: $, receiptId: number, item: number, option: number, nameTurn = false): Promise<void> {
-  if (nameTurn && !host.settings.tiers) return
+  if (nameTurn && !host.settings.audit) return
   const receipt = host.receipts.get(receiptId)
   if (!receipt) return
   const choice = receipt.agent[item]
   const value = choice?.options[option]
   if (!choice || value === undefined || value === choice.value) return
   log($, 'receipt-pick', { receipt: receiptId, item, option })
-  const prefix = host.settings.tiers && (nameTurn || choice.tier && receipt.turn < host.turnNumber) ? `Revisit turn ${receipt.turn}. ` : ''
+  const prefix = host.settings.audit && receipt.turn < host.turnNumber ? `Revisit turn ${receipt.turn}. ` : ''
   await fillComposer($, `${prefix}Change ${choice.label}: ${value} instead of ${choice.value}. Keep everything else as it is.`, host.lastFill)
 }
 
@@ -1051,7 +1053,7 @@ async function reviewReceipt($: $, id: number): Promise<void> {
 }
 
 async function reviewSessionChoices($: $): Promise<void> {
-  if (!host.settings.tiers || !enabled() || !host.terminal) return
+  if (!host.settings.audit || !enabled() || !host.terminal) return
   const opened = await $.ui.open({ id: CHOICES_PANE, title: 'MarginCue session choices', focus: true, closeOnEscape: true,
     rows: 18 }).catch(() => null)
   if (!opened?.isPlaced) void $.ui.toast('The session choices could not be focused.')
@@ -1105,6 +1107,7 @@ async function reindex($: $, force: boolean): Promise<void> {
     if (epoch !== host.epoch) return
     host.indexedAt = now()
     host.indexed = vocab !== null
+    host.vocabulary = vocab
     run($, { type: 'vocabulary', vocab })
     log($, 'indexed', { files: vocab?.files.length ?? 0, names: vocab?.entries.length ?? 0 })
   } catch {
@@ -1121,8 +1124,8 @@ function noteEditMarks(source: string, blanks: ParsedBlank[], currentTurn = fals
   const turn = host.editTurn
   if (!turn) return
   const position = turn.position + 1
-  const beforeBoundary = host.settings.tiers ? /[\n⟧]|[.!?](?=\s|$)/ : /[\n⟧]/
-  const afterBoundary = host.settings.tiers ? /[\n⟦]|[.!?](?=\s|$)/ : /[\n⟦]/
+  const beforeBoundary = host.settings.audit ? /[\n⟧]|[.!?](?=\s|$)/ : /[\n⟧]/
+  const afterBoundary = host.settings.audit ? /[\n⟦]|[.!?](?=\s|$)/ : /[\n⟦]/
   for (const blank of blanks) {
     const name = nameKey(blank.label)
     if ((!currentTurn && host.blankOld.has(blankKey(blank))) || turn.marks.get(name)?.choice === blank.choice) continue
@@ -1141,7 +1144,7 @@ function noteEditMarks(source: string, blanks: ParsedBlank[], currentTurn = fals
 async function markTurnStart($: $, turn: string): Promise<void> {
   const found = await $.session.messages({ last: 400 }).catch(() => null)
   if (!found || 'deny' in found || host.activeTurn !== turn) return
-  if (host.settings.tiers) host.blankOld.clear()
+  if (host.settings.audit) host.blankOld.clear()
   for (const entry of found) {
     if (entry.role === 'assistant') for (const blank of parseBlanks(entry.text)) host.blankOld.add(blankKey(blank))
   }
@@ -1171,29 +1174,40 @@ function hideOpenBlank(text: string): string {
 
 const choicesMade = (n: number) => `${n} choice${n === 1 ? '' : 's'} made for you`
 
-async function placeReceipt($: $, turn: EditCapture | null): Promise<void> {
+async function placeReceipt($: $, turn: EditCapture | null, turnId: string): Promise<void> {
   const view = host.view?.receipt
   if (!view || view.id <= host.lastReceipt) return
   host.lastReceipt = view.id
-  const receipt: Receipt = { ...view, turn: host.turnNumber }
-  if (turn) {
-    const edits = finishEdits($, turn)
-    receipt.edits = edits
-    if (host.settings.tiers && view.agent.length) {
-      const observed = toolChoiceEdits(turn)
-      receipt.hasCapturedEdits = observed.length > 0
-      receipt.agent = rankReceiptEdits(view.agent, observed, turn.marks)
-      void capturedChoiceEdits(edits).then((captured) => {
-        if (host.receipts.get(view.id) !== receipt) return
-        const ranked = rankReceiptEdits(view.agent, captured, turn.marks)
-        const hasCapturedEdits = captured.length > 0
-        if (hasCapturedEdits !== receipt.hasCapturedEdits || ranked.some((choice, i) => choice.tier !== receipt.agent[i]?.tier)) {
-          receipt.agent = ranked
-          receipt.hasCapturedEdits = hasCapturedEdits
-          $.ui.invalidate('ui.render')
-        }
-      }).catch(() => {})
-    }
+  const { reviewContext, ...body } = view
+  const receipt: Receipt = { ...body, turn: host.turnNumber }
+  const edits = turn ? finishEdits($, turn) : undefined
+  if (edits) receipt.edits = edits
+  if (host.settings.audit && reviewContext) {
+    const root = host.root
+    const index = host.vocabulary
+    const epoch = host.epoch
+    const time = new Date().toISOString()
+    const settled = edits && view.agent.length ? (async () => {
+      const observed = toolChoiceEdits(edits)
+      receipt.hasCapturedEdits = observed.some((edit) => edit.changed)
+      receipt.agent = reviewReceiptEdits(view.agent, reviewContext, observed, edits.marks, index?.files)
+      const captured = await capturedChoiceEdits($, edits)
+      const referenced = index ? await referencedNames($, root, index, new Set(captured.map(({ path }) => path))) : undefined
+      for (const edit of captured) edit.referencedName = referenced?.get(edit.path)
+      const choices = reviewReceiptEdits(view.agent, reviewContext, captured, edits.marks, index?.files)
+      receipt.agent = choices
+      receipt.hasCapturedEdits = captured.length > 0
+      if (host.receipts.get(view.id) === receipt) $.ui.invalidate('ui.render')
+      return choices
+    })().catch(() => receipt.agent) : Promise.resolve(view.agent)
+    auditWriter = auditWriter.then(async () => {
+      const choices = await settled
+      if (host.epoch === epoch && !host.settings.audit) return
+      const path = await reviewLogPath($)
+      const hash = await reviewRootHash(await turn?.root ?? root)
+      const line = reviewLogLine(turnId, 'claude-code', hash, reviewContext.prompt, choices, time)
+      await reviewLogIO($, 'append', path, line)
+    }).catch(() => { void $.ui.toast('MarginCue could not write the audit log.') })
   }
   host.receipts.set(receipt.id, receipt)
   if (host.receipts.size > RECEIPT_LIMIT) host.receipts.delete(host.receipts.keys().next().value!)
@@ -1290,7 +1304,7 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
   host.sentExpert = ''
   host.sentBand = ''
   const [stored, loaded, turns] = await Promise.all([
-    $.store.get('settings').catch(() => undefined) as Promise<(Partial<Settings> & { enabled?: boolean; depth?: Depth }) | undefined>,
+    $.store.get('settings').catch(() => undefined) as Promise<(Partial<Settings> & { tiers?: boolean; enabled?: boolean; depth?: Depth }) | undefined>,
     personalAssets($, ASSETS),
     $.session.turns().catch(() => 0),
   ])
@@ -1309,7 +1323,7 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
     read: stored?.read === 'key' ? 'key' : DEFAULTS.read,
     sketch: stored?.sketch !== false,
     chapters: stored?.chapters !== false,
-    tiers: stored?.tiers === true,
+    audit: (stored?.audit ?? stored?.tiers) === true,
     refs: stored?.refs !== false,
     blanks: stored?.blanks !== false,
     // Older settings saved the default "all" in the same field as an explicit choice.
@@ -1330,6 +1344,7 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
   if (loaded.skipped && host.settings.mode !== 'off') void $.ui.toast(`MarginCue skipped ${loaded.skipped} invalid or conflicting personal bundle(s).`)
   host.indexedAt = -Infinity
   host.indexed = false
+  host.vocabulary = null
   host.blankSeen.clear()
   host.blankOld.clear()
   host.displayReply = null
@@ -1343,7 +1358,7 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
   await $.command.register({
     name: 'margincue',
     description: 'MarginCue card, sketch, blanks, decisions, expert review and session status',
-    argumentHint: '[setup [reset]|state|mode|language en|auto|card on|off|chapters on|off|tiers on|off|read auto|key|sketch on|off|refs on|off|blanks on|off|send all|picked|open|ab on|off|status|review [profile]|edits|choices|profile|status]',
+    argumentHint: '[setup [reset]|state|mode|language en|auto|card on|off|chapters on|off|audit [on|off|log [clear]]|read auto|key|sketch on|off|refs on|off|blanks on|off|send all|picked|open|ab on|off|status|review [profile]|edits|choices|profile|status]',
     immediate: true,
   })
   await reopen($)
@@ -1516,14 +1531,27 @@ ${slot.source}` : 'Use /margincue why <slot>.')
         await saveSettings($)
         return done(`MarginCue reading mode is ${reading}.`)
       }
-      case 'tiers': {
+      case 'tiers':
+      case 'audit': {
         const setting = arg.toLowerCase()
-        if (setting !== 'on' && setting !== 'off') return done('Use /margincue tiers on|off.')
-        settings.tiers = setting === 'on'
+        if (setting === 'log' || setting === 'log clear') {
+          try {
+            const path = await reviewLogPath($)
+            const clear = setting === 'log clear'
+            const action = auditWriter.then(() => reviewLogIO($, clear ? 'clear' : 'count', path))
+            auditWriter = action.then(() => {}, () => {})
+            const count = await action
+            return done(clear ? 'MarginCue audit log cleared.' : `${path} · ${count} receipt${count === 1 ? '' : 's'}`)
+          } catch {
+            return done('MarginCue could not access the audit log.')
+          }
+        }
+        if (setting !== 'on' && setting !== 'off') return done('Use /margincue audit on|off or /margincue audit log [clear].')
+        settings.audit = setting === 'on'
         run($, configEvent())
         $.ui.invalidate('ui.render')
         await saveSettings($)
-        return done(`MarginCue tiers ${setting}.`)
+        return done(`MarginCue audit ${setting}.`)
       }
       case 'sketch':
       case 'chapters':
@@ -1574,9 +1602,9 @@ ${slot.source}` : 'Use /margincue why <slot>.')
         return done('')
       }
       case 'choices':
-        if (!settings.tiers) return done('Turn on choice ranking with /margincue tiers on.')
+        if (!settings.audit) return done('Turn on Review first with /margincue audit on.')
         if (!enabled() || !host.terminal) return done('Session choices are available in the terminal with MarginCue on.')
-        if (![...host.receipts.values()].some((receipt) => receipt.agent.some((choice) => choice.tier))) return done('No agent choices to review.')
+        if (![...host.receipts.values()].some((receipt) => receipt.agent.length)) return done('No agent choices to review.')
         await reviewSessionChoices($)
         return done('')
       case 'log':
@@ -1594,7 +1622,7 @@ ${slot.source}` : 'Use /margincue why <slot>.')
         const { stats } = host
         const med = (list: number[]) => list.length ? `${median(list)} ms` : '–'
         return done([
-          `MarginCue is ${settings.mode} · profile ${settings.profile} · language ${settings.language} · depth ${currentDepth()} · card ${settings.sheet ? 'on' : 'off'} · chapters ${settings.chapters ? 'on' : 'off'} · tiers ${settings.tiers ? 'on' : 'off'} · read ${settings.read} · sketch ${settings.sketch ? 'on' : 'off'} · refs ${settings.refs ? 'on' : 'off'} · blanks ${settings.blanks ? 'on' : 'off'}`,
+          `MarginCue is ${settings.mode} · profile ${settings.profile} · language ${settings.language} · depth ${currentDepth()} · card ${settings.sheet ? 'on' : 'off'} · chapters ${settings.chapters ? 'on' : 'off'} · audit ${settings.audit ? 'on' : 'off'} · read ${settings.read} · sketch ${settings.sketch ? 'on' : 'off'} · refs ${settings.refs ? 'on' : 'off'} · blanks ${settings.blanks ? 'on' : 'off'}`,
           `This session: ${stats.requests} model calls, ${stats.failures} failed · median first ${med(stats.first)} · median reply ${med(stats.full)}`,
           `${stats.submits} prompts sent, ${stats.attached} with decisions attached.`,
           `Project index: ${host.indexing ? 'reading…' : host.indexed ? 'ready' : 'none (not a git repository, or off)'}.`,
@@ -1680,7 +1708,7 @@ export const register: Register = (on) => {
   })
 
   on('session.end', async ($, e, next) => {
-    await host.pendingIO
+    await Promise.all([host.pendingIO, auditWriter])
     if (e.reason === 'clear') {
       dropClear()
       host.turn = null
@@ -1763,6 +1791,7 @@ export const register: Register = (on) => {
     let addition: string | undefined
     let raw = false
     let plan = true
+    let reviewRows: ReviewDecision[] | undefined
     // An app (desktop, VS Code, phone) never shows MarginCue the draft while it is typed: the card comes at Enter,
     // before Claude starts, and the prompt goes when the person sends it (or as written).
     // The engine stamps the desktop app's typed prompts `composer` as well: the app, not the stamp, says the draft was unseen.
@@ -1773,9 +1802,14 @@ export const register: Register = (on) => {
       addition = asked.addition
       raw = asked.how === 'raw'
       plan = asked.how !== 'asked'
-      if (raw) run($, { type: 'draft', now: now(), text: '', origin: 'type', cursor: 0 }, false)
+      if (raw) {
+        if (host.settings.audit && host.view?.card?.stage === 'draft') {
+          reviewRows = host.view.card.rows.map(({ key, label, statement, options }) => ({ key, label, statement, options, leftOpen: true }))
+        }
+        run($, { type: 'draft', now: now(), text: '', origin: 'type', cursor: 0 }, false)
+      }
     }
-    const { text, amendable } = await submitted($, e.text, e.turnId, addition, raw, plan)
+    const { text, amendable } = await submitted($, e.text, e.turnId, addition, raw, plan, reviewRows)
     // An app never clears its box through MarginCue: once the prompt goes, its card goes too.
     if (host.appHost || e.origin.kind !== 'composer') run($, { type: 'draft', now: now(), text: '', origin: 'type', cursor: 0 }, false)
     const result = await next(text === e.text ? e : { ...e, text })
@@ -1789,12 +1823,12 @@ export const register: Register = (on) => {
   on('turn.start', ($, e, next) => {
     if (e.agentId === undefined) {
       host.turnNumber++
-      if (host.settings.tiers) host.blankSeen.clear()
+      if (host.settings.audit) host.blankSeen.clear()
       host.activeTurn = e.turnId
       if (host.turn?.text === e.text) host.turn.id = e.turnId
-      host.editTurn = host.terminal && enabled() && host.settings.sheet && host.arm !== 'control' ? startEdits($, host.root) : null
+      host.editTurn = (host.terminal || host.settings.audit && host.interactive) && enabled() && host.settings.sheet && host.arm !== 'control' ? startEdits($, host.root) : null
       void markTurnStart($, e.turnId)
-      run($, { type: 'turnStart', now: now() })
+      run($, { type: 'turnStart', now: now(), text: e.text })
       if (host.view) publish($, host.view)
     }
     return next(e)
@@ -1811,12 +1845,12 @@ export const register: Register = (on) => {
   })
 
   on('session.append', { door: 'response' }, ($, e, next) => {
-    const tiers = host.settings.tiers
-    if ((tiers ? host.activeTurn !== null : host.editTurn) && e.agentId === undefined && e.message.type === 'assistant') {
+    const audit = host.settings.audit
+    if ((audit ? host.activeTurn !== null : host.editTurn) && e.agentId === undefined && e.message.type === 'assistant') {
       for (const block of e.message.content) if (block.type === 'text' && typeof block.text === 'string') {
         const blanks = parseBlanks(block.text)
-        noteEditMarks(block.text, blanks, tiers)
-        if (tiers) for (const blank of blanks) noteBlank($, blank, true)
+        noteEditMarks(block.text, blanks, audit)
+        if (audit) for (const blank of blanks) noteBlank($, blank, true)
       }
     }
     return next(e)
@@ -1827,17 +1861,17 @@ export const register: Register = (on) => {
     if (e.agentId === undefined && host.activeTurn === e.turnId) {
       const answer = result?.text ?? ''
       const blanks = parseBlanks(answer)
-      const tiers = host.settings.tiers
-      noteEditMarks(answer, blanks, tiers)
-      for (const blank of blanks) noteBlank($, blank, tiers)
-      if (tiers) for (const seen of host.blankSeen) host.blankOld.add(seen)
+      const audit = host.settings.audit
+      noteEditMarks(answer, blanks, audit)
+      for (const blank of blanks) noteBlank($, blank, audit)
+      if (audit) for (const seen of host.blankSeen) host.blankOld.add(seen)
       const edits = host.editTurn
       host.editTurn = null
       host.activeTurn = null
       host.turn = null
       run($, { type: 'endAmendment', now: now() })
       if (host.view) publish($, host.view)
-      void placeReceipt($, edits)
+      void placeReceipt($, edits, e.turnId)
       void reindex($, false)
       // In the desktop app the first-run questions wait for the first answer: the session never starts idle.
       if (host.appHost && host.settings.onboarded === null && host.settings.mode !== 'off' && !host.setupOff && !host.onboarding) {
@@ -1972,38 +2006,39 @@ export const register: Register = (on) => {
     if (!receipt) return next(e)
     const terminal = e.surface === 'terminal' && enabled()
     return drawRows($, $.ui.resolve(e), layoutReceipt(receipt, e.viewport?.columns ?? 100, host.palette,
-      terminal && !!receipt.edits, { tiers: host.settings.tiers, showLow: receipt.showLow, sessionChoices: terminal }))
+      terminal && !!receipt.edits, { audit: host.settings.audit, sessionChoices: terminal }))
   })
 
   on('ui.render', { component: 'Pane', requestId: CHOICES_PANE, surface: 'terminal' }, ($, e, next) => {
-    if (!host.settings.tiers || !enabled()) return next(e)
+    if (!host.settings.audit || !enabled()) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
     const choices = [...host.receipts.values()].reverse().flatMap((receipt) =>
-      receipt.agent.map((choice, item) => ({ receipt, choice, item })))
+      reviewOrder(receipt.agent.map((choice, item) => ({ receipt, choice, item, review: choice.review }))))
+    const flagged = choices.filter(({ review }) => review?.flagged)
+    const other = choices.filter(({ review }) => !review?.flagged)
+    const renderChoices = (items: typeof choices) => items.map(({ receipt, choice, item, review }) => (
+      <Box key={`choice-${receipt.id}-${item}`} flexDirection="column">
+        <Text>{`Turn ${receipt.turn} · ${choice.label}: ${choice.value}${choice.was ? ` (was ${choice.was})` : ''}`}</Text>
+        {review?.flagged && <Text dimColor>{`${truncate(review.reason, 59)} · ${review.evidence}`}</Text>}
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+          {choice.options.map((value, option) => value === choice.value ? null : (
+            <Button key={`switch-${receipt.id}-${item}-${option}`} plain dimColor
+              label={`→ ${value}`} onPress={() => followUp($, receipt.id, item, option, true)} />
+          ))}
+          {receipt.hasCapturedEdits && <Button key={`diff-${receipt.id}-${item}`} plain dimColor label="diff"
+            onPress={() => { void openReceiptDiff($, receipt.id, receipt.yours.length + item) }} />}
+        </Box>
+      </Box>
+    ))
     return (
       <Box flexDirection="column" rowGap={1}>
-        {CHOICE_TIERS.map((tier) => {
-          const group = choices.filter(({ choice }) => choice.tier === tier)
-          if (!group.length) return null
-          return (
-            <Box key={tier} flexDirection="column">
-              <Text dimColor>{`${tier.toUpperCase()} · ${group.length}`}</Text>
-              {group.map(({ receipt, choice, item }) => (
-                <Box key={`choice-${receipt.id}-${item}`} flexDirection="column">
-                  <Text>{`Turn ${receipt.turn} · ${choice.label}: ${choice.value}${choice.was ? ` (was ${choice.was})` : ''}`}</Text>
-                  <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-                    {choice.options.map((value, option) => value === choice.value ? null : (
-                      <Button key={`switch-${receipt.id}-${item}-${option}`} plain dimColor
-                        label={`→ ${value}`} onPress={() => followUp($, receipt.id, item, option, true)} />
-                    ))}
-                    {receipt.hasCapturedEdits && <Button key={`diff-${receipt.id}-${item}`} plain dimColor label="diff"
-                      onPress={() => { void openReceiptDiff($, receipt.id, receipt.yours.length + item) }} />}
-                  </Box>
-                </Box>
-              ))}
-            </Box>
-          )
-        })}
+        {flagged.length > 0 && (
+          <Box flexDirection="column">
+            <Text dimColor>Review first</Text>
+            {renderChoices(flagged)}
+          </Box>
+        )}
+        {other.length > 0 && <Box flexDirection="column">{renderChoices(other)}</Box>}
       </Box>
     )
   })

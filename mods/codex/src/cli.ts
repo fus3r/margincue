@@ -23,7 +23,7 @@ import { promptHook, stopHook } from './hooks'
 import { serveMcp } from './mcp'
 import { findRelay, installRelay, startRelay } from './relay'
 import { runPrefetch } from './prefetch'
-import { PATHS, readSettings, saveSettings, sendSetting } from './store'
+import { PATHS, auditEnabled, readSettings, saveSettings, sendSetting } from './store'
 import { MIN_CODEX, tooOld } from './version'
 
 const SELF = fileURLToPath(import.meta.url)
@@ -283,7 +283,7 @@ function status(): void {
   const settings = readSettings()
   const user = readUser(settings.user)
   process.stdout.write([
-    `MarginCue for Codex: ${settings.mode ?? 'auto'} · sketch ${settings.sketch === false ? 'off' : 'on'} · blanks ${settings.blanks === false ? 'off' : 'on'}`,
+    `MarginCue for Codex: ${settings.mode ?? 'auto'} · sketch ${settings.sketch === false ? 'off' : 'on'} · blanks ${settings.blanks === false ? 'off' : 'on'} · audit ${auditEnabled(settings) ? 'on' : 'off'}`,
     `Read: ${settings.read === 'key' ? 'key' : 'auto'} · Send: ${sendSetting(settings)} · Chapters: ${settings.chapters === false ? 'off' : 'on'}`,
     user ? `You: ${describeUser(user)}` : 'Run margincue setup to set your level and the kinds of choices you make.',
     `Composer: ${existsSync(STABLE) ? STABLE : 'not installed (margincue setup)'}`,

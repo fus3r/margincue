@@ -24,7 +24,7 @@ import type { MargincueCard } from '../../claude-code/types'
 import { cardConfig } from './card-config'
 import { CodexModel } from './model'
 import type { Completion } from './model'
-import { PATHS, learn, processEngine, readJson, readLearned, readSettings, watchSettings, writeJson } from './store'
+import { PATHS, auditEnabled, learn, processEngine, readJson, readLearned, readSettings, watchSettings, writeJson } from './store'
 import type { Settings, TurnRecord } from './store'
 import { drawLine } from './terminal'
 import type { Hit } from './terminal'
@@ -147,7 +147,10 @@ export class Band {
     this.model.close()
   }
 
+  private audit = false
+
   private configure(settings: Settings): void {
+    this.audit = auditEnabled(settings)
     const config = cardConfig(settings)
     this.readOnDemand = settings.mode !== 'off' && config.read === 'key'
     this.sendOpen = config.send === 'open'
@@ -284,6 +287,7 @@ export class Band {
       this.coreText = text
       this.run({ type: 'draft', now: now(), text, origin: 'type', edit: diffSplice(this.view?.text ?? '', text), cursor: text.length })
     }
+    const card = this.view?.text === text ? this.view.card : undefined
     let sent = text
     let decisions: string[] = []
     for (const fx of this.core.handle({ type: 'submit', now: now(), text, amendable: false })) {
@@ -304,7 +308,7 @@ export class Band {
     else answer = { t: 'enter', do: 'pass' }
     // The prompt hook knows a prompt whose card was seen by this text.
     const final = answer.do === 'append' ? `${head}${answer.text}` : answer.do === 'replace' ? sent : text
-    this.mark(final, true)
+    this.mark(final, true, text, card)
     this.send(answer)
   }
 
@@ -387,11 +391,15 @@ export class Band {
   }
 
   /** Mark the prompt as one whose card was seen, for the prompt hook. */
-  private mark(text: string, force = false): void {
+  private mark(text: string, force = false, typed = text,
+    card: (MargincueCard & { lenses?: string[] }) | undefined = this.view?.card): void {
     if (!text.trim() || (!force && text === this.marked)) return
     this.marked = text
     try {
-      writeJson(PATHS.composed, { text, at: Date.now() })
+      writeJson(PATHS.composed, { text, at: Date.now(), ...(this.audit && {
+        cwd: this.cwd, review: { prompt: typed, profiles: card?.lenses, rows: card?.stage === 'draft' ? card.rows.map(({ key, label, statement, options, chosen }) =>
+          ({ key, label, statement, options, leftOpen: !chosen })) : undefined },
+      }) })
     } catch {}
   }
 

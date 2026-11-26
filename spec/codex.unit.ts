@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { EventEmitter, once } from 'node:events'
 import { test } from 'node:test'
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -178,15 +178,43 @@ test('the prompt hook notes the turn and asks the agent to mark its choices; the
     last_assistant_message: `CSV is ${OPEN}CSV built: streamed | in the browser${CLOSE}; ${OPEN}delivery: email customers | draft an email${CLOSE}.` }
   const legacy = { systemMessage: 'MarginCue · you set 2 · the agent chose 3 — week starts: Monday · csv built: streamed · delivery: email customers — ctrl+g to switch one' }
   assert.deepEqual(stopHook(input), legacy)
+  assert.equal(existsSync(PATHS.audit), false)
+  assert.notEqual(JSON.parse(readFileSync(PATHS.turn, 'utf8')).endedAt, null)
+})
+
+test('Codex audit accepts the legacy setting and scores the exact submitted card and prompt', () => {
+  const cwd = '/audit-fixture'
+  const session_id = 'audit'
+  const prompt = `Use Redis for the cache. START ${'x'.repeat(4500)} END`
+  const rows = [{ key: 'layout_style', label: 'layout', statement: 'Use {} layout', options: ['compact', 'roomy'], leftOpen: true }]
+  const marked = `${OPEN}layout: compact | roomy${CLOSE} ${OPEN}cache: in memory | Redis${CLOSE}`
+  const transcript = rollout('audit-1', [marked])
   try {
     saveSettings({ tiers: 'on' })
-    assert.deepEqual(stopHook(input), { systemMessage: 'MarginCue · you set 2 · the agent chose 3 — 1 high · 0 mid · 2 low — [high] delivery: email customers · [low] week starts: Monday · [low] csv built: streamed — ctrl+g to switch one' })
-    saveSettings({ tiers: 'off' })
-    assert.deepEqual(stopHook(input), legacy)
+    writeFileSync(PATHS.composed, JSON.stringify({ text: prompt, cwd, at: Date.now(), review: { prompt, rows } }))
+    const input = { session_id, turn_id: 'audit-1', transcript_path: transcript, cwd }
+    promptHook({ ...input, prompt })
+    assert.deepEqual(stopHook(input), { systemMessage:
+      `MarginCue · you set 0 · the agent chose 2 · 1 to review first — Review first: cache: in memory (your prompt said "Redis" · agent's word · → Redis) — layout: compact — ctrl+g to switch one` })
+    const log = readFileSync(PATHS.audit, 'utf8').trim().split('\n')
+    assert.equal(log.length, 1)
+    const line = JSON.parse(log[0]!)
+    assert.equal(line.prompt.length, 4000)
+    assert.match(line.prompt, /^Use Redis[\s\S]*END$/)
+    assert.equal(line.host, 'codex')
+    assert.deepEqual(line.choices.map(({ evidence, flagged, signals }: typeof line.choices[number]) =>
+      [evidence, flagged, signals.leftOpen, signals.contradiction]),
+    [["agent's word", false, true, null], ["agent's word", true, false, 'Redis']])
+    assert.equal(JSON.parse(readFileSync(PATHS.turn, 'utf8')).review, undefined)
+
+    saveSettings({ audit: 'off', tiers: 'on' })
+    promptHook({ ...input, prompt })
+    assert.deepEqual(stopHook(input), { systemMessage:
+      'MarginCue · you set 0 · the agent chose 2 — layout: compact · cache: in memory — ctrl+g to switch one' })
+    assert.equal(readFileSync(PATHS.audit, 'utf8').trim(), log[0])
   } finally {
     saveSettings({})
   }
-  assert.notEqual(JSON.parse(readFileSync(PATHS.turn, 'utf8')).endedAt, null)
 })
 
 test('a message sent into the running turn keeps its decisions, and the receipt shows a choice switched there', () => {

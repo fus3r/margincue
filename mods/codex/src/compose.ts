@@ -21,7 +21,7 @@ import { cardConfig } from './card-config'
 import { runnable } from './command'
 import { Draft } from './editor'
 import { CodexModel } from './model'
-import { PATHS, learn, processEngine, readLearned, readSettings, watchSettings, writeJson } from './store'
+import { PATHS, auditEnabled, learn, processEngine, readLearned, readSettings, watchSettings, writeJson } from './store'
 import { drawLine, parseKeys, sgr } from './terminal'
 import type { Hit, Key } from './terminal'
 import { agentCard, pick, readTurn } from './turn-card'
@@ -248,22 +248,26 @@ export async function compose(file: string): Promise<void> {
 
   function submit(): void {
     if (inAgent() || !draft.text.trim()) return finish(draft.text)
+    const card = view?.text === draft.text ? view?.card : undefined
     const effects = core.handle({ type: 'submit', now: now(), text: draft.text, amendable: false })
     const sent = effects.find((fx): fx is Extract<Effect, { type: 'submit' }> => fx.type === 'submit')
-    finish(sent?.text ?? draft.text)
+    finish(sent?.text ?? draft.text, false, card?.stage === 'draft' ? card : undefined)
   }
 
   function cancel(): void {
     finish(seed, true)
   }
 
-  function finish(text: string, unchanged = false): void {
+  function finish(text: string, unchanged = false, card?: View['card']): void {
     if (finished) return
     finished = true
     if (!unchanged || text !== seed) writeFileSync(file, text)
     if (!unchanged && text.trim()) {
       try {
-        writeJson(PATHS.composed, { text, at: Date.now() })
+        writeJson(PATHS.composed, { text, at: Date.now(), ...(auditEnabled(settings) && {
+          cwd, review: { prompt: draft.text, profiles: card?.lenses, rows: card?.rows.map(({ key, label, statement, options, chosen }) =>
+            ({ key, label, statement, options, leftOpen: !chosen })) },
+        }) })
       } catch {}
     }
     restore()

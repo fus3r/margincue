@@ -130,9 +130,9 @@ function cardOf(core: ReturnType<typeof createCore>, seed: WidgetCard, sketchOn:
     const row = view?.rows.find((row) => row.origin === 'repo' && row.statement === `"${mention.phrase}" is {}`)
     return { phrase: mention.phrase, candidates: mention.near, ...(row && { rowId: row.id }) }
   })
-  const rows = (view?.rows ?? []).map(({ id, key, origin, learned, label, type, statement, options, selected, openOnSend }) => {
+  const rows = (view?.rows ?? []).map(({ id, key, origin, learned, lens, label, type, statement, options, selected, openOnSend }) => {
     const mention = missing.find((name) => name.rowId === id)
-    return { id, key, origin, ...(learned && { learned }), label, type, statement, options, assumed: selected,
+    return { id, key, origin, ...(lens && { lens }), ...(learned && { learned }), label, type, statement, options, assumed: selected,
       ...(openOnSend && { openOnSend }),
       ...(mention && { files: mention.candidates.map((candidate) => candidate.file) }) }
   })

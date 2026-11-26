@@ -15,7 +15,8 @@ import { buildPrompt, buildSystem, isTerminated, lastSentenceStart } from './req
 import { buildSketchPrompt, canSketch, CARD_MAX_TOKENS, CARD_OPTION_TARGET, cycleSelection, deriveCardKind, insertsPinnedArtifact, listsSteps, openChoiceLine, openChoicesBlock, parseCard, parseSketch, rowValue, sameSelection, SKETCH_MAX_TOKENS, STEP_ORDER_KEY, toggleSelection } from './card'
 import type { CardKind, ParsedCard, ParsedRow, ParsedSketch, RowType } from './card'
 import { isHardToUndo } from './hard-to-undo'
-import { choiceTier } from './choice-tier'
+import { auditExpertProfiles, draftExpertProfiles, LEARNED_AFTER, reviewExpertDecisions, scoreChoice } from './review-first'
+import type { ReviewContext, ReviewDecision } from './review-first'
 import { ground, indexVocabulary, nameKey, relatedFolders } from './grounding'
 import type { GroundIndex, Mention } from './grounding'
 import { detectLenses } from './project'
@@ -120,6 +121,7 @@ type Card = {
   focus: string | null
   dismissed: Set<string>
   dismissedAgent?: CardRow[]
+  reviewContext?: ReviewContext
   req: number | null
   reqText: string
   reqKey: string
@@ -156,7 +158,6 @@ const CARD_MIN_WORDS = 6
 const SKETCH_DELAY_MS = 700
 /** alt+down during a turn waits this long for the next press before the change is sent. */
 const AMEND_DELAY_MS = 1500
-const LEARNED_AFTER = 2
 /** Characters of a draft a card reading looks at. */
 const DRAFT_MAX = 8000
 const REFS_MAX = 4
@@ -165,12 +166,6 @@ const STAKES: Record<Rigor, string> = {
   explore: 'exploring', build: 'building something to use', compete: 'a challenge or competition, scored on held-out data',
   study: 'research meant to stand up to review',
 }
-/** Words that bring an expert profile's decisions into the card, two or more needed. */
-const LENS_WORDS: [string, RegExp][] = [
-  ['ml-research', /\b(?:train(?:ing)?|dataset|accuracy|auc|cross-?valid\w*|overfit\w*|leak\w*|regression|classif\w*|features?|labels?|benchmark\w*|baselines?|hyperparam\w*|predict\w*|evaluat\w*|metrics?|test set|validation|fine-?tun\w*|embedding\w*)\b/gi],
-  ['system-design', /\b(?:services?|queues?|cach\w+|databases?|scal(?:e|ing|ability)|latency|throughput|replica\w*|shard\w*|load balanc\w*|microservices?|kafka|redis|postgres\w*|consistency|availability|rate limit\w*|backpressure|idempoten\w*|retries|webhooks?)\b/gi],
-]
-
 const EMPTY_PROFILE: Profile = { name: 'general', description: '', maxCues: 3, rubric: '', examples: [] }
 
 export function createCore(assets: Assets, options?: { readSubmittedPrompt?: boolean }): Core {
@@ -218,7 +213,7 @@ export class Core {
   private sheetEnabled: boolean | undefined
   private readMode: ReadingMode = 'auto'
   private chaptersEnabled = true
-  private tiersEnabled = false
+  private reviewFirst = false
   private profileSelected = false
   private sketchEnabled = true
   private refsEnabled = true
@@ -230,6 +225,7 @@ export class Core {
   /** The running turn's card (the agent's own choices), kept while a follow-up is being written over it. */
   private turnCard: Card | null = null
   /** Decisions of a message typed during a turn: the engine queues it, so they belong to the turn that runs it. */
+  private pendingReviews: { sent: string; context: ReviewContext }[] = []
   private pendingSent: string[] = []
   private nextCard = 1
   private readonly cardCache = new Lru<ParsedCard>(24)
@@ -318,7 +314,7 @@ export class Core {
         this.onFocus(event.dir, event.cue)
         break
       case 'submit':
-        this.onSubmit(event.text, event.amendable !== false, event.plan !== false)
+        this.onSubmit(event.text, event.amendable !== false, event.plan !== false, event.reviewPrompt, event.reviewRows)
         break
       case 'loadState':
         this.state.load(event.state)
@@ -352,6 +348,11 @@ export class Core {
           this.turnCard = this.newCard('turn')
           this.turnCard.submittedAt = this.now
           this.turnCard.sent = this.pendingSent
+          if (this.reviewFirst) {
+            const at = this.pendingReviews.findIndex(({ sent }) => sent === event.text)
+            const queued = at >= 0 ? this.pendingReviews.splice(at, 1)[0] : undefined
+            this.turnCard.reviewContext = queued?.context ?? this.reviewContext(event.text ?? '', null)
+          }
           this.pendingSent = []
           if (this.card?.stage !== 'draft') {
             this.reviewAt = null
@@ -479,7 +480,7 @@ export class Core {
     const sheetChanged = sheetEnabled !== this.sheetEnabled
     this.sheetEnabled = sheetEnabled
     this.chaptersEnabled = e.chapters !== false
-    this.tiersEnabled = e.tiers === true
+    this.reviewFirst = e.reviewFirst === true
     this.profileSelected = e.profileSelected === true
     const readMode = e.read ?? 'auto'
     const readModeChanged = this.readMode !== readMode
@@ -802,7 +803,7 @@ export class Core {
     this.focus = (visible[(at + step + visible.length) % visible.length] as Cue).id
   }
 
-  private onSubmit(text: string, amendable: boolean, plan = true): void {
+  private onSubmit(text: string, amendable: boolean, plan = true, reviewPrompt?: string, reviewRows?: ReviewDecision[]): void {
     const prompt = !isHostCommand(text) && text.trim() !== ''
     const isPrompt = this.enabled && prompt
     if (this.mode !== undefined && text !== this.text) this.refreshState(text)
@@ -817,7 +818,7 @@ export class Core {
     const asked = open ? `${attached.text.replace(/\s+$/, '')}\n\n${open}` : attached.text
     const target = isPrompt && exact ? this.targetSketch(plan, added) : null
     const sent = target ? `${asked.replace(/\s+$/, '')}\n\n${target}` : asked
-    if (this.sheetEnabled !== undefined) this.onCardSubmit(prompt, exact, amendable, added)
+    if (this.sheetEnabled !== undefined) this.onCardSubmit(prompt, exact, amendable, added, reviewPrompt ?? text, sent, reviewRows)
     if (this.mode !== undefined) {
       this.dropAmendment('new-submit')
       if (isPrompt && amendable && text === this.text && this.cloudAllowed() &&
@@ -872,6 +873,7 @@ export class Core {
     this.turnCard = null
     this.pendingSent = []
     this.receipt = null
+    this.pendingReviews = []
     this.turnRunning = false
     this.resetDraft()
     this.state.reset()
@@ -1337,14 +1339,11 @@ export class Core {
   }
 
   /** Profiles for this reading: the project's, the one the person picked, and any the draft's own words call for. */
-  private lensProfiles(): string[] {
+  private lensProfiles(text = this.text): string[] {
     const profiles = new Set<string>()
     for (const lens of this.projectLenses) if (this.state.forProfile(lens.profile).length) profiles.add(lens.profile)
     if (this.profileName !== 'general' && this.state.forProfile(this.profileName).length) profiles.add(this.profileName)
-    for (const [profile, words] of LENS_WORDS) {
-      const hits = new Set((this.text.match(words) ?? []).map((word) => word.toLowerCase()))
-      if (hits.size >= 2 && this.state.forProfile(profile).length) profiles.add(profile)
-    }
+    for (const profile of draftExpertProfiles(text)) if (this.state.forProfile(profile).length) profiles.add(profile)
     return [...profiles]
   }
 
@@ -1573,7 +1572,7 @@ export class Core {
     const row = card?.rows.find((entry) => entry.id === rowId)
     if (!card || !row) return
     card.dismissed.add(row.key)
-    if (this.tiersEnabled && card.stage === 'turn' && row.origin === 'agent') (card.dismissedAgent ??= []).push(row)
+    if (this.reviewFirst && card.stage === 'turn' && row.origin === 'agent') (card.dismissedAgent ??= []).push(row)
     card.rows = card.rows.filter((entry) => entry !== row)
     this.fixCardFocus()
     this.metric('card-dismissed', { card: card.id, row: row.key, origin: row.origin, stage: card.stage })
@@ -1742,8 +1741,21 @@ export class Core {
 
   // ---- after Enter: the agent's own choices, then the receipt ----------------------
 
-  private onCardSubmit(prompt: boolean, exact: boolean, amendable: boolean, added: string[]): void {
+  private reviewContext(prompt: string, card: Card | null): ReviewContext {
+    return {
+      prompt,
+      rows: card?.rows.map(({ key, label, statement, options, picked }) =>
+        ({ key, label, statement, options: [...options], leftOpen: picked === null })),
+      expert: reviewExpertDecisions(this.assets.bundles ?? [], [...new Set([...this.lensProfiles(prompt), ...auditExpertProfiles(prompt)])],
+        this.wordingLanguage(), (profile) => this.depthOf(profile)),
+    }
+  }
+
+  private onCardSubmit(prompt: boolean, exact: boolean, amendable: boolean, added: string[], typed: string, sent: string,
+    reviewRows?: ReviewDecision[]): void {
     const card = exact && this.card?.stage === 'draft' ? this.card : null
+    const context = this.reviewFirst && prompt ? this.reviewContext(typed, card) : undefined
+    if (context && reviewRows) context.rows = reviewRows
     if (prompt && this.enabled) {
       this.metric('card-submitted', {
         ...(card && { card: card.id }), rows: card?.rows.length ?? 0,
@@ -1761,6 +1773,7 @@ export class Core {
       // runs it, and meanwhile the agent's own choices come back on screen.
       if (this.card?.stage === 'draft') this.clearCard()
       this.pendingSent.push(...added.filter((line) => !line.startsWith(FILE_REFERENCES_HEADING)))
+      if (context && !typed.startsWith('Amendment to my last prompt:')) this.pendingReviews.push({ sent, context })
       if (this.turnCard) this.card = this.turnCard
       return
     }
@@ -1769,6 +1782,7 @@ export class Core {
     if (!this.turnRunning) return
     this.card = this.turnCard = this.newCard('turn')
     this.card.submittedAt = this.now
+    this.card.reviewContext = context
     // The receipt lists the choices that travelled; where names live in the code is not one.
     this.card.sent = added.filter((line) => !line.startsWith(FILE_REFERENCES_HEADING))
   }
@@ -1790,9 +1804,14 @@ export class Core {
     if (row) {
       if (normalize(row.options[0] ?? '') === normalize(choice)) return
       // The agent restated the choice with another value: its newer word stands.
-      Object.assign(row, { options, defaults: [0], picked: null, sent: undefined })
+      if (this.reviewFirst && row.sent) {
+        const value = row.options[row.sent[0] ?? 0]!
+        let selected = options.findIndex((option) => normalize(option) === normalize(value))
+        if (selected === -1) selected = options.push(value) - 1
+        Object.assign(row, { options, defaults: [0], picked: [selected], sent: [selected] })
+      } else Object.assign(row, { options, defaults: [0], picked: null, sent: undefined })
     } else {
-      if ((!this.tiersEnabled && card.rows.length >= 8) || card.dismissed.has(key)) return
+      if ((!this.reviewFirst && card.rows.length >= 8) || card.dismissed.has(key)) return
       card.rows.push({
         id: this.newId(), key, label: cutLabel(label), type: 'one', statement: `${label}: {}`,
         options, defaults: [0], origin: 'agent', picked: null,
@@ -1825,18 +1844,18 @@ export class Core {
       return
     }
     const agent = card.rows.filter((row) => row.origin === 'agent')
-    const recorded = this.tiersEnabled ? [...agent, ...card.dismissedAgent ?? []] : agent
+    const recorded = this.reviewFirst ? [...agent, ...card.dismissedAgent ?? []].sort((a, b) =>
+      Number(a.id.slice(1)) - Number(b.id.slice(1))) : agent
+    const context = this.reviewFirst ? { ...(card.reviewContext ?? this.reviewContext('', null)), learned: this.learned } : null
     if (card.sent.length || recorded.length) {
       this.receipt = {
-        id: this.nextReceipt++, yours: card.sent,
+        id: this.nextReceipt++, yours: card.sent, ...(context && { reviewContext: context }),
         agent: recorded.map((row) => {
           const now = (row.sent ?? row.defaults)[0] ?? 0
           const value = row.options[now]!
-          const ranked = this.tiersEnabled
-            ? { label: row.statement.replace(/: \{\}$/, ''), tier: choiceTier(row.statement, value) }
-            : { label: row.label }
-          return { ...ranked, value,
-            ...(now !== 0 && { was: row.options[0]! }), options: [...row.options] }
+          const label = context ? row.statement.replace(/: \{\}$/, '') : row.label
+          const choice = { label, value, ...(now !== 0 && { was: row.options[0]! }), options: [...row.options] }
+          return context ? { ...choice, review: scoreChoice({ ...choice, switched: row.sent !== undefined }, context) } : choice
         }),
       }
       this.metric('receipt', { id: this.receipt.id, yours: card.sent.length, agent: recorded.length, changed: recorded.filter((row) => row.sent).length })

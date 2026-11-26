@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { createHash } from 'node:crypto'
 import './ts-resolve.ts'
 import type { MargincueBand, MargincueCard, MargincueRow } from '../mods/claude-code/types'
 
 const { layoutBandRows, segmentsWidth, cells, tidySketch, DARK, LIGHT, paletteFor } = await import('../mods/claude-code/hooks/band')
 const { layoutCard, layoutReceipt, layoutSent, splitSent } = await import('../mods/claude-code/hooks/card-view')
 const { parseCard, parseSketch } = await import('../mods/claude-code/core/card')
+const { scoreChoice } = await import('../mods/claude-code/core/review-first')
 const { createCore } = await import('../mods/claude-code/core/index')
 const { ASSETS } = await import('../mods/claude-code/hooks/assets')
 const { drawLine } = await import('../mods/codex/src/terminal')
@@ -402,7 +404,7 @@ test('the prompt as sent lists what MarginCue attached, and nothing when it atta
 
 test('the receipt fits its width and says what was switched', () => {
   const receipt = { id: 1, yours: ['Write the report to a markdown file.'],
-    agent: [{ label: 'run log', value: 'one SQLite database', was: 'one JSONL file per run', tier: 'low' as const, options: ['one JSONL file per run', 'one SQLite database', 'a CSV per run'] }] }
+    agent: [{ label: 'run log', value: 'one SQLite database', was: 'one JSONL file per run', options: ['one JSONL file per run', 'one SQLite database', 'a CSV per run'] }] }
   for (const columns of [50, 80, 160]) {
     const lines = layoutReceipt(receipt, columns)
     for (const line of lines) assert.ok(segmentsWidth(line) <= Math.max(columns, 40), plain(line))
@@ -413,20 +415,39 @@ test('the receipt fits its width and says what was switched', () => {
   assert.ok(buttons(layoutReceipt(receipt, 160)).some((b) => b.key === 'agent-0-2'))
 })
 
-test('receipt counts every choice, keeps agent ranks stable, and folds only low choices', () => {
-  const agent = (['low', 'mid', 'high', 'low', 'high'] as const).map((tier, i) =>
-    ({ label: `choice ${i}`, value: 'chosen', options: ['chosen', 'alternate'], tier }))
+test('the 60, 80 and 120 column receipts preserve v0.4.31 off, show all flagged rows on, and match off with zero flags', () => {
+  const agent = [
+    { label: 'layout', value: 'compact', options: ['compact', 'roomy'] },
+    { label: 'cache', value: 'in memory', options: ['in memory', 'Redis'] },
+    { label: 'delivery', value: 'email customers', options: ['email customers', 'draft an email'] },
+  ].map((choice, i) => ({ ...choice, review: scoreChoice(choice, { prompt: 'Use Redis.' },
+    i === 2 ? undefined : { kind: 'named', edits: [{ path: 'src/layout.ts' }] }) }))
   const receipt = { id: 7, yours: ['Keep the layout.'], agent }
-  const folded = layoutReceipt(receipt, 70, undefined, true, { tiers: true })
-  const opened = layoutReceipt(receipt, 70, undefined, true, { tiers: true, showLow: true })
-  const shown = (lines: typeof folded) => buttons(lines).filter((button) => button.action.type === 'receiptPick').map((button) => button.key)
-  assert.deepEqual(shown(folded), ['agent-2-1', 'agent-4-1', 'agent-1-1'])
-  assert.deepEqual(shown(opened), ['agent-2-1', 'agent-4-1', 'agent-1-1', 'agent-0-1', 'agent-3-1'])
-  assert.equal(buttons(folded).find((button) => button.key === 'receipt-low')?.label, 'Show 2 low choices')
-  assert.equal(buttons(opened).find((button) => button.key === 'receipt-low')?.label, 'Hide low choices')
-  assert.match(folded.map(plain).join('\n'), /✓ Keep the layout\.[^\n]*\n\s*2 high · 1 mid · 2 low/)
-  assert.ok(!buttons(layoutReceipt({ ...receipt, agent: agent.slice(0, 4) }, 70, undefined, false, { tiers: true }))
-    .some((button) => button.key === 'receipt-low'))
+  const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
+  for (const [columns, baseline] of [
+    [60, 'c6ca64cd5d7e367ae53f575b68d557db2f6b21f137ff83669991fd92ff09eb1f'],
+    [80, '920fa64dc281a167a9f10c4c5b7a173c4b8969e476bc3f3c6df538c8c8e81bcd'],
+    [120, '920fa64dc281a167a9f10c4c5b7a173c4b8969e476bc3f3c6df538c8c8e81bcd'],
+  ] as const) {
+    const zero = { ...receipt, agent: agent.map(({ review: _review, ...item }, i) => {
+      const choice = i === 2 ? { ...item, value: 'draft an email' } : item
+      return { ...choice, review: scoreChoice(choice, { prompt: 'Prepare the report.' },
+        { kind: 'named', edits: [{ path: 'src/layout.ts' }] }) }
+    }) }
+    const off = layoutReceipt(receipt, columns, undefined, true, { sessionChoices: true })
+    const on = layoutReceipt(receipt, columns, undefined, true, { audit: true, sessionChoices: true })
+    assert.equal(hash(off), baseline)
+    assert.ok(zero.agent.every((item) => !item.review.flagged))
+    assert.deepEqual(layoutReceipt(zero, columns, undefined, true, { audit: true, sessionChoices: true }),
+      layoutReceipt(zero, columns, undefined, true, { sessionChoices: true }))
+    for (const line of [...off, ...on]) assert.ok(segmentsWidth(line) <= columns, plain(line))
+    const rendered = on.map(plain).join('\n')
+    assert.match(rendered, /2 to review first/)
+    assert.match(rendered, /Review first[\s\S]+delivery[\s\S]+hard to undo · agent's word[\s\S]+cache[\s\S]+your prompt said "Redis" · matched edit[\s\S]+layout/)
+    assert.deepEqual(buttons(on).filter((button) => button.action.type === 'receiptPick').map((button) => button.key),
+      ['agent-2-1', 'agent-1-1', 'agent-0-1'])
+    assert.ok(buttons(on).some((button) => button.key === 'receipt-session'))
+  }
 })
 
 test('an option the model cut short is left out rather than sent cut', () => {
