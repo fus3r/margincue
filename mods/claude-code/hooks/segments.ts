@@ -47,6 +47,7 @@ export type Action =
   | { type: 'cardCycle'; row?: string }
   | { type: 'cardSet'; row: string; option: number }
   | { type: 'cardDismiss'; row: string }
+  | Extract<import('../core/types').Event, { type: 'chapter' }>
   | { type: 'sketch'; action: 'toggle' | 'pin' | 'refresh' }
   | { type: 'receiptPick'; receipt: number; item: number; option: number }
   | { type: 'receiptReview'; receipt: number }
@@ -63,6 +64,9 @@ export const CHORD_SWAP = 'app:diffFileListDown'
 export const CHORD_NEXT = 'app:diffFileListUp'
 export const CARD_READ_KEY = 'c'
 export const CARD_KEEP_KEY = 'k'
+export const CHAPTER_KEY = 'b'
+export const CHAPTER_DROP_KEY = 'z'
+export const CHAPTER_NEXT_KEY = 'n'
 export const RECEIPT_DIFF_KEY = 'e'
 
 /**

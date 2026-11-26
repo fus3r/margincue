@@ -45,7 +45,7 @@ Cross-validation estimates loss under a specified procedure and sampling design.
 
 ### Signals
 
-cross validation | nested cv | nested resampling | train test split | train test | holdout | hold out | test accuracy | test set | validation set | group split | temporal split | time series split | data leakage | out of sample | validation croisée | jeu de test | fuite de données
+cross validation | nested cv | nested resampling | train test split | train test | holdout | hold out | test accuracy | test set | validation set | group split | temporal split | time series split | data leakage | out of sample | validation croisée | jeu de test | fuite de données | label leakage | offline evaluation | evaluation
 
 ### Essentials
 
@@ -80,7 +80,7 @@ Assume $E[Y\mid X]=X\beta$ and full column rank. The least-squares matrix $A_0=(
 
 ### Signals
 
-linear regression | least squares | ridge regression | ridge penalty | lasso | elastic net | regularization path | feature selection | one standard error rule | one se rule | régression linéaire | moindres carrés | régularisation
+linear regression | least squares | ridge regression | ridge penalty | lasso | elastic net | regularization path | feature selection | one standard error rule | one se rule | régression linéaire | moindres carrés | régularisation | lasso penalty
 
 ### Essentials
 
@@ -115,7 +115,7 @@ At posterior probability $p$, the expected cost of a positive decision is $(1-p)
 
 ### Signals
 
-classifier | classification threshold | operating point | probability calibration | calibration curve | calibrated probabilities | decision threshold | roc auc | precision recall | brier score | log loss | false positives | false negatives | seuil de décision | faux positifs | courbe roc
+classifier | classification threshold | operating point | probability calibration | calibration curve | calibrated probabilities | decision threshold | roc auc | precision recall | brier score | log loss | false positives | false negatives | seuil de décision | faux positifs | courbe roc | probability cutoff | alert threshold | calibrate | probability
 
 ### Essentials
 
@@ -252,7 +252,7 @@ Separate optimization progress, model selection, and independent assessment. A t
 
 ### Signals
 
-neural network | neural networks | deep learning | checkpoint selection | early stopping | transformer model | fine tuning | finetuning | compute budget | training seeds | réseau de neurones | apprentissage profond | arrêt anticipé
+neural network | neural networks | deep learning | checkpoint selection | early stopping | transformer model | fine tuning | finetuning | compute budget | training seeds | semi supervised training | ablation | feature group | réseau de neurones | apprentissage profond | arrêt anticipé | weight decay | model ablation
 
 ### Essentials
 
@@ -286,7 +286,7 @@ For centered data, projecting onto a unit direction $v$ explains variance $v^T\S
 
 ### Signals
 
-pca | principal component | principal components | k means | clustering | cluster stability | unsupervised learning | dimensionality reduction | analyse en composantes principales | réduction de dimension | classification non supervisée
+pca | principal component | principal components | k means | clustering | cluster stability | unsupervised learning | dimensionality reduction | analyse en composantes principales | réduction de dimension | classification non supervisée | explained variance | variance
 
 ### Essentials
 
@@ -354,7 +354,7 @@ For two fixed models on the same independently sampled test units, resample thos
 
 ### Signals
 
-confidence interval | confidence intervals | paired bootstrap | bootstrap interval | bootstrap intervals | bootstrap resampling | paired comparison | seed variability | error bars | performance difference | cluster bootstrap | standard error of the estimate | standard error of the difference | intervalle de confiance | incertitude d'échantillonnage | erreur standard
+confidence interval | confidence intervals | paired bootstrap | bootstrap interval | bootstrap intervals | bootstrap resampling | paired comparison | benchmark comparison | baseline | dataset | seed variability | training seeds | error bars | performance difference | cluster bootstrap | standard error of the estimate | standard error of the difference | intervalle de confiance | incertitude d'échantillonnage | erreur standard
 
 ### Essentials
 

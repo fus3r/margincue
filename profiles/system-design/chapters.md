@@ -35,7 +35,7 @@ slo | sli | error budget | burn rate | availability target | latency target | ta
 
 ### Signals
 
-durable enqueue | durable queue | durable write | submit succeeds | transactional outbox | database transaction | atomic write | batch atomicity | commit point | partial success | all or nothing | mise en file durable | transaction distribuée | succès partiel
+durable enqueue | durable queue | durable write | submit succeeds | transactional outbox | database transaction | atomic write | batch atomicity | commit point | upload | resumable | partial success | all or nothing | mise en file durable | transaction distribuée | succès partiel | background queue
 
 ### Essentials
 
@@ -64,7 +64,7 @@ durable enqueue | durable queue | durable write | submit succeeds | transactiona
 
 ### Signals
 
-read replica | read replicas | replica lag | consistency guarantee | linearizability | linearizable | serializable isolation | write skew | split brain | network partition | read your writes | quorum reads | cohérence forte | isolation sérialisable | retard de réplication
+read replica | read replicas | replica lag | consistency guarantee | linearizability | linearizable | serializable isolation | write skew | split brain | network partition | read your writes | quorum reads | cohérence forte | isolation sérialisable | retard de réplication | offline sync | offline edits | concurrent edits
 
 ### Essentials
 
@@ -94,7 +94,7 @@ read replica | read replicas | replica lag | consistency guarantee | linearizabi
 
 ### Signals
 
-at least once | exactly once | delivery guarantee | idempotency | idempotency key | duplicate delivery | redelivery | webhook retry | retry policy | message ordering | livraison au moins une fois | clé d'idempotence | ordre des messages
+at least once | exactly once | delivery guarantee | idempotency | idempotency key | duplicate delivery | redelivery | webhook retry | retry policy | message ordering | livraison au moins une fois | clé d'idempotence | ordre des messages | exponential backoff | dead letter queue | duplicate processing | webhook delivery | retry
 
 ### Essentials
 
@@ -123,7 +123,7 @@ at least once | exactly once | delivery guarantee | idempotency | idempotency ke
 
 ### Signals
 
-backpressure | queue backlog | queue depth | load shedding | rate limit | rate limiting | capacity planning | saturation | concurrency limit | throughput target | délestage | file d'attente | limite de débit
+backpressure | queue backlog | queue depth | load shedding | rate limit | rate limiting | capacity planning | saturation | concurrency limit | throughput target | délestage | file d'attente | limite de débit | connection limit | requests per minute | worker queue
 
 ### Essentials
 
@@ -152,7 +152,7 @@ backpressure | queue backlog | queue depth | load shedding | rate limit | rate l
 
 ### Signals
 
-cache invalidation | cache ttl | data freshness | stale data | stale reads | stale while revalidate | cache aside | read through cache | materialized view | invalidation du cache | données périmées | fraîcheur des données
+cache invalidation | cache ttl | data freshness | stale data | stale reads | stale while revalidate | cache aside | read through cache | materialized view | invalidation du cache | données périmées | fraîcheur des données | cache | ttl | invalidation
 
 ### Essentials
 
@@ -181,7 +181,7 @@ cache invalidation | cache ttl | data freshness | stale data | stale reads | sta
 
 ### Signals
 
-canary | phased rollout | feature flag rollout | contract migration | expand contract | rolling deploy | schema migration | dual write | backwards compatibility | rollback window | déploiement progressif | migration de schéma | rétrocompatibilité
+canary | phased rollout | feature flag rollout | contract migration | expand contract | rolling deploy | schema migration | dual write | backwards compatibility | rollback window | déploiement progressif | migration de schéma | rétrocompatibilité | feature flag | zero downtime | rollback path | migration de base de données
 
 ### Essentials
 
@@ -210,7 +210,7 @@ canary | phased rollout | feature flag rollout | contract migration | expand con
 
 ### Signals
 
-disaster recovery | data loss | recovery point | recovery time | rpo | rto | backup restore | restore drill | point in time recovery | regional failover | restore from backup | reprise après sinistre | restauration de sauvegarde
+disaster recovery | data loss | recovery point | recovery time | rpo | rto | backup restore | restore drill | point in time recovery | regional failover | restore from backup | reprise après sinistre | restauration de sauvegarde | write ahead log
 
 ### Essentials
 

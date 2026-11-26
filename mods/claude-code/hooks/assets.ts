@@ -174,7 +174,10 @@ export const ASSETS: Assets = {
         "out of sample",
         "validation croisee",
         "jeu de test",
-        "fuite de donnees"
+        "fuite de donnees",
+        "label leakage",
+        "offline evaluation",
+        "evaluation"
       ],
       "notes": {
         "essentials": "Theory. Examples used to pick a model can make its final score look better than it is. Rows from the same person or from the future can also give the model clues it will lack in real use.\nWorkflow. Choose what must be held out, fit preprocessing and models on training data, tune on validation, then score on separate data.\nChoice. Clarify whether the score is for new groups or later records from known groups when both uses are possible.",
@@ -197,7 +200,8 @@ export const ASSETS: Assets = {
         "one se rule",
         "regression lineaire",
         "moindres carres",
-        "regularisation"
+        "regularisation",
+        "lasso penalty"
       ],
       "notes": {
         "essentials": "Theory. A linear model combines features with weights. Shrinkage pulls weights toward zero and can make predictions less sensitive to noise. Some penalties also drop features.\nWorkflow. Fit a simple linear baseline, scale features on training data, and compare the models on fresh data.\nChoice. Decide whether the result should prioritize prediction or a small set of features that people can inspect.",
@@ -214,7 +218,7 @@ export const ASSETS: Assets = {
         "operating point",
         "probability calibration",
         "calibration curve",
-        "calibrated probabilities",
+        "calibrated probability",
         "decision threshold",
         "roc auc",
         "precision recall",
@@ -224,7 +228,11 @@ export const ASSETS: Assets = {
         "false negatives",
         "seuil de decision",
         "faux positifs",
-        "courbe roc"
+        "courbe roc",
+        "probability cutoff",
+        "alert threshold",
+        "calibrate",
+        "probability"
       ],
       "notes": {
         "essentials": "Theory. A score can rank cases well and still misstate their chances. Changing the cutoff trades missed cases for false alerts.\nWorkflow. Compare a simple baseline, check whether predicted chances agree with observed frequencies, and inspect how alert volume changes across cutoffs.\nChoice. Decide how many false alerts are worth catching more real cases, or whether the deliverable only needs to rank cases.",
@@ -309,9 +317,14 @@ export const ASSETS: Assets = {
         "finetuning",
         "compute budget",
         "training seeds",
+        "semi supervised training",
+        "ablation",
+        "feature group",
         "reseau de neurones",
         "apprentissage profond",
-        "arret anticipe"
+        "arret anticipe",
+        "weight decay",
+        "model ablation"
       ],
       "notes": {
         "essentials": "Theory. A larger network can fit more patterns, including noise. Training progress and performance on fresh data answer different questions.\nWorkflow. Start from a simple baseline, choose when to stop using validation data, and evaluate the chosen checkpoint on untouched examples.\nChoice. Establish whether to optimize result quality or compare what can be achieved within a fixed budget.",
@@ -333,7 +346,9 @@ export const ASSETS: Assets = {
         "dimensionality reduction",
         "analyse en composantes principales",
         "reduction de dimension",
-        "classification non supervisee"
+        "classification non supervisee",
+        "explained variance",
+        "variance"
       ],
       "notes": {
         "essentials": "Theory. PCA finds directions that capture variation. Clustering groups nearby points. Both depend on how features are scaled and what counts as nearby.\nWorkflow. Choose meaningful features and scales, inspect the representation, and see whether groups survive reasonable changes.\nChoice. Decide whether the goal is a compact view of the data or stable groups for people to act on.",
@@ -374,7 +389,11 @@ export const ASSETS: Assets = {
         "bootstrap interval",
         "bootstrap resampling",
         "paired comparison",
+        "benchmark comparison",
+        "baseline",
+        "dataset",
         "seed variability",
+        "training seeds",
         "error bars",
         "performance difference",
         "cluster bootstrap",
@@ -477,7 +496,8 @@ export const ASSETS: Assets = {
         "service journey",
         "premiere version",
         "parcours utilisateur",
-        "test d utilisabilite"
+        "test d utilisabilite",
+        "onboarding checklist"
       ],
       "notes": {
         "essentials": "Theory. A usable first release lets someone finish a whole task. A prototype can test whether they know what to do before the task is built.\nWorkflow. Pick a start, an end, and the shortest realistic path between them. Try it with a person from the target group.\nChoice. If both assisted and self-serve paths are feasible, ask how the first release handles that step. Once the workflow is chosen, sketch it in the requested scope and use a simple presentation.",
@@ -548,7 +568,9 @@ export const ASSETS: Assets = {
         "usage based pricing",
         "modele tarifaire",
         "disposition a payer",
-        "essai gratuit"
+        "essai gratuit",
+        "usage based billing",
+        "trial to paid conversion"
       ],
       "notes": {
         "essentials": "Theory. People can like an offer and still choose against paying for it. A plan should make clear what it buys.\nWorkflow. Identify the buyer, state the offer and renewal terms, and look for behavior such as purchasing or renewing.\nChoice. Decide who gets free access and what useful boundary separates it from paid access.",
@@ -576,7 +598,10 @@ export const ASSETS: Assets = {
         "supplier price",
         "regle de remboursement",
         "droits d acces",
-        "consentement utilisateur"
+        "consentement utilisateur",
+        "cancellation flow",
+        "guest access",
+        "read only access"
       ],
       "notes": {
         "essentials": "Theory. Different people can need different views or actions in the same task. Showing too much can expose information they were never meant to see.\nWorkflow. Walk through the task as each role, check what they need to know, and show them what happens when an action fails.\nChoice. Decide which role can see sensitive information, take an action, or approve an exception.",
@@ -619,11 +644,14 @@ export const ASSETS: Assets = {
         "atomic write",
         "batch atomicity",
         "commit point",
+        "upload",
+        "resumable",
         "partial success",
         "all or nothing",
         "mise en file durable",
         "transaction distribuee",
-        "succes partiel"
+        "succes partiel",
+        "background queue"
       ],
       "notes": {
         "essentials": "Theory. A queued job may still fail. A job number can confirm that the request was saved. A finished result confirms that the work completed.\nWorkflow. Specify the response payload, status, and retry behavior at acceptance and completion.\nChoice. When both are open, choose what the endpoint returns and when. It can return a job number after durable acceptance or the result after completion. A draft that sets the acknowledgement point settles this choice.",
@@ -648,7 +676,10 @@ export const ASSETS: Assets = {
         "quorum reads",
         "coherence forte",
         "isolation serialisable",
-        "retard de replication"
+        "retard de replication",
+        "offline sync",
+        "offline edit",
+        "concurrent edit"
       ],
       "notes": {
         "essentials": "Theory. Without a freshness guarantee, replicas can lag indefinitely. A user who just made a change usually expects to see it on their next read.\nWorkflow. Name the reads that must see recent writes, then try delayed updates and an unavailable copy.\nChoice. Decide whether to wait for a fresh answer or serve a clearly marked older answer.",
@@ -672,7 +703,12 @@ export const ASSETS: Assets = {
         "message ordering",
         "livraison au moins une fois",
         "cle d idempotence",
-        "ordre des messages"
+        "ordre des messages",
+        "exponential backoff",
+        "dead letter queue",
+        "duplicate processing",
+        "webhook delivery",
+        "retry"
       ],
       "notes": {
         "essentials": "Theory. A timeout can mean the first attempt succeeded and the reply was lost. Repeating an action can apply it twice.\nWorkflow. Reuse the same server-enforced idempotency key on every retry of an operation. Test duplicate delivery and make status visible when the outcome is unclear.\nChoice. Choose whether people can retry immediately or must first check the status of the original operation.",
@@ -695,7 +731,10 @@ export const ASSETS: Assets = {
         "throughput target",
         "delestage",
         "file d attente",
-        "limite de debit"
+        "limite de debit",
+        "connection limit",
+        "requests per minute",
+        "worker queue"
       ],
       "notes": {
         "essentials": "Theory. When more work arrives than can finish, waiting time grows. Retrying immediately can make a busy service busier.\nWorkflow. Measure how long work waits, limit how much can queue, and test what happens at peak load.\nChoice. Decide whether to delay, refuse, or serve a smaller result when the system runs out of capacity.",
@@ -718,7 +757,10 @@ export const ASSETS: Assets = {
         "materialized view",
         "invalidation du cache",
         "donnees perimees",
-        "fraicheur des donnees"
+        "fraicheur des donnees",
+        "cache",
+        "ttl",
+        "invalidation"
       ],
       "notes": {
         "essentials": "Theory. A cached or precomputed answer can be faster and can show older information after something changes.\nWorkflow. Measure how old an answer can become, test updates and outages, and show the user its age when it matters.\nChoice. Decide how old an answer is acceptable and when the screen should say it is unavailable.",
@@ -742,7 +784,11 @@ export const ASSETS: Assets = {
         "rollback window",
         "deploiement progressif",
         "migration de schema",
-        "retrocompatibilite"
+        "retrocompatibilite",
+        "feature flag",
+        "zero downtime",
+        "rollback path",
+        "migration de base de donnees"
       ],
       "notes": {
         "essentials": "Theory. A release can expose everyone to a defect at once. Restoring the old code may fail if the new version already changed the data.\nWorkflow. Try a small rollout, check one user-visible signal, and rehearse stopping it and restoring service.\nChoice. Use the specified audience or choose one that fits the rollout goal when delegated. If initial exposure is still an open choice, offer a pilot or all eligible users when both are feasible.",
@@ -766,7 +812,8 @@ export const ASSETS: Assets = {
         "regional failover",
         "restore from backup",
         "reprise apres sinistre",
-        "restauration de sauvegarde"
+        "restauration de sauvegarde",
+        "write ahead log"
       ],
       "notes": {
         "essentials": "Theory. Recovering quickly and recovering every recent change are different goals. A backup is useful only if it can be restored.\nWorkflow. Pick a likely failure, restore to a clean environment, and check how much time and data were lost.\nChoice. Decide what users may see during recovery and how much downtime or data loss they can tolerate.",

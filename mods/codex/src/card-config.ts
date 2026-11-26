@@ -9,6 +9,7 @@ export function cardConfig(settings: Settings): Extract<Event, { type: 'config' 
   const today = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
   return {
     type: 'config', enabled: settings.mode !== 'off', mode: settings.mode ?? 'auto', language: 'en', sheet: true,
+    chapters: settings.chapters !== false,
     read: settings.read === 'key' ? 'key' : 'auto', send: sendSetting(settings),
     sketch: settings.sketch !== false, refs: settings.refs !== false, today, profile: 'general',
     streaming: false, eagerPlan: false, depths: userDepths(user),

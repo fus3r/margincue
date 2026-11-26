@@ -46,6 +46,8 @@ While Claude works:
 
 It adapts to you and to the project. The first run asks what you work on and your level in each field. A data challenge or a research repository brings in the matching expert decisions (statistics and machine learning, system design), at the depth you asked for.
 
+The `§` line shows a matching chapter's Choice note at your level. In Claude Code, press `ctrl+x tab` then `b` to expand or collapse it (`z` drops it), and use `/margincue chapters on|off` to switch it.
+
 In Claude Code, press `ctrl+x tab` then `r`, or run `/margincue review`, to find up to two consequential choices your draft leaves open. The review uses your selected profile and level and skips choices already on the card.
 
 ## Keys

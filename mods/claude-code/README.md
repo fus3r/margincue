@@ -36,6 +36,8 @@ The first time MarginCue starts in an interactive session with an empty prompt, 
 
 In the terminal, use **diff** beside a choice or open **Review choices** (also `/margincue edits` for the latest receipt). Focus a choice with Tab and press `e` to open its related edits. VS Code, Cursor and Windsurf open a diff for each related file when their CLI is on `PATH`. The diff starts from the file at the beginning of the turn and shows the related hunks or the whole file change when the receipt can only match the file. Other terminals open a temporary `.diff` through `$VISUAL` or `$EDITOR` or show its path in the transcript.
 
+The terminal card's `§` line shows a matching chapter's Choice note at your level. Press `ctrl+x tab` then `b` to open or close its Theory, Workflow and Choice, press `z` to drop it, or use `/margincue chapters on|off` to switch it.
+
 ## Keys
 
 | Key | Action |

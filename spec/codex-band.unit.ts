@@ -15,7 +15,7 @@ delete process.env['MARGINCUE_READER']
 
 const { Band } = await import('../mods/codex/src/band')
 const { interactive } = await import('../mods/codex/src/relay')
-const { PATHS, saveSettings, writeJson } = await import('../mods/codex/src/store')
+const { PATHS, readSettings, saveSettings, writeJson } = await import('../mods/codex/src/store')
 import type { Down, Reader } from '../mods/codex/src/band'
 
 const PROMPT = 'Add a CSV export to the weekly activity report'
@@ -56,6 +56,37 @@ async function until(ready: () => boolean, ms = 5000): Promise<void> {
     await new Promise((r) => setTimeout(r, 10))
   }
 }
+
+test('the terminal band shows, updates, and dismisses a reference before any reading', async () => {
+  const previous = readSettings()
+  const settings = { read: 'key' as const, user: { work: ['systems'], levels: { 'system-design': 'learning' as const }, decide: [] } }
+  saveSettings(settings)
+  let readings = 0
+  const model: Reader = { ...reader(), async complete(...args) { readings++; return reader().complete(...args) } }
+  const h = harness(undefined, model)
+  try {
+    const draft = 'Design how reads should work when the read replica falls behind.'
+    h.draft(draft)
+    assert.match(h.lines(), /§ Replication, consistency, and isolation · Decide whether to wait/)
+    const click = (label: string) => {
+      const lines = h.lines().split('\n')
+      const y = lines.findIndex((line) => line.includes(label))
+      assert.ok(y >= 0, label)
+      h.band.receive({ t: 'click', x: lines[y]!.indexOf(label), y })
+    }
+    click('expand')
+    assert.match(h.lines(), /Theory\. Without a freshness guarantee/)
+    saveSettings({ ...settings, user: { ...settings.user, levels: { 'system-design': 'expert' } } })
+    await until(() => h.lines().includes('Gilbert–Lynch'))
+    click('drop')
+    assert.doesNotMatch(h.lines(), /§|Gilbert–Lynch/)
+    assert.equal(h.last('claims')?.enter, false)
+    assert.equal(readings, 0)
+  } finally {
+    h.band.close()
+    saveSettings(previous)
+  }
+})
 
 test('the card follows the draft; once it has read the prompt, Enter takes the choices along', async () => {
   const h = harness()

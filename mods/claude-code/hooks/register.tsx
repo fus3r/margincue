@@ -49,14 +49,14 @@ const EAGER_PLAN = false
 
 type Settings = {
   mode: Mode; profile: string; language: LanguageSetting; inline: boolean; sheet: boolean; ab: boolean; depths: Record<string, Depth>
-  read: ReadingMode; sketch: boolean; refs: boolean; blanks: boolean
+  read: ReadingMode; sketch: boolean; refs: boolean; blanks: boolean; chapters: boolean; profileSelected: boolean
   send: SendSetting; sendExplicit: boolean
   /** The first-run interview's answers, and whether it ran (or was closed, which is not asked again). */
   user: UserProfile | null; onboarded: 'done' | 'skipped' | null
 }
 const DEFAULTS: Settings = {
   mode: 'auto', profile: 'general', language: 'en', inline: false, sheet: true, ab: false, depths: {},
-  read: 'auto', sketch: true, refs: true, blanks: true, user: null, onboarded: null,
+  read: 'auto', sketch: true, refs: true, blanks: true, chapters: true, profileSelected: false, user: null, onboarded: null,
   send: DEFAULT_SEND, sendExplicit: false,
 }
 /** Re-read the project's names after a turn at most this often. */
@@ -183,6 +183,7 @@ function configEvent(): Event {
     mode: host.settings.mode,
     language: host.settings.language,
     sheet: host.settings.sheet && host.arm !== 'control',
+    chapters: host.settings.chapters,
     read: host.settings.read,
     sketch: host.settings.sketch,
     refs: host.settings.refs,
@@ -192,6 +193,7 @@ function configEvent(): Event {
     depths: { ...userDepths(host.settings.user), ...host.settings.depths },
     audit: host.eventLog.active,
     profile: host.settings.profile,
+    profileSelected: host.settings.profileSelected,
     timing: TIMING,
     streaming: false,
     eagerPlan: EAGER_PLAN,
@@ -935,6 +937,7 @@ function act($: $, action: Action): void | Promise<void> {
   else if (action.type === 'cardCycle') run($, { type: 'cardCycle', now: t, row: action.row })
   else if (action.type === 'cardSet') run($, { type: 'cardSet', now: t, row: action.row, option: action.option })
   else if (action.type === 'cardDismiss') run($, { type: 'cardDismiss', now: t, row: action.row })
+  else if (action.type === 'chapter') run($, action)
   else if (action.type === 'sketch') run($, { type: 'sketch', now: t, action: action.action })
   else if (action.type === 'receiptPick') return followUp($, action.receipt, action.item, action.option)
   else if (action.type === 'receiptReview') return reviewReceipt($, action.receipt)
@@ -1226,12 +1229,14 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
     ...DEFAULTS,
     mode: stored?.mode && MODES.includes(stored.mode) ? stored.mode : stored?.enabled === false ? 'off' : DEFAULTS.mode,
     profile: stored?.profile && Object.hasOwn(host.assets.profiles, stored.profile) ? stored.profile : DEFAULTS.profile,
+    profileSelected: stored?.profileSelected === true,
     language: stored?.language === 'auto' ? 'auto' : DEFAULTS.language,
     inline: stored?.inline === true,
     sheet: stored?.sheet !== false,
     ab: stored?.ab === true,
     read: stored?.read === 'key' ? 'key' : DEFAULTS.read,
     sketch: stored?.sketch !== false,
+    chapters: stored?.chapters !== false,
     refs: stored?.refs !== false,
     blanks: stored?.blanks !== false,
     // Older settings saved the default "all" in the same field as an explicit choice.
@@ -1265,7 +1270,7 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
   await $.command.register({
     name: 'margincue',
     description: 'MarginCue card, sketch, blanks, decisions, expert review and session status',
-    argumentHint: '[setup [reset]|state|mode|language en|auto|card on|off|read auto|key|sketch on|off|refs on|off|blanks on|off|send all|picked|open|ab on|off|status|review [profile]|edits|profile|status]',
+    argumentHint: '[setup [reset]|state|mode|language en|auto|card on|off|chapters on|off|read auto|key|sketch on|off|refs on|off|blanks on|off|send all|picked|open|ab on|off|status|review [profile]|edits|profile|status]',
     immediate: true,
   })
   await reopen($)
@@ -1374,6 +1379,7 @@ ${slot.source}` : 'Use /margincue why <slot>.')
         if (!Object.hasOwn(host.assets.profiles, arg)) return done(`No profile named "${arg}". Available profiles are ${names}.`)
         const previousProfile = settings.profile
         settings.profile = arg
+        settings.profileSelected = true
         log($, 'profile-changed', { previousProfile })
         run($, configEvent())
         await saveSettings($)
@@ -1428,11 +1434,12 @@ ${slot.source}` : 'Use /margincue why <slot>.')
         return done(`MarginCue reading mode is ${reading}.`)
       }
       case 'sketch':
+      case 'chapters':
       case 'refs':
       case 'blanks': {
         const setting = arg.toLowerCase()
         if (setting !== 'on' && setting !== 'off') return done(`Use /margincue ${verb} on|off.`)
-        settings[verb as 'sketch' | 'refs' | 'blanks'] = setting === 'on'
+        settings[verb as 'sketch' | 'refs' | 'blanks' | 'chapters'] = setting === 'on'
         run($, configEvent())
         await saveSettings($)
         const note = verb === 'blanks' ? ' It applies from the next session.' : ''
@@ -1489,7 +1496,7 @@ ${slot.source}` : 'Use /margincue why <slot>.')
         const { stats } = host
         const med = (list: number[]) => list.length ? `${median(list)} ms` : '–'
         return done([
-          `MarginCue is ${settings.mode} · profile ${settings.profile} · language ${settings.language} · depth ${currentDepth()} · card ${settings.sheet ? 'on' : 'off'} · read ${settings.read} · sketch ${settings.sketch ? 'on' : 'off'} · refs ${settings.refs ? 'on' : 'off'} · blanks ${settings.blanks ? 'on' : 'off'}`,
+          `MarginCue is ${settings.mode} · profile ${settings.profile} · language ${settings.language} · depth ${currentDepth()} · card ${settings.sheet ? 'on' : 'off'} · chapters ${settings.chapters ? 'on' : 'off'} · read ${settings.read} · sketch ${settings.sketch ? 'on' : 'off'} · refs ${settings.refs ? 'on' : 'off'} · blanks ${settings.blanks ? 'on' : 'off'}`,
           `This session: ${stats.requests} model calls, ${stats.failures} failed · median first ${med(stats.first)} · median reply ${med(stats.full)}`,
           `${stats.submits} prompts sent, ${stats.attached} with decisions attached.`,
           `Project index: ${host.indexing ? 'reading…' : host.indexed ? 'ready' : 'none (not a git repository, or off)'}.`,
@@ -1770,7 +1777,11 @@ export const register: Register = (on) => {
     const focused = card?.stage === 'turn' && !e.props.isCollapsed ? card.rows.find((row) => row.id === card.focus) : undefined
     host.bandChoices = e.surface === 'terminal' && focused ? focused.options.map((_, option) => ({ row: focused.id, option })) : []
     if (!rows.length) return next(e)
-    if (card && !e.props.isCollapsed) run($, { type: 'cardShown', now: now(), id: card.id }, false)
+    if (card && !e.props.isCollapsed) {
+      const chapter = rows.some((line) => line.some((part) => part.kind === 'button' && part.key === 'chapter-toggle'))
+        ? card.chapter?.title : undefined
+      run($, { type: 'cardShown', now: now(), id: card.id, chapter }, false)
+    }
     return drawRows($, $.ui.resolve(e), rows)
   })
 

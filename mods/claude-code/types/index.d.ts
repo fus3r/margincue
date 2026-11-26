@@ -76,6 +76,7 @@ export type MargincueCard = {
   rows: MargincueRow[]
   focus: string | null
   mentions: MargincueMention[]
+  chapter?: { title: string; choice: string; notes: string; expanded: boolean; page: number }
   sketch?: { title: string; lines: string[]; drawing: boolean; pinned: boolean; open: boolean }
   language: 'en' | 'fr'
   collapsed: boolean

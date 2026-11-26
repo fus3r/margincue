@@ -35,7 +35,7 @@ customer discovery | target customer | target audience | first customer | user r
 
 ### Signals
 
-first release | mvp | onboarding flow | first run experience | product prototype | clickable prototype | usability test | core workflow | activation flow | time to value | service journey | première version | parcours utilisateur | test d'utilisabilité
+first release | mvp | onboarding flow | first run experience | product prototype | clickable prototype | usability test | core workflow | activation flow | time to value | service journey | première version | parcours utilisateur | test d'utilisabilité | onboarding checklist
 
 ### Essentials
 
@@ -123,7 +123,7 @@ a b test | ab test | randomized experiment | experiment rollout | feature experi
 
 ### Signals
 
-pricing page | pricing plan | pricing plans | pricing tier | seat based pricing | paid conversion | free trial | pricing experiment | willingness to pay | unit economics | usage based pricing | modèle tarifaire | disposition à payer | essai gratuit
+pricing page | pricing plan | pricing plans | pricing tier | seat based pricing | paid conversion | free trial | pricing experiment | willingness to pay | unit economics | usage based pricing | modèle tarifaire | disposition à payer | essai gratuit | usage based billing | trial to paid conversion
 
 ### Essentials
 
@@ -154,7 +154,7 @@ pricing page | pricing plan | pricing plans | pricing tier | seat based pricing 
 
 ### Signals
 
-product policy | refund policy | cancellation policy | audit access | approval flow | account permissions | role permissions | role based access control | rbac | staff notes | user consent | price guarantee | saved quote | supplier price | règle de remboursement | droits d'accès | consentement utilisateur
+product policy | refund policy | cancellation policy | audit access | approval flow | account permissions | role permissions | role based access control | rbac | staff notes | user consent | price guarantee | saved quote | supplier price | règle de remboursement | droits d'accès | consentement utilisateur | cancellation flow | guest access | read only access
 
 ### Essentials
 

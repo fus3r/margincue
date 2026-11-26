@@ -4,7 +4,8 @@ import { applyDecisions, attachDecisions, decisionLine, FILE_REFERENCES_HEADING,
 import { DecisionDraft, DecisionState, decisionFor, eligibleSlot, stateCue } from './state'
 import type { SlotResult, StateChange } from './state'
 import type { Depth, Language, Mode, Rigor, Scope, Slot } from './bundle'
-import { normalizeTopic } from './chapters'
+import { matchChapter, normalizeTopic } from './chapters'
+import type { ProfileChapter } from './chapters'
 import { expertCardContext, expertPrompt, MAX_EXPERT_CUES, nearExpertDecision, parseExpert } from './expert'
 import { tidySketch } from './frame'
 import { Lru } from './lru'
@@ -130,6 +131,11 @@ type Card = {
   dirty: boolean
   error: boolean
   shownAt: number | null
+  chapter?: ProfileChapter
+  chapterExpanded?: boolean
+  chapterPage?: number
+  chaptersDismissed?: Set<ProfileChapter>
+  chaptersShown?: Set<ProfileChapter>
   sketch: Sketch | null
   sketchDue: number | null
   amendDue: number | null
@@ -209,6 +215,8 @@ export class Core {
   /** Undefined under the original conformance protocol; otherwise whether the card runs. */
   private sheetEnabled: boolean | undefined
   private readMode: ReadingMode = 'auto'
+  private chaptersEnabled = true
+  private profileSelected = false
   private sketchEnabled = true
   private refsEnabled = true
   private pickedOnly = false
@@ -391,6 +399,16 @@ export class Core {
           this.card.shownAt = this.now
           this.metric('card-shown', { card: event.id, rows: this.card.rows.length, stage: this.card.stage })
         }
+        if (this.card?.id === event.id && this.card.chapter && event.chapter === this.card.chapter.title) {
+          const shown = this.card.chaptersShown ??= new Set()
+          if (!shown.has(this.card.chapter)) {
+            shown.add(this.card.chapter)
+            this.metric('chapter-shown', {})
+          }
+        }
+        break
+      case 'chapter':
+        this.onChapter(event.action)
         break
       case 'sketch':
         this.onSketch(event.action)
@@ -456,6 +474,8 @@ export class Core {
     const sheetEnabled = this.mode === undefined ? undefined : e.sheet
     const sheetChanged = sheetEnabled !== this.sheetEnabled
     this.sheetEnabled = sheetEnabled
+    this.chaptersEnabled = e.chapters !== false
+    this.profileSelected = e.profileSelected === true
     const readMode = e.read ?? 'auto'
     const readModeChanged = this.readMode !== readMode
     this.readMode = readMode
@@ -536,6 +556,7 @@ export class Core {
     if (languageChanged) this.expertPicks.clear()
     const contextChanged = depthChanged || userChanged || preferChanged
     if (contextChanged) this.clearExpert()
+    if (depthChanged && this.card?.chapter) this.card.chapterPage = 0
     if (!enabled || sheetEnabled !== true || languageChanged || profileChanged && this.card?.stage === 'draft') {
       this.clearCard()
     } else if (contextChanged && this.card?.stage === 'draft') {
@@ -559,6 +580,7 @@ export class Core {
       if (sheetEnabled && !this.card && this.cardText()) this.onCardDraft(this.text)
       this.schedule('open', null)
     }
+    this.refreshChapter()
   }
 
   private onDraft({ text, origin, edit, cursor, atEnter, afterEnter }: Extract<Event, { type: 'draft' }>): void {
@@ -1153,6 +1175,37 @@ export class Core {
       this.card = this.newCard('draft')
     }
     this.syncRepoRows()
+    this.refreshChapter()
+  }
+
+  private refreshChapter(): void {
+    const card = this.card
+    if (card?.stage !== 'draft') return
+    const fields = [...this.prefer, ...this.projectLenses.map((lens) => lens.profile)]
+    if (this.profileSelected || this.profileName !== 'general') fields.push(this.profileName)
+    const draft = splitDecisions(this.text).body
+    const chapter = this.chaptersEnabled && this.mode !== 'quiet'
+      ? matchChapter(this.assets.chapters ?? [], draft, deriveCardKind(draft), fields, this.prefer) : undefined
+    const shown = chapter && !card.chaptersDismissed?.has(chapter) ? chapter : undefined
+    if (shown !== card.chapter) {
+      card.chapterExpanded = false
+      card.chapterPage = 0
+    }
+    card.chapter = shown
+  }
+
+  private onChapter(action: Extract<Event, { type: 'chapter' }>['action']): void {
+    const card = this.card
+    if (card?.stage !== 'draft' || !card.chapter) return
+    if (action === 'dismiss') {
+      (card.chaptersDismissed ??= new Set()).add(card.chapter)
+      card.chapter = undefined
+      card.chapterExpanded = false
+    } else if (action === 'toggle') {
+      card.chapterExpanded = !card.chapterExpanded
+      card.chapterPage = 0
+      if (card.chapterExpanded) this.metric('chapter-expanded', {})
+    } else if (card.chapterExpanded) card.chapterPage = (card.chapterPage ?? 0) + 1
   }
 
   /** The draft's names with what the person settled: a missing name picked as one of the code's is found. */
@@ -1566,12 +1619,17 @@ export class Core {
     const rows = card.rows.map((row) => this.rowView(row, draft))
     const reading = card.req !== null
     const awaitingRead = canReadCard && this.readMode === 'key' && card.readFor !== this.text && (!reading || card.reqText !== this.text)
-    if (draft ? !rows.length && !card.read && !reading && !this.mentions.length && !card.error && !awaitingRead : !rows.length) return
+    const chapter = draft ? card.chapter : undefined
+    if (draft ? !chapter && !rows.length && !card.read && !reading && !this.mentions.length && !card.error && !awaitingRead : !rows.length) return
     const sketch = card.sketch && (card.sketch.lines.length || card.sketch.req !== null) ? card.sketch : null
+    const depth = chapter && (this.depths[chapter.profile] ?? (chapter.profile === this.profileName ? this.depth : 'standard'))
+    const notes = chapter && depth ? chapter.notes[depth] : ''
     return {
       id: card.id, stage: card.stage, reading, error: card.error, read: card.read, kind: card.kind, rows,
       ...(awaitingRead && { awaitingRead }),
       focus: card.focus, mentions: draft ? this.resolvedMentions(card) : [], lenses: draft ? this.lensProfiles() : [],
+      ...(chapter && notes && { chapter: { title: chapter.title, notes,
+        choice: notes.split('\n')[2]!.replace(/^Choice\. /, ''), expanded: card.chapterExpanded === true, page: card.chapterPage ?? 0 } }),
       ...(sketch && { sketch: { title: sketch.title, lines: sketch.lines, drawing: sketch.req !== null, pinned: sketch.pinned, open: sketch.open } }),
       language: this.wordingLanguage(), collapsed: this.mode === 'quiet',
       ...(draft && this.pickedOnly && { pickedOnly: true as const }),

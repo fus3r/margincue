@@ -3,7 +3,7 @@
 // composer can show the agent's choices during and after a turn).
 
 import { spawn } from 'node:child_process'
-import { closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, unwatchFile, watchFile, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { ReadingMode, SendSetting } from '../../claude-code/core/types'
@@ -27,6 +27,7 @@ export type Settings = {
   send?: SendSetting
   sketch?: boolean
   refs?: boolean
+  chapters?: boolean
   blanks?: boolean
   user?: UserProfile
   onboarded?: 'done' | 'skipped'
@@ -64,6 +65,12 @@ export function writeJson(file: string, value: unknown): void {
 
 export const readSettings = () => readJson<Settings>(PATHS.settings, {})
 export const saveSettings = (settings: Settings) => writeJson(PATHS.settings, settings)
+
+export function watchSettings(changed: (settings: Settings) => void): () => void {
+  const update = () => changed(readSettings())
+  watchFile(PATHS.settings, { persistent: false, interval: 1000 }, update)
+  return () => unwatchFile(PATHS.settings, update)
+}
 
 export function sendSetting(settings: Settings): SendSetting {
   // The file only contains a send mode if someone set it.

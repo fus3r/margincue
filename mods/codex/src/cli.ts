@@ -42,7 +42,8 @@ async function main(argv: string[]): Promise<void> {
   if (command === 'setup') return setup()
   if (command === 'status') return status()
   if (command === 'level') return setLevel(rest)
-  process.stdout.write('margincue setup | codex [args] | compose FILE | hook prompt|stop|start | mcp | status | level PROFILE LEVEL\n')
+  if (command === 'chapters') return setChapters(rest)
+  process.stdout.write('margincue setup | codex [args] | compose FILE | hook prompt|stop|start | mcp | status | level PROFILE LEVEL | chapters on|off\n')
 }
 
 // ---- hooks: never in the way of the person's prompt --------------------------------------
@@ -283,7 +284,7 @@ function status(): void {
   const user = readUser(settings.user)
   process.stdout.write([
     `MarginCue for Codex: ${settings.mode ?? 'auto'} · sketch ${settings.sketch === false ? 'off' : 'on'} · blanks ${settings.blanks === false ? 'off' : 'on'}`,
-    `Read: ${settings.read === 'key' ? 'key' : 'auto'} · Send: ${sendSetting(settings)}`,
+    `Read: ${settings.read === 'key' ? 'key' : 'auto'} · Send: ${sendSetting(settings)} · Chapters: ${settings.chapters === false ? 'off' : 'on'}`,
     user ? `You: ${describeUser(user)}` : 'Run margincue setup to set your level and the kinds of choices you make.',
     `Composer: ${existsSync(STABLE) ? STABLE : 'not installed (margincue setup)'}`,
   ].join('\n') + '\n')
@@ -298,6 +299,13 @@ function setLevel(args: string[]): void {
   const user = readUser(settings.user) ?? { work: [], levels: {}, decide: [] }
   saveSettings({ ...settings, user: { ...user, levels: { ...user.levels, [profile]: level } } })
   process.stdout.write(`MarginCue will use the ${level} level for ${profile}.\n`)
+}
+
+function setChapters(args: string[]): void {
+  const [setting] = args
+  if (args.length !== 1 || setting !== 'on' && setting !== 'off') throw new Error('Use margincue chapters on|off')
+  saveSettings({ ...readSettings(), chapters: setting === 'on' })
+  process.stdout.write(`MarginCue chapters ${setting}.\n`)
 }
 
 main(process.argv.slice(2)).catch((error: unknown) => {

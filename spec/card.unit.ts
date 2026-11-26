@@ -359,6 +359,97 @@ test('the general card request starts with the draft and contains no chapter not
 const PRODUCT_DRAFT = 'Plan an A/B test for this feature and tell me what to measure.'
 const PRODUCT_FIELD = { prefer: onboarding.preferredProfiles({ work: ['apps'] }) }
 
+test('chapter references require a field, a substantive request, and specific local evidence', () => {
+  const reference = (text: string, extra: Partial<Extract<Event, { type: 'config' }>> = {}) => {
+    const core = createCore(ASSETS)
+    core.handle(config({ read: 'key', ...extra }))
+    const effects = core.handle({ type: 'draft', now: 100, origin: 'paste', text })
+    assert.deepEqual(requests(effects), [])
+    return core.currentView().card?.chapter?.title
+  }
+  assert.equal(reference(PRODUCT_DRAFT), undefined)
+  const bothFields = { ...PRODUCT_FIELD, profile: 'system-design' }
+  assert.equal(reference(`${PRODUCT_DRAFT} Define the point-in-time recovery procedure.`, bothFields),
+    'Recovery, durability, and degraded operation')
+  for (const modes of [{ mode: 'quiet' }, { mode: 'off' }, { sheet: false }, { chapters: false }] as const) {
+    assert.equal(reference(PRODUCT_DRAFT, { ...PRODUCT_FIELD, ...modes }), undefined)
+  }
+  const ml = { prefer: ['ml-research'] }
+  assert.equal(reference('Use PCA and preserve variance for the sensor features.', ml), 'Unsupervised structure and dimension reduction')
+  assert.equal(reference('Use PCA on the readings from the sensors.', ml), undefined)
+  for (const draft of [
+    'Fix the typo in our cross-validation instructions.',
+    'Add --seed to the cross-validation command.',
+    'Add a flag to toggle cross-validation.',
+    'Sort the imports in the random forest training script.',
+    'What is cross-validation and when is it used?',
+  ]) assert.equal(reference(draft, ml), undefined, draft)
+  const general = 'Design the public interface and define acceptance criteria for account exports.'
+  assert.equal(reference(general), undefined)
+  assert.equal(reference(general, { profileSelected: true }), 'Scope, interfaces, and acceptance')
+
+  const core = createCore(ASSETS)
+  core.handle(config({ read: 'key', depth: 'research' }))
+  const text = 'Design how clients should read from a read replica.'
+  core.handle({ type: 'draft', now: 100, origin: 'paste', text })
+  assert.equal(core.currentView().card?.chapter, undefined)
+  core.handle({ type: 'vocabulary', vocab: vocabOf('service', ['Dockerfile', 'openapi.yaml'], {}) })
+  const chapter = ASSETS.chapters!.find((chapter) => chapter.title === 'Replication, consistency, and isolation')!
+  assert.equal(core.currentView().card?.chapter?.notes, chapter.notes.standard)
+})
+
+test('a reference updates to the field level, counts display and expansion, and stays dismissed', () => {
+  const core = createCore(ASSETS)
+  const setup = { ...PRODUCT_FIELD, read: 'key' as const, depths: { product: 'essentials' as const } }
+  core.handle(config(setup))
+  core.handle({ type: 'draft', now: 100, origin: 'paste', text: PRODUCT_DRAFT })
+  const { id, chapter } = core.currentView().card!
+  assert.ok(chapter)
+  const source = ASSETS.chapters!.find((entry) => entry.title === chapter.title)!
+  assert.equal(chapter.choice, source.notes.essentials.split('\n')[2]!.slice('Choice. '.length))
+  const metrics = (effects: Effect[]) => effects.filter((effect) => effect.type === 'metric')
+  const shown = { type: 'cardShown', now: 200, id, chapter: chapter.title } as const
+  assert.deepEqual(metrics(core.handle(shown)), [{ type: 'metric', name: 'chapter-shown' }])
+  assert.deepEqual(metrics(core.handle(shown)), [])
+  assert.deepEqual(metrics(core.handle({ type: 'chapter', action: 'toggle' })), [{ type: 'metric', name: 'chapter-expanded' }])
+  assert.equal(core.currentView().card?.chapter?.expanded, true)
+  assert.deepEqual(metrics(core.handle({ type: 'chapter', action: 'toggle' })), [])
+  assert.equal(core.currentView().card?.chapter?.expanded, false)
+  assert.deepEqual(requests(core.handle(config({ ...setup, depths: { product: 'research' } }))), [])
+  assert.equal(core.currentView().card?.chapter?.notes, source.notes.research)
+  core.handle({ type: 'chapter', action: 'dismiss' })
+  core.handle({ type: 'draft', now: 300, origin: 'type', text: `${PRODUCT_DRAFT} Include guardrail metrics.` })
+  assert.equal(core.currentView().card?.chapter, undefined)
+  core.handle({ type: 'draft', now: 400, origin: 'type', text: '' })
+  core.handle({ type: 'draft', now: 500, origin: 'paste', text: PRODUCT_DRAFT })
+  assert.equal(core.currentView().card?.chapter?.expanded, false)
+})
+
+test('chapter visibility and expansion leave both requests, Decisions, and the receipt byte-for-byte unchanged', () => {
+  function flow(chapters: boolean) {
+    const core = createCore(ASSETS)
+    core.handle(config({ ...PRODUCT_FIELD, chapters, read: 'key', sketch: false }))
+    core.handle({ type: 'draft', now: 100, origin: 'paste', text: PRODUCT_DRAFT })
+    assert.equal(Boolean(core.currentView().card?.chapter), chapters)
+    assert.deepEqual(requests(core.handle({ type: 'chapter', action: 'toggle' })), [])
+    const [general] = requests(core.handle({ type: 'cardRead', now: 200 }))
+    assert.equal(general?.kind, 'card')
+    core.handle({ type: 'reply', now: 300, req: general!.req, text: READING, done: true })
+    const [expert] = requests(core.handle({ type: 'review', now: 400, profile: 'product' }))
+    assert.equal(expert?.kind, 'expert')
+    core.handle({ type: 'cardSet', now: 500, row: core.currentView().card!.rows[0]!.id, option: 1 })
+    const submit = core.handle({ type: 'submit', now: 600, text: PRODUCT_DRAFT }).find((effect) => effect.type === 'submit')
+    core.handle({ type: 'turnStart', now: 700 })
+    core.handle({ type: 'endAmendment', now: 800 })
+    const receipt = core.currentView().receipt
+    assert.ok(submit?.decisions.length)
+    assert.deepEqual(receipt?.yours, submit.decisions)
+    assert.equal(core.currentView().card?.chapter, undefined)
+    return { general, expert, submit, receipt }
+  }
+  assert.deepEqual(flow(true), flow(false))
+})
+
 for (const fixture of reviewFixtures) {
   test(`review parser recovers the saved ${fixture.probe} ${fixture.depth} catalog reply when the catalog is supplied`, () => {
     const { profile, depth, draft, reply, key, statement, options, anchor } = fixture

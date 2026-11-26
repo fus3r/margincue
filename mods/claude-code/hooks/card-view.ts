@@ -23,15 +23,16 @@ import { joinList, sameSelection } from '../core/card'
 import { splitDecisions } from '../core/decisions'
 import { closesFrame, tidySketch } from '../core/frame'
 import type { MargincueCard, MargincueReceipt, MargincueRow } from '../types'
-import { CARD_KEEP_KEY, CARD_READ_KEY, CHORD_NEXT, CHORD_SWAP, DARK, RECEIPT_DIFF_KEY, cells, segmentsWidth, text, truncate, wrapLines } from './segments'
+import { CARD_KEEP_KEY, CARD_READ_KEY, CHAPTER_DROP_KEY, CHAPTER_KEY, CHAPTER_NEXT_KEY, CHORD_NEXT, CHORD_SWAP, DARK, RECEIPT_DIFF_KEY, cells, segmentsWidth, text, truncate, wrapLines } from './segments'
 import type { Color, Palette, Segment, Style } from './segments'
 
 type Button = Extract<Segment, { kind: 'button' }>
-export type CardOptions = { chords: boolean; extra: Button[]; palette?: Palette; sketchKey?: string; readHint?: string; keepHint?: string }
+export type CardOptions = { chords: boolean; extra: Button[]; palette?: Palette; sketchKey?: string; readHint?: string; keepHint?: string; chapterKeys?: string | false }
 
 type Line = Segment[]
 
 export const TAG = ' MarginCue '
+export const CHAPTER_MARK = '§'
 const GAP = '  '
 /** The focus marker's cells, left of the labels. */
 const MARK = 2
@@ -97,6 +98,11 @@ export function layoutCard(card: MargincueCard, columns: number, budget: number,
   }
 
   const g = grid(card, columns, words)
+  const chapter = card.stage === 'draft' && !card.collapsed ? card.chapter : undefined
+  if (chapter?.expanded && budget === 3) return chapterLines(chapter, columns, budget, options.chapterKeys, card.language)
+  const reference = chapter && budget >= 3
+    ? chapterLines(chapter, columns, budget - 1, options.chapterKeys, card.language) : []
+  const headBudget = budget - reference.length
   const right = card.collapsed ? [] : status(card, words, open, P)
   const available = columns - g.content - 3 - (card.awaitingRead ? cells(words.readHint) : 16)
   for (const button of controls) {
@@ -105,10 +111,11 @@ export function layoutCard(card: MargincueCard, columns: number, budget: number,
   }
   // The reading is the card's point: on a narrow screen it takes a fourth line rather than lose its end.
   const head = card.collapsed ? [withRight(collapsed(card, columns, P, words, open), right, columns)]
-    : header(card, g, right, P, words, budget >= 10 ? 4 : budget >= 6 ? 2 : 1)
+    : header(card, g, right, P, words, headBudget >= 10 ? 4 : headBudget >= 6 ? 2 : 1)
   // The key still has a mounted control when its label will not fit.
   head[0]!.push(...shortcuts, ...controls.filter((button) => !head[0]!.includes(button)).map((button): Button => ({ ...button, hidden: true })))
   if (card.collapsed) return head
+  head.push(...reference)
   const room = budget - head.length
   if (room <= 0) return head
 
@@ -143,6 +150,45 @@ export function layoutCard(card: MargincueCard, columns: number, budget: number,
     const note = drawing.length && !shown.length ? words.folded(drawing.length) : ''
     out.push([...labelLead(words.preview, g, { dim: true }), ...captionLine(sketch, P, words, columns - g.content, note)])
     for (const line of shown) out.push([text(' '.repeat(indent)), ...line])
+  }
+  return out
+}
+
+/** The reference uses the full width so the title leaves room for the choice. */
+function chapterLines(
+  chapter: NonNullable<MargincueCard['chapter']>, columns: number, budget: number,
+  keys: string | false = 'ctrl+x tab', language: MargincueCard['language'] = 'en',
+): Line[] {
+  const dim = { dim: true } as const
+  const lead = `  ${CHAPTER_MARK} `
+  const room = columns - cells(lead)
+  const title = truncate(chapter.title, chapter.expanded ? room : Math.max(1, room - 25))
+  const summary = chapter.expanded ? title : `${title} · ${truncate(chapter.choice, room - cells(title) - 3)}`
+  const toggle = chapter.expanded ? (language === 'fr' ? 'replier' : 'collapse') : (language === 'fr' ? 'ouvrir' : 'expand')
+  const drop = language === 'fr' ? 'masquer' : 'drop'
+  const hint: Line = [
+    text(keys ? `    ${keys}, ` : '    ', dim),
+    { kind: 'button', key: 'chapter-toggle', label: toggle, face: keys ? `${CHAPTER_KEY} ${toggle}` : toggle,
+      ...(keys && { hotkey: CHAPTER_KEY }), dim: true, action: { type: 'chapter', action: 'toggle' } },
+    text(' · ', dim),
+    { kind: 'button', key: 'chapter-drop', label: drop, face: keys ? `${CHAPTER_DROP_KEY} ${drop}` : drop,
+      ...(keys && { hotkey: CHAPTER_DROP_KEY }), dim: true, action: { type: 'chapter', action: 'dismiss' } },
+  ]
+  const out: Line[] = [[text(lead, dim), text(summary, dim)], hint]
+  if (chapter.expanded) {
+    const width = columns - 4
+    const notes = chapter.notes.split('\n').flatMap((paragraph) => wrapLines(paragraph, width, width, Infinity))
+    const size = budget - out.length
+    const pages = Math.ceil(notes.length / size)
+    const page = chapter.page % pages
+    if (pages > 1) {
+      const next = language === 'fr' ? 'suite' : 'next'
+      hint.push(text(' · ', dim), {
+        kind: 'button', key: 'chapter-next', label: next, face: `${keys ? `${CHAPTER_NEXT_KEY} ` : ''}${next} ${page + 1}/${pages}`,
+        ...(keys && { hotkey: CHAPTER_NEXT_KEY }), dim: true, action: { type: 'chapter', action: 'next' },
+      })
+    }
+    out.push(...notes.slice(page * size, (page + 1) * size).map((line) => [text(`    ${line}`, dim)]))
   }
   return out
 }

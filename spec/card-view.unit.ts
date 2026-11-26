@@ -4,8 +4,9 @@ import './ts-resolve.ts'
 import type { MargincueBand, MargincueCard, MargincueRow } from '../mods/claude-code/types'
 
 const { layoutBandRows, segmentsWidth, cells, tidySketch, DARK, LIGHT, paletteFor } = await import('../mods/claude-code/hooks/band')
-const { layoutReceipt, layoutSent, splitSent } = await import('../mods/claude-code/hooks/card-view')
+const { layoutCard, layoutReceipt, layoutSent, splitSent } = await import('../mods/claude-code/hooks/card-view')
 const { parseCard, parseSketch } = await import('../mods/claude-code/core/card')
+const { ASSETS } = await import('../mods/claude-code/hooks/assets')
 
 type Seg = ReturnType<typeof layoutBandRows>[number][number]
 
@@ -55,6 +56,35 @@ const band = (card: MargincueCard): MargincueBand => ({
 
 const buttons = (rows: Seg[][]) => rows.flat().filter((s): s is Extract<Seg, { kind: 'button' }> => s.kind === 'button' && !s.hidden)
 const plain = (line: Seg[]) => line.map((s) => s.kind === 'text' ? s.text : s.kind === 'progress' ? `* ${s.label}` : s.hidden ? '' : s.face ?? s.label).join('')
+
+test('every level of every chapter fits the terminal widths and can be read in full', () => {
+  const base: MargincueCard = { ...CARD, read: null, focus: null, rows: [], mentions: [], sketch: undefined }
+  for (const width of [60, 80, 120]) {
+    for (const { title, notes } of ASSETS.chapters!) {
+      for (const note of Object.values(notes)) {
+        const choice = note.split('\n')[2]!.slice('Choice. '.length)
+        const render = (expanded: boolean, page = 0) => layoutCard(
+          { ...base, chapter: { title, choice, notes: note, expanded, page } }, width, 8, { chords: true, extra: [] })
+        const collapsed = render(false)
+        assert.equal(collapsed.length, 3)
+        assert.match(plain(collapsed[1]!), /§ .+ · .+/)
+        assert.match(plain(collapsed[2]!), /b expand · z drop/)
+        assert.ok(collapsed.every((line) => segmentsWidth(line) <= width))
+        const body: string[] = []
+        for (let page = 0; ; page++) {
+          const expanded = render(true, page)
+          assert.ok(expanded.length <= 8 && expanded.every((line) => segmentsWidth(line) <= width))
+          assert.match(plain(expanded[2]!), /b collapse · z drop/)
+          body.push(...expanded.slice(3).map((line) => plain(line).trim()))
+          const paging = buttons(expanded).find((button) => button.key === 'chapter-next')?.face
+          if (!paging || paging.endsWith(`/${page + 1}`)) break
+          assert.ok(page < 4)
+        }
+        assert.equal(body.join(' '), note.replace(/\s+/g, ' '), `${width}: ${title}`)
+      }
+    }
+  }
+})
 
 test('the card never draws wider than the band, at any width or height', () => {
   for (const columns of [44, 60, 80, 100, 120, 140, 160, 200, 260]) {

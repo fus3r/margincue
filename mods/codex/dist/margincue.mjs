@@ -808,8 +808,51 @@ function decisionFor(slot, value, lang, depth) {
 }
 
 // ../claude-code/core/chapters.ts
+var MAX_CHAPTERS = 2;
 function normalizeTopic(text2) {
   return text2.normalize("NFD").replace(new RegExp("\\p{M}", "gu"), "").toLowerCase().match(/[\p{L}\p{N}]+/gu)?.join(" ") ?? "";
+}
+function normalizeChapterSignal(text2) {
+  return normalizeTopic(text2).replace(/\bidempotent\b/g, "idempotency").replace(/\b(?:l2 (?:regularization|penalty)|ridge (?:regularization|penalty))\b/g, "ridge regression").replace(/\bmultiple comparisons?\b/g, "multiple testing").replace(/\bcross validat(?:e|ed|ing)\b/g, "cross validation").replace(/\b(?:hold|held) out\b/g, "holdout").replace(/\btrain and test\b/g, "train test").replace(/\bleak(?:s|ed|ing)? (?:the |a |target )?labels?\b/g, "label leakage").replace(/\bfine tun(?:e|ed|ing)\b/g, "fine tuning").replace(/\bprobabilities\b/g, "probability").replace(/\binvalidat(?:e|es|ed|ing)\b/g, "invalidation").replace(/\bmigr(?:e|er|ez|ons) (?:le |un )?schema\b/g, "migration de schema").replace(/\b(?:shed load|shedding load)\b/g, "load shedding").replace(/\brate limit(?:ed|ing)\b/g, "rate limit").replace(/\b(backward)s compatibility\b/g, "$1 compatibility").replace(/\b(retry polic)ies\b/g, "$1y").replace(/\b(retr|deliver)ies\b/g, "$1y").replace(
+    /\b(baselines|budgets|classifiers|datasets|edits|forests|intervals|limits|machines|metrics|replicas|splines|tests)\b/g,
+    (word) => word.slice(0, -1)
+  );
+}
+var ROUTINE_EDIT = /^(?:fix|rename|format|sort|translate|bump|upgrade|delete|remove|refactor|convert|silence|clean up|replace|corrige|renomme|formate|trie|traduis|supprime)\b/;
+var ROUTINE_DETAIL = /\b(?:typo|docstring|comment|type hints?|type annotations?|command line (?:arguments?|flags?|options?)|unit tests?|regression tests?|readme|link to|log level|default timeout|error message|(?:response|rate limit) headers?|loading spinner|connection pool from)\b/;
+var EDIT_DETAIL = /^(?:add|write|update|change|adjust|move|expose|increase|decrease)\b/;
+var ROUTINE_REQUEST = /^(?:(?:add|ajoute) (?:(?:a|the|un|une) )?(?:feature flag|flag|argument|parameter|parametre)\b|ecris un test de regression\b|update (?:the )?copy\b|make\b.*\b(?:banner text|chart line|helper accept)\b|move\b.*\b(?:config values|files? into)\b)/;
+var FLAG_ADDITION = /\badd\s+(?:(?:a|the)\s+)?[`'"]?--[\w-]+/i;
+var SUBSTANTIVE = /^(?:add|analy[sz]e|apply|build|cache|calibrate|check (?:if|whether)|choose|cluster|compare|compute|control|create|decide|define|design|dig into|estimate|evaluate|fine tune|fit|forecast|implement|investigate|let|measure|migrate|move|pick|plan|put|report|retry|roll out|route|run|set|shard|shed|show|split|throttle|train|tune|use|validate|write|work out|ajoute|calcule|choisis|concois|definis|estime|evalue|fais|implemente|mesure|migre|verifie)\b/;
+var DESIGN_QUESTION = /^(?:(?:how (?:should|can|could) (?:we|i)|comment)\s+(?:build|design|implement|test|compare|measure|choose|handle|evaluate|construire|concevoir|mesurer|evaluer)\b|which\b.*\b(?:hold up|are significant|performs? better)\b)/;
+function matchChapter(chapters, draft, kind, fields, preferred = []) {
+  if (!fields.length || !chapters.length || /^\s*[/!#]/.test(draft)) return;
+  if (kind === "fix") return;
+  for (const clause of draft.split(/[\n;,]|(?<=[.!?])\s+/)) {
+    const request = normalizeTopic(clause).replace(/^(?:\d+ )?(?:(?:can|could|would|will) you )?(?:please |i (?:want|need) you to |we need to )?/, "");
+    if (ROUTINE_EDIT.test(request) || ROUTINE_REQUEST.test(request) || FLAG_ADDITION.test(clause) || EDIT_DETAIL.test(request) && ROUTINE_DETAIL.test(request)) return;
+    if (kind === "build" || SUBSTANTIVE.test(request) || DESIGN_QUESTION.test(request)) {
+      return matchChapters(chapters.filter((chapter) => fields.includes(chapter.profile)), draft, preferred, true)[0];
+    }
+  }
+}
+function matchChapters(chapters, draft, preferred = [], requireEvidence = false) {
+  if (!chapters.length) return [];
+  const text2 = ` ${normalizeChapterSignal(draft)} `;
+  const ranked = chapters.flatMap((chapter) => {
+    const signals = [...new Set(chapter.signals.map(normalizeChapterSignal))];
+    const hits = signals.filter((signal) => text2.includes(` ${signal} `));
+    if (!hits.length) return [];
+    const specificity = Math.max(...hits.map((signal) => signal.split(" ").length));
+    if (requireEvidence && specificity < 2 && hits.length < 2) return [];
+    return [{
+      chapter,
+      hits: hits.length,
+      specificity,
+      preferred: Number(preferred.includes(chapter.profile))
+    }];
+  }).sort((a, b) => b.specificity - a.specificity || b.hits - a.hits || b.preferred - a.preferred);
+  return ranked.slice(0, MAX_CHAPTERS).map(({ chapter }) => chapter);
 }
 
 // ../claude-code/core/expert.ts
@@ -2479,6 +2522,8 @@ var Core = class {
   /** Undefined under the original conformance protocol; otherwise whether the card runs. */
   sheetEnabled;
   readMode = "auto";
+  chaptersEnabled = true;
+  profileSelected = false;
   sketchEnabled = true;
   refsEnabled = true;
   pickedOnly = false;
@@ -2655,6 +2700,16 @@ var Core = class {
           this.card.shownAt = this.now;
           this.metric("card-shown", { card: event.id, rows: this.card.rows.length, stage: this.card.stage });
         }
+        if (this.card?.id === event.id && this.card.chapter && event.chapter === this.card.chapter.title) {
+          const shown = this.card.chaptersShown ??= /* @__PURE__ */ new Set();
+          if (!shown.has(this.card.chapter)) {
+            shown.add(this.card.chapter);
+            this.metric("chapter-shown", {});
+          }
+        }
+        break;
+      case "chapter":
+        this.onChapter(event.action);
         break;
       case "sketch":
         this.onSketch(event.action);
@@ -2716,6 +2771,8 @@ var Core = class {
     const sheetEnabled = this.mode === void 0 ? void 0 : e.sheet;
     const sheetChanged = sheetEnabled !== this.sheetEnabled;
     this.sheetEnabled = sheetEnabled;
+    this.chaptersEnabled = e.chapters !== false;
+    this.profileSelected = e.profileSelected === true;
     const readMode = e.read ?? "auto";
     const readModeChanged = this.readMode !== readMode;
     this.readMode = readMode;
@@ -2789,6 +2846,7 @@ var Core = class {
     if (languageChanged) this.expertPicks.clear();
     const contextChanged = depthChanged || userChanged || preferChanged;
     if (contextChanged) this.clearExpert();
+    if (depthChanged && this.card?.chapter) this.card.chapterPage = 0;
     if (!enabled || sheetEnabled !== true || languageChanged || profileChanged && this.card?.stage === "draft") {
       this.clearCard();
     } else if (contextChanged && this.card?.stage === "draft") {
@@ -2811,6 +2869,7 @@ var Core = class {
       if (sheetEnabled && !this.card && this.cardText()) this.onCardDraft(this.text);
       this.schedule("open", null);
     }
+    this.refreshChapter();
   }
   onDraft({ text: text2, origin, edit, cursor, atEnter, afterEnter }) {
     const before2 = this.text;
@@ -3401,6 +3460,34 @@ Level: ${this.depthOf(profile)}`, cardContext, catalog].filter(Boolean).join("\n
       this.card = this.newCard("draft");
     }
     this.syncRepoRows();
+    this.refreshChapter();
+  }
+  refreshChapter() {
+    const card = this.card;
+    if (card?.stage !== "draft") return;
+    const fields = [...this.prefer, ...this.projectLenses.map((lens) => lens.profile)];
+    if (this.profileSelected || this.profileName !== "general") fields.push(this.profileName);
+    const draft = splitDecisions(this.text).body;
+    const chapter = this.chaptersEnabled && this.mode !== "quiet" ? matchChapter(this.assets.chapters ?? [], draft, deriveCardKind(draft), fields, this.prefer) : void 0;
+    const shown = chapter && !card.chaptersDismissed?.has(chapter) ? chapter : void 0;
+    if (shown !== card.chapter) {
+      card.chapterExpanded = false;
+      card.chapterPage = 0;
+    }
+    card.chapter = shown;
+  }
+  onChapter(action) {
+    const card = this.card;
+    if (card?.stage !== "draft" || !card.chapter) return;
+    if (action === "dismiss") {
+      (card.chaptersDismissed ??= /* @__PURE__ */ new Set()).add(card.chapter);
+      card.chapter = void 0;
+      card.chapterExpanded = false;
+    } else if (action === "toggle") {
+      card.chapterExpanded = !card.chapterExpanded;
+      card.chapterPage = 0;
+      if (card.chapterExpanded) this.metric("chapter-expanded", {});
+    } else if (card.chapterExpanded) card.chapterPage = (card.chapterPage ?? 0) + 1;
   }
   /** The draft's names with what the person settled: a missing name picked as one of the code's is found. */
   resolvedMentions(card) {
@@ -3783,8 +3870,11 @@ ${lines.join("\n")}` : "";
     const rows = card.rows.map((row) => this.rowView(row, draft));
     const reading = card.req !== null;
     const awaitingRead = canReadCard && this.readMode === "key" && card.readFor !== this.text && (!reading || card.reqText !== this.text);
-    if (draft ? !rows.length && !card.read && !reading && !this.mentions.length && !card.error && !awaitingRead : !rows.length) return;
+    const chapter = draft ? card.chapter : void 0;
+    if (draft ? !chapter && !rows.length && !card.read && !reading && !this.mentions.length && !card.error && !awaitingRead : !rows.length) return;
     const sketch = card.sketch && (card.sketch.lines.length || card.sketch.req !== null) ? card.sketch : null;
+    const depth = chapter && (this.depths[chapter.profile] ?? (chapter.profile === this.profileName ? this.depth : "standard"));
+    const notes = chapter && depth ? chapter.notes[depth] : "";
     return {
       id: card.id,
       stage: card.stage,
@@ -3797,6 +3887,13 @@ ${lines.join("\n")}` : "";
       focus: card.focus,
       mentions: draft ? this.resolvedMentions(card) : [],
       lenses: draft ? this.lensProfiles() : [],
+      ...chapter && notes && { chapter: {
+        title: chapter.title,
+        notes,
+        choice: notes.split("\n")[2].replace(/^Choice\. /, ""),
+        expanded: card.chapterExpanded === true,
+        page: card.chapterPage ?? 0
+      } },
       ...sketch && { sketch: { title: sketch.title, lines: sketch.lines, drawing: sketch.req !== null, pinned: sketch.pinned, open: sketch.open } },
       language: this.wordingLanguage(),
       collapsed: this.mode === "quiet",
@@ -4824,7 +4921,10 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "out of sample",
         "validation croisee",
         "jeu de test",
-        "fuite de donnees"
+        "fuite de donnees",
+        "label leakage",
+        "offline evaluation",
+        "evaluation"
       ],
       "notes": {
         "essentials": "Theory. Examples used to pick a model can make its final score look better than it is. Rows from the same person or from the future can also give the model clues it will lack in real use.\nWorkflow. Choose what must be held out, fit preprocessing and models on training data, tune on validation, then score on separate data.\nChoice. Clarify whether the score is for new groups or later records from known groups when both uses are possible.",
@@ -4847,7 +4947,8 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "one se rule",
         "regression lineaire",
         "moindres carres",
-        "regularisation"
+        "regularisation",
+        "lasso penalty"
       ],
       "notes": {
         "essentials": "Theory. A linear model combines features with weights. Shrinkage pulls weights toward zero and can make predictions less sensitive to noise. Some penalties also drop features.\nWorkflow. Fit a simple linear baseline, scale features on training data, and compare the models on fresh data.\nChoice. Decide whether the result should prioritize prediction or a small set of features that people can inspect.",
@@ -4864,7 +4965,7 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "operating point",
         "probability calibration",
         "calibration curve",
-        "calibrated probabilities",
+        "calibrated probability",
         "decision threshold",
         "roc auc",
         "precision recall",
@@ -4874,7 +4975,11 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "false negatives",
         "seuil de decision",
         "faux positifs",
-        "courbe roc"
+        "courbe roc",
+        "probability cutoff",
+        "alert threshold",
+        "calibrate",
+        "probability"
       ],
       "notes": {
         "essentials": "Theory. A score can rank cases well and still misstate their chances. Changing the cutoff trades missed cases for false alerts.\nWorkflow. Compare a simple baseline, check whether predicted chances agree with observed frequencies, and inspect how alert volume changes across cutoffs.\nChoice. Decide how many false alerts are worth catching more real cases, or whether the deliverable only needs to rank cases.",
@@ -4959,9 +5064,14 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "finetuning",
         "compute budget",
         "training seeds",
+        "semi supervised training",
+        "ablation",
+        "feature group",
         "reseau de neurones",
         "apprentissage profond",
-        "arret anticipe"
+        "arret anticipe",
+        "weight decay",
+        "model ablation"
       ],
       "notes": {
         "essentials": "Theory. A larger network can fit more patterns, including noise. Training progress and performance on fresh data answer different questions.\nWorkflow. Start from a simple baseline, choose when to stop using validation data, and evaluate the chosen checkpoint on untouched examples.\nChoice. Establish whether to optimize result quality or compare what can be achieved within a fixed budget.",
@@ -4983,7 +5093,9 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "dimensionality reduction",
         "analyse en composantes principales",
         "reduction de dimension",
-        "classification non supervisee"
+        "classification non supervisee",
+        "explained variance",
+        "variance"
       ],
       "notes": {
         "essentials": "Theory. PCA finds directions that capture variation. Clustering groups nearby points. Both depend on how features are scaled and what counts as nearby.\nWorkflow. Choose meaningful features and scales, inspect the representation, and see whether groups survive reasonable changes.\nChoice. Decide whether the goal is a compact view of the data or stable groups for people to act on.",
@@ -5024,7 +5136,11 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "bootstrap interval",
         "bootstrap resampling",
         "paired comparison",
+        "benchmark comparison",
+        "baseline",
+        "dataset",
         "seed variability",
+        "training seeds",
         "error bars",
         "performance difference",
         "cluster bootstrap",
@@ -5127,7 +5243,8 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "service journey",
         "premiere version",
         "parcours utilisateur",
-        "test d utilisabilite"
+        "test d utilisabilite",
+        "onboarding checklist"
       ],
       "notes": {
         "essentials": "Theory. A usable first release lets someone finish a whole task. A prototype can test whether they know what to do before the task is built.\nWorkflow. Pick a start, an end, and the shortest realistic path between them. Try it with a person from the target group.\nChoice. If both assisted and self-serve paths are feasible, ask how the first release handles that step. Once the workflow is chosen, sketch it in the requested scope and use a simple presentation.",
@@ -5198,7 +5315,9 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "usage based pricing",
         "modele tarifaire",
         "disposition a payer",
-        "essai gratuit"
+        "essai gratuit",
+        "usage based billing",
+        "trial to paid conversion"
       ],
       "notes": {
         "essentials": "Theory. People can like an offer and still choose against paying for it. A plan should make clear what it buys.\nWorkflow. Identify the buyer, state the offer and renewal terms, and look for behavior such as purchasing or renewing.\nChoice. Decide who gets free access and what useful boundary separates it from paid access.",
@@ -5226,7 +5345,10 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "supplier price",
         "regle de remboursement",
         "droits d acces",
-        "consentement utilisateur"
+        "consentement utilisateur",
+        "cancellation flow",
+        "guest access",
+        "read only access"
       ],
       "notes": {
         "essentials": "Theory. Different people can need different views or actions in the same task. Showing too much can expose information they were never meant to see.\nWorkflow. Walk through the task as each role, check what they need to know, and show them what happens when an action fails.\nChoice. Decide which role can see sensitive information, take an action, or approve an exception.",
@@ -5269,11 +5391,14 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "atomic write",
         "batch atomicity",
         "commit point",
+        "upload",
+        "resumable",
         "partial success",
         "all or nothing",
         "mise en file durable",
         "transaction distribuee",
-        "succes partiel"
+        "succes partiel",
+        "background queue"
       ],
       "notes": {
         "essentials": "Theory. A queued job may still fail. A job number can confirm that the request was saved. A finished result confirms that the work completed.\nWorkflow. Specify the response payload, status, and retry behavior at acceptance and completion.\nChoice. When both are open, choose what the endpoint returns and when. It can return a job number after durable acceptance or the result after completion. A draft that sets the acknowledgement point settles this choice.",
@@ -5298,7 +5423,10 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "quorum reads",
         "coherence forte",
         "isolation serialisable",
-        "retard de replication"
+        "retard de replication",
+        "offline sync",
+        "offline edit",
+        "concurrent edit"
       ],
       "notes": {
         "essentials": "Theory. Without a freshness guarantee, replicas can lag indefinitely. A user who just made a change usually expects to see it on their next read.\nWorkflow. Name the reads that must see recent writes, then try delayed updates and an unavailable copy.\nChoice. Decide whether to wait for a fresh answer or serve a clearly marked older answer.",
@@ -5322,7 +5450,12 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "message ordering",
         "livraison au moins une fois",
         "cle d idempotence",
-        "ordre des messages"
+        "ordre des messages",
+        "exponential backoff",
+        "dead letter queue",
+        "duplicate processing",
+        "webhook delivery",
+        "retry"
       ],
       "notes": {
         "essentials": "Theory. A timeout can mean the first attempt succeeded and the reply was lost. Repeating an action can apply it twice.\nWorkflow. Reuse the same server-enforced idempotency key on every retry of an operation. Test duplicate delivery and make status visible when the outcome is unclear.\nChoice. Choose whether people can retry immediately or must first check the status of the original operation.",
@@ -5345,7 +5478,10 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "throughput target",
         "delestage",
         "file d attente",
-        "limite de debit"
+        "limite de debit",
+        "connection limit",
+        "requests per minute",
+        "worker queue"
       ],
       "notes": {
         "essentials": "Theory. When more work arrives than can finish, waiting time grows. Retrying immediately can make a busy service busier.\nWorkflow. Measure how long work waits, limit how much can queue, and test what happens at peak load.\nChoice. Decide whether to delay, refuse, or serve a smaller result when the system runs out of capacity.",
@@ -5368,7 +5504,10 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "materialized view",
         "invalidation du cache",
         "donnees perimees",
-        "fraicheur des donnees"
+        "fraicheur des donnees",
+        "cache",
+        "ttl",
+        "invalidation"
       ],
       "notes": {
         "essentials": "Theory. A cached or precomputed answer can be faster and can show older information after something changes.\nWorkflow. Measure how old an answer can become, test updates and outages, and show the user its age when it matters.\nChoice. Decide how old an answer is acceptable and when the screen should say it is unavailable.",
@@ -5392,7 +5531,11 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "rollback window",
         "deploiement progressif",
         "migration de schema",
-        "retrocompatibilite"
+        "retrocompatibilite",
+        "feature flag",
+        "zero downtime",
+        "rollback path",
+        "migration de base de donnees"
       ],
       "notes": {
         "essentials": "Theory. A release can expose everyone to a defect at once. Restoring the old code may fail if the new version already changed the data.\nWorkflow. Try a small rollout, check one user-visible signal, and rehearse stopping it and restoring service.\nChoice. Use the specified audience or choose one that fits the rollout goal when delegated. If initial exposure is still an open choice, offer a pilot or all eligible users when both are feasible.",
@@ -5416,7 +5559,8 @@ Example: Each run is saved as \u27E6run log format: one JSONL file per run | one
         "regional failover",
         "restore from backup",
         "reprise apres sinistre",
-        "restauration de sauvegarde"
+        "restauration de sauvegarde",
+        "write ahead log"
       ],
       "notes": {
         "essentials": "Theory. Recovering quickly and recovering every recent change are different goals. A backup is useful only if it can be restored.\nWorkflow. Pick a likely failure, restore to a clean environment, and check how much time and data were lost.\nChoice. Decide what users may see during recovery and how much downtime or data loss they can tolerate.",
@@ -10595,6 +10739,9 @@ var CHORD_SWAP = "app:diffFileListDown";
 var CHORD_NEXT = "app:diffFileListUp";
 var CARD_READ_KEY = "c";
 var CARD_KEEP_KEY = "k";
+var CHAPTER_KEY = "b";
+var CHAPTER_DROP_KEY = "z";
+var CHAPTER_NEXT_KEY = "n";
 var DARK = {
   tag: { bg: "suggestion", color: "inverseText", bold: true },
   accent: "suggestion",
@@ -10670,6 +10817,7 @@ function wrapLines(value, first, rest, most) {
 
 // ../claude-code/hooks/card-view.ts
 var TAG = " MarginCue ";
+var CHAPTER_MARK = "\xA7";
 var GAP = "  ";
 var MARK = 2;
 var MIN_ROWS_BESIDE = 52;
@@ -10737,15 +10885,20 @@ function layoutCard(card, columns, budget, options2) {
     });
   }
   const g = grid(card, columns, words);
+  const chapter = card.stage === "draft" && !card.collapsed ? card.chapter : void 0;
+  if (chapter?.expanded && budget === 3) return chapterLines(chapter, columns, budget, options2.chapterKeys, card.language);
+  const reference = chapter && budget >= 3 ? chapterLines(chapter, columns, budget - 1, options2.chapterKeys, card.language) : [];
+  const headBudget = budget - reference.length;
   const right = card.collapsed ? [] : status(card, words, open, P3);
   const available = columns - g.content - 3 - (card.awaitingRead ? cells(words.readHint) : 16);
   for (const button of controls) {
     const gap = right.length ? [text("  ")] : [];
     if (segmentsWidth([...right, ...gap, button]) <= available) right.push(...gap, button);
   }
-  const head = card.collapsed ? [withRight(collapsed(card, columns, P3, words, open), right, columns)] : header(card, g, right, P3, words, budget >= 10 ? 4 : budget >= 6 ? 2 : 1);
+  const head = card.collapsed ? [withRight(collapsed(card, columns, P3, words, open), right, columns)] : header(card, g, right, P3, words, headBudget >= 10 ? 4 : headBudget >= 6 ? 2 : 1);
   head[0].push(...shortcuts, ...controls.filter((button) => !head[0].includes(button)).map((button) => ({ ...button, hidden: true })));
   if (card.collapsed) return head;
+  head.push(...reference);
   const room = budget - head.length;
   if (room <= 0) return head;
   const sketch = card.stage === "draft" ? card.sketch : void 0;
@@ -10775,6 +10928,59 @@ function layoutCard(card, columns, budget, options2) {
     const note = drawing.length && !shown.length ? words.folded(drawing.length) : "";
     out.push([...labelLead(words.preview, g, { dim: true }), ...captionLine(sketch, P3, words, columns - g.content, note)]);
     for (const line of shown) out.push([text(" ".repeat(indent)), ...line]);
+  }
+  return out;
+}
+function chapterLines(chapter, columns, budget, keys = "ctrl+x tab", language = "en") {
+  const dim = { dim: true };
+  const lead = `  ${CHAPTER_MARK} `;
+  const room = columns - cells(lead);
+  const title = truncate(chapter.title, chapter.expanded ? room : Math.max(1, room - 25));
+  const summary = chapter.expanded ? title : `${title} \xB7 ${truncate(chapter.choice, room - cells(title) - 3)}`;
+  const toggle = chapter.expanded ? language === "fr" ? "replier" : "collapse" : language === "fr" ? "ouvrir" : "expand";
+  const drop = language === "fr" ? "masquer" : "drop";
+  const hint = [
+    text(keys ? `    ${keys}, ` : "    ", dim),
+    {
+      kind: "button",
+      key: "chapter-toggle",
+      label: toggle,
+      face: keys ? `${CHAPTER_KEY} ${toggle}` : toggle,
+      ...keys && { hotkey: CHAPTER_KEY },
+      dim: true,
+      action: { type: "chapter", action: "toggle" }
+    },
+    text(" \xB7 ", dim),
+    {
+      kind: "button",
+      key: "chapter-drop",
+      label: drop,
+      face: keys ? `${CHAPTER_DROP_KEY} ${drop}` : drop,
+      ...keys && { hotkey: CHAPTER_DROP_KEY },
+      dim: true,
+      action: { type: "chapter", action: "dismiss" }
+    }
+  ];
+  const out = [[text(lead, dim), text(summary, dim)], hint];
+  if (chapter.expanded) {
+    const width = columns - 4;
+    const notes = chapter.notes.split("\n").flatMap((paragraph) => wrapLines(paragraph, width, width, Infinity));
+    const size = budget - out.length;
+    const pages = Math.ceil(notes.length / size);
+    const page = chapter.page % pages;
+    if (pages > 1) {
+      const next = language === "fr" ? "suite" : "next";
+      hint.push(text(" \xB7 ", dim), {
+        kind: "button",
+        key: "chapter-next",
+        label: next,
+        face: `${keys ? `${CHAPTER_NEXT_KEY} ` : ""}${next} ${page + 1}/${pages}`,
+        ...keys && { hotkey: CHAPTER_NEXT_KEY },
+        dim: true,
+        action: { type: "chapter", action: "next" }
+      });
+    }
+    out.push(...notes.slice(page * size, (page + 1) * size).map((line) => [text(`    ${line}`, dim)]));
   }
   return out;
 }
@@ -11252,7 +11458,7 @@ ${declared}`) };
 
 // src/store.ts
 import { spawn } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync as statSync2, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync as statSync2, unwatchFile, watchFile, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 var HOME = process.env["MARGINCUE_HOME"] ?? join(homedir(), ".margincue");
@@ -11280,6 +11486,11 @@ function writeJson(file, value) {
 }
 var readSettings = () => readJson(PATHS.settings, {});
 var saveSettings = (settings) => writeJson(PATHS.settings, settings);
+function watchSettings(changed) {
+  const update = () => changed(readSettings());
+  watchFile(PATHS.settings, { persistent: false, interval: 1e3 }, update);
+  return () => unwatchFile(PATHS.settings, update);
+}
 function sendSetting(settings) {
   return settings.send === "all" || settings.send === "picked" ? settings.send : DEFAULT_SEND;
 }
@@ -11417,6 +11628,7 @@ function cardConfig(settings) {
     mode: settings.mode ?? "auto",
     language: "en",
     sheet: true,
+    chapters: settings.chapters !== false,
     read: settings.read === "key" ? "key" : "auto",
     send: sendSetting(settings),
     sketch: settings.sketch !== false,
@@ -11570,7 +11782,7 @@ import { spawn as spawn2 } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.27";
+var VERSION = "0.4.28";
 var MIN_CODEX = "0.171";
 function tooOld(output2) {
   const match = /codex-cli (\d+)\.(\d+)\.(\d+)/.exec(output2);
@@ -12055,7 +12267,7 @@ var now = () => performance.now();
 async function compose(file) {
   const seed = readFileSync2(file, "utf8");
   const cwd = process.cwd();
-  const settings = readSettings();
+  let settings = readSettings();
   const draft = new Draft(seed.replace(/\s+$/, ""));
   const core = createCore(ASSETS);
   const model = new CodexModel(cwd);
@@ -12210,6 +12422,8 @@ async function compose(file) {
       else if (ch === "c") run({ type: "cardRead", now: now() });
       else if (ch === CARD_KEEP_KEY) run({ type: "cardKeep", now: now() });
       else if (ch === "x" && focus) run({ type: "cardDismiss", now: now(), row: focus });
+      else if (ch === CHAPTER_KEY || ch === CHAPTER_DROP_KEY) run({ type: "chapter", action: ch === CHAPTER_KEY ? "toggle" : "dismiss" });
+      else if (ch === CHAPTER_NEXT_KEY) run({ type: "chapter", action: "next" });
       else if (ch === "s") run({ type: "sketch", now: now(), action: "toggle" });
       else if (ch === "p") run({ type: "sketch", now: now(), action: "pin" });
       return;
@@ -12237,6 +12451,7 @@ async function compose(file) {
     else if (action.type === "cardSet") run({ type: "cardSet", now: t, row: action.row, option: action.option });
     else if (action.type === "cardKeep") run({ type: "cardKeep", now: t });
     else if (action.type === "cardDismiss") run({ type: "cardDismiss", now: t, row: action.row });
+    else if (action.type === "chapter") run(action);
     else if (action.type === "sketch") run({ type: "sketch", now: t, action: action.action });
   }
   function submit() {
@@ -12297,7 +12512,15 @@ async function compose(file) {
     const budget = Math.max(3, height - 1 - editorRows - footer - 1);
     const card = inAgent() ? agentCard(agent) : view?.card ?? null;
     const busy = Boolean(card?.reading || card?.sketch?.drawing);
-    const body = card ? layoutCard(card, width, budget, { chords: true, extra: [], palette: P, sketchKey: "tab, s", readHint: "tab, c to read", keepHint: `tab, ${CARD_KEEP_KEY}` }) : [[{ kind: "text", text: " MarginCue ", style: P.tag }, { kind: "text", text: settings.read === "key" ? "  tab, c to read the draft." : draft.text.trim() ? "  reads the prompt once you pause." : "  Write the prompt; MarginCue reads it as you go.", style: { dim: true } }]];
+    const body = card ? layoutCard(card, width, budget, {
+      chords: true,
+      extra: [],
+      palette: P,
+      sketchKey: "tab, s",
+      readHint: "tab, c to read",
+      keepHint: `tab, ${CARD_KEEP_KEY}`,
+      chapterKeys: "tab"
+    }) : [[{ kind: "text", text: " MarginCue ", style: P.tag }, { kind: "text", text: settings.read === "key" ? "  tab, c to read the draft." : draft.text.trim() ? "  reads the prompt once you pause." : "  Write the prompt; MarginCue reads it as you go.", style: { dim: true } }]];
     const lines = body.slice(0, budget);
     const top = height - footer - editorRows - 1 - lines.length - 1;
     const out = [];
@@ -12394,6 +12617,7 @@ async function compose(file) {
     process.stdin.resume();
   }
   function restore() {
+    stopWatching();
     if (spinner) clearInterval(spinner);
     spinner = null;
     process.stdout.write("\x1B[<u\x1B[?1006l\x1B[?1000l\x1B[?2004l\x1B[?25h\x1B[?1049l");
@@ -12401,6 +12625,10 @@ async function compose(file) {
     process.stdin.pause();
   }
   enter();
+  const stopWatching = watchSettings((next) => {
+    settings = next;
+    run(cardConfig(next));
+  });
   process.stdin.on("data", onKeys);
   process.stdout.on("resize", draw);
   process.on("SIGTERM", cancel);
@@ -13163,8 +13391,9 @@ var Band = class {
   cwd;
   send;
   model;
-  readOnDemand;
-  sendOpen;
+  readOnDemand = false;
+  sendOpen = false;
+  stopWatching;
   core = createCore(ASSETS);
   inflight = /* @__PURE__ */ new Map();
   timer = null;
@@ -13201,11 +13430,8 @@ var Band = class {
     this.cwd = options2.cwd;
     this.send = options2.send;
     this.model = options2.model ?? new CodexModel(options2.cwd);
-    const settings = readSettings();
-    this.readOnDemand = settings.mode !== "off" && settings.read === "key";
-    const config = cardConfig(settings);
-    this.sendOpen = config.send === "open";
-    this.run(config);
+    this.configure(readSettings());
+    this.stopWatching = watchSettings((settings) => this.configure(settings));
     this.run({ type: "learned", picks: readLearned(this.cwd) });
     void this.model.start().then((name) => {
       this.ready = true;
@@ -13222,11 +13448,18 @@ var Band = class {
   }
   close() {
     this.closed = true;
+    this.stopWatching();
     if (this.timer) clearTimeout(this.timer);
     if (this.spinner) clearInterval(this.spinner);
     if (this.turnTimer) clearInterval(this.turnTimer);
     for (const abort of this.inflight.values()) abort.abort();
     this.model.close();
+  }
+  configure(settings) {
+    const config = cardConfig(settings);
+    this.readOnDemand = settings.mode !== "off" && config.read === "key";
+    this.sendOpen = config.send === "open";
+    this.run(config);
   }
   receive(message) {
     if (this.closed) return;
@@ -13406,6 +13639,7 @@ var Band = class {
     else if (action.type === "cardSet") this.run({ type: "cardSet", now: t, row: action.row, option: action.option });
     else if (action.type === "cardKeep") this.run({ type: "cardKeep", now: t });
     else if (action.type === "cardDismiss") this.run({ type: "cardDismiss", now: t, row: action.row });
+    else if (action.type === "chapter") this.run(action);
     else if (action.type === "sketch") this.run({ type: "sketch", now: t, action: action.action });
   }
   // ---- the agent's choices ---------------------------------------------------------------
@@ -13473,18 +13707,20 @@ var Band = class {
     this.hits = [];
     let lines = [];
     const card = this.on && max > 0 ? this.shownCard() : null;
+    const regularCard = Boolean(card && (card.rows.length || card.read || card.reading || card.mentions.length || card.error || card.awaitingRead));
     if (max > 0) {
       if (card) {
-        const budget = full && (card.rows.length || card.read && !card.reading) ? max : 1;
+        const budget = full && (card.chapter || card.rows.length || card.read && !card.reading) ? max : 1;
         lines = layoutCard(card, cols, budget, {
           chords: true,
           extra: [],
           palette: P2,
           sketchKey: "ctrl+g",
           readHint: this.readHint(),
-          keepHint: this.keepKey ? `ctrl+] ${CARD_KEEP_KEY}` : void 0
+          keepHint: this.keepKey ? `ctrl+] ${CARD_KEEP_KEY}` : void 0,
+          chapterKeys: false
         }).slice(0, budget).map((line, y) => drawLine(line, cols, y, this.hits, this.frame));
-        if (!this.shownAgent()) this.mark(this.coreText);
+        if (regularCard && !this.shownAgent()) this.mark(this.coreText);
       } else lines = [drawLine(this.status(), cols, 0, this.hits, this.frame)];
     }
     const streaming = Boolean(card && (card.reading || card.sketch?.drawing) && card.rows.length);
@@ -13495,7 +13731,7 @@ var Band = class {
     const decisions = this.view?.decisions.length ?? 0;
     const agentShown = Boolean(this.shownAgent());
     const openName = this.sendOpen && card?.rows.some((row) => row.origin === "repo" && !row.chosen);
-    const plan = card?.stage === "draft" && (openName || !card.reading && !card.awaitingRead);
+    const plan = regularCard && card?.stage === "draft" && (openName || !card.reading && !card.awaitingRead);
     const hidden = this.dismissed !== null && this.dismissed === this.draft.text;
     const read = this.readKey && this.readOnDemand && this.on && this.draft.plain;
     const keep = this.keepKey && this.draft.plain && card?.stage === "draft" && card.rows.some((row) => !row.chosen && !row.openOnSend && row.selected.length);
@@ -13792,7 +14028,8 @@ async function main(argv) {
   if (command === "setup") return setup();
   if (command === "status") return status2();
   if (command === "level") return setLevel(rest);
-  process.stdout.write("margincue setup | codex [args] | compose FILE | hook prompt|stop|start | mcp | status | level PROFILE LEVEL\n");
+  if (command === "chapters") return setChapters(rest);
+  process.stdout.write("margincue setup | codex [args] | compose FILE | hook prompt|stop|start | mcp | status | level PROFILE LEVEL | chapters on|off\n");
 }
 async function hook(event) {
   try {
@@ -14006,7 +14243,7 @@ function status2() {
   const user = readUser(settings.user);
   process.stdout.write([
     `MarginCue for Codex: ${settings.mode ?? "auto"} \xB7 sketch ${settings.sketch === false ? "off" : "on"} \xB7 blanks ${settings.blanks === false ? "off" : "on"}`,
-    `Read: ${settings.read === "key" ? "key" : "auto"} \xB7 Send: ${sendSetting(settings)}`,
+    `Read: ${settings.read === "key" ? "key" : "auto"} \xB7 Send: ${sendSetting(settings)} \xB7 Chapters: ${settings.chapters === false ? "off" : "on"}`,
     user ? `You: ${describeUser(user)}` : "Run margincue setup to set your level and the kinds of choices you make.",
     `Composer: ${existsSync2(STABLE) ? STABLE : "not installed (margincue setup)"}`
   ].join("\n") + "\n");
@@ -14020,6 +14257,13 @@ function setLevel(args) {
   const user = readUser(settings.user) ?? { work: [], levels: {}, decide: [] };
   saveSettings({ ...settings, user: { ...user, levels: { ...user.levels, [profile]: level } } });
   process.stdout.write(`MarginCue will use the ${level} level for ${profile}.
+`);
+}
+function setChapters(args) {
+  const [setting] = args;
+  if (args.length !== 1 || setting !== "on" && setting !== "off") throw new Error("Use margincue chapters on|off");
+  saveSettings({ ...readSettings(), chapters: setting === "on" });
+  process.stdout.write(`MarginCue chapters ${setting}.
 `);
 }
 main(process.argv.slice(2)).catch((error) => {

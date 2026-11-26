@@ -24,8 +24,8 @@ import type { MargincueCard } from '../../claude-code/types'
 import { cardConfig } from './card-config'
 import { CodexModel } from './model'
 import type { Completion } from './model'
-import { PATHS, learn, processEngine, readJson, readLearned, readSettings, writeJson } from './store'
-import type { TurnRecord } from './store'
+import { PATHS, learn, processEngine, readJson, readLearned, readSettings, watchSettings, writeJson } from './store'
+import type { Settings, TurnRecord } from './store'
 import { drawLine } from './terminal'
 import type { Hit } from './terminal'
 import { agentCard, markSent, mergeTurn, pick, readTurn } from './turn-card'
@@ -79,8 +79,9 @@ export class Band {
   private readonly cwd: string
   private readonly send: (message: Down) => void
   private readonly model: Reader
-  private readonly readOnDemand: boolean
-  private readonly sendOpen: boolean
+  private readOnDemand = false
+  private sendOpen = false
+  private readonly stopWatching: () => void
   private readonly core = createCore(ASSETS)
   private readonly inflight = new Map<number, AbortController>()
   private timer: NodeJS.Timeout | null = null
@@ -118,11 +119,8 @@ export class Band {
     this.cwd = options.cwd
     this.send = options.send
     this.model = options.model ?? new CodexModel(options.cwd)
-    const settings = readSettings()
-    this.readOnDemand = settings.mode !== 'off' && settings.read === 'key'
-    const config = cardConfig(settings)
-    this.sendOpen = config.send === 'open'
-    this.run(config)
+    this.configure(readSettings())
+    this.stopWatching = watchSettings((settings) => this.configure(settings))
     this.run({ type: 'learned', picks: readLearned(this.cwd) })
     void this.model.start().then((name) => {
       this.ready = true
@@ -141,11 +139,19 @@ export class Band {
 
   close(): void {
     this.closed = true
+    this.stopWatching()
     if (this.timer) clearTimeout(this.timer)
     if (this.spinner) clearInterval(this.spinner)
     if (this.turnTimer) clearInterval(this.turnTimer)
     for (const abort of this.inflight.values()) abort.abort()
     this.model.close()
+  }
+
+  private configure(settings: Settings): void {
+    const config = cardConfig(settings)
+    this.readOnDemand = settings.mode !== 'off' && config.read === 'key'
+    this.sendOpen = config.send === 'open'
+    this.run(config)
   }
 
   receive(message: Up): void {
@@ -336,6 +342,7 @@ export class Band {
     else if (action.type === 'cardSet') this.run({ type: 'cardSet', now: t, row: action.row, option: action.option })
     else if (action.type === 'cardKeep') this.run({ type: 'cardKeep', now: t })
     else if (action.type === 'cardDismiss') this.run({ type: 'cardDismiss', now: t, row: action.row })
+    else if (action.type === 'chapter') this.run(action)
     else if (action.type === 'sketch') this.run({ type: 'sketch', now: t, action: action.action })
   }
 
@@ -412,17 +419,19 @@ export class Band {
     this.hits = []
     let lines: string[] = []
     const card = this.on && max > 0 ? this.shownCard() : null
+    const regularCard = Boolean(card && (card.rows.length || card.read || card.reading || card.mentions.length || card.error || card.awaitingRead))
     if (max > 0) {
       if (card) {
         // Until its first rows arrive the card is one line; then it takes its room in one step.
-        const budget = full && (card.rows.length || (card.read && !card.reading)) ? max : 1
+        const budget = full && (card.chapter || card.rows.length || (card.read && !card.reading)) ? max : 1
         lines = layoutCard(card, cols, budget, {
           chords: true, extra: [], palette: P, sketchKey: 'ctrl+g', readHint: this.readHint(),
           keepHint: this.keepKey ? `ctrl+] ${CARD_KEEP_KEY}` : undefined,
+          chapterKeys: false,
         })
           .slice(0, budget)
           .map((line, y) => drawLine(line, cols, y, this.hits, this.frame))
-        if (!this.shownAgent()) this.mark(this.coreText)
+        if (regularCard && !this.shownAgent()) this.mark(this.coreText)
       } else lines = [drawLine(this.status(), cols, 0, this.hits, this.frame)]
     }
     // The card keeps its height while the prompt is written, so the box above it stays put.
@@ -437,7 +446,7 @@ export class Band {
     const agentShown = Boolean(this.shownAgent())
     // A question about a name can go with the prompt as soon as its candidates are known.
     const openName = this.sendOpen && card?.rows.some((row) => row.origin === 'repo' && !row.chosen)
-    const plan = card?.stage === 'draft' && (openName || !card.reading && !card.awaitingRead)
+    const plan = regularCard && card?.stage === 'draft' && (openName || !card.reading && !card.awaitingRead)
     const hidden = this.dismissed !== null && this.dismissed === this.draft.text
     const read = this.readKey && this.readOnDemand && this.on && this.draft.plain
     const keep = this.keepKey && this.draft.plain && card?.stage === 'draft' &&

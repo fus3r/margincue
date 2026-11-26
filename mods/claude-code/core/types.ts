@@ -4,7 +4,7 @@
 
 import type { Depth, Language, Mode, ProfileBundle, Scope } from './bundle'
 import type { CardKind, RowType } from './card'
-import type { ProfileChapter } from './chapters'
+import type { ChapterView, ProfileChapter } from './chapters'
 import type { Mention, Vocabulary } from './grounding'
 import type { DecisionView, StateChange, StateCue, StateLoad } from './state'
 
@@ -47,6 +47,8 @@ export type Event =
       language?: LanguageSetting
       /** Present for the card protocol (named `sheet` before the card replaced the kick-off sheet). False keeps the automatic tier silent. */
       sheet?: boolean
+      /** Show a matching reference chapter on the draft card (default true). */
+      chapters?: boolean
       /** When to read a draft card (default auto). */
       read?: ReadingMode
       /** Draw a sketch of the deliverable under the card (default true). */
@@ -65,6 +67,8 @@ export type Event =
       depths?: Record<string, Depth>
       audit?: boolean
       profile: string
+      /** The default general profile is only a reference field when explicitly chosen. */
+      profileSelected?: boolean
       timing?: Partial<Timing>
       streaming: boolean
       eagerPlan: boolean
@@ -104,7 +108,8 @@ export type Event =
   /** The person's own words for a row, typed under "Other" in the app's question panel: they go as its Decision. */
   | { type: 'cardSay'; now: number; row: string; text: string }
   | { type: 'cardDismiss'; now: number; row: string }
-  | { type: 'cardShown'; now: number; id: number }
+  | { type: 'cardShown'; now: number; id: number; chapter?: string }
+  | { type: 'chapter'; action: 'toggle' | 'dismiss' | 'next' }
   | { type: 'sketch'; now: number; action: 'toggle' | 'pin' | 'refresh' }
   /** A choice the agent marked in its reply during the running turn. */
   | { type: 'blank'; now: number; label: string; choice: string; alternatives: string[] }
@@ -194,6 +199,7 @@ export type CardView = {
   mentions: Mention[]
   /** Expert profiles this reading draws on: the project's, the one picked, the draft's field. */
   lenses: string[]
+  chapter?: ChapterView
   sketch?: { title: string; lines: string[]; drawing: boolean; pinned: boolean; open: boolean }
   language: Language
   collapsed: boolean
