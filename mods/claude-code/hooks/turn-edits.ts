@@ -1,8 +1,9 @@
 import type { EngineInterface } from 'claude-code'
+import type { ChoiceEdit } from '../core/choice-tier'
 
 type CaptureIO = Pick<EngineInterface, 'process' | 'fs'>
 type Version = { mode?: string; text?: string; stamp?: string; blob?: true } | null // null is a missing file
-type Snapshot = { root: string; head: string | null; saved: Map<string, Version>; headPaths: string[] }
+type Snapshot = { root: string; head: string | null; saved: Map<string, Version>; headPaths: string[]; headDeleted: Set<string> }
 type CheckoutDefaults = { autocrlf?: string; textCrlf: boolean }
 
 export type Hunk = { oldStart: number; oldLines: number; newStart: number; newLines: number; lines: string[] }
@@ -15,6 +16,7 @@ export type TurnEdits = EditCapture & { after: Promise<Snapshot | null> }
 export type EditedFile = {
   path: string; before: Version; after: Version; tools: ToolEdit[]; hunks: Hunk[]
 }
+export type CapturedChoiceEdit = ChoiceEdit & { position?: number }
 
 const FILE_LIMIT = 4 * 1024 * 1024 // the host's read and write limit
 const SNAPSHOT_LIMIT = 8 * 1024 * 1024
@@ -67,12 +69,22 @@ async function gitRoot($: CaptureIO, cwd: string): Promise<string | null> {
   return found?.exitCode === 0 && found.stdout.trim() ? found.stdout.replace(/\r?\n$/, '') : null
 }
 
-async function headChanges($: CaptureIO, project: string, before: string | null, after: string | null): Promise<string[]> {
-  if (before === after) return []
-  const args = before && after ? ['diff', '--name-only', '-z', '--no-renames', before, after, '--']
+async function headChanges($: CaptureIO, project: string, before: string | null, after: string | null) {
+  const paths: string[] = []
+  const deleted = new Set<string>()
+  if (before === after) return { paths, deleted }
+  const args = before && after ? ['diff', '--name-status', '-z', '--no-renames', before, after, '--']
     : ['ls-tree', '-r', '--name-only', '-z', (before ?? after)!]
   const changed = await git($, project, args).catch(() => null)
-  return changed?.exitCode === 0 && !changed.isStdoutTruncated ? parts(changed.stdout) : []
+  if (changed?.exitCode !== 0 || changed.isStdoutTruncated) return { paths, deleted }
+  const fields = parts(changed.stdout)
+  if (!before || !after) return { paths: fields, deleted: new Set(after ? [] : fields) }
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    const path = fields[i + 1]!
+    paths.push(path)
+    if (fields[i] === 'D') deleted.add(path)
+  }
+  return { paths, deleted }
 }
 
 /** Save working copies for changed paths. Other tracked files can be read from the saved revision. */
@@ -98,7 +110,8 @@ async function gitSnapshot($: CaptureIO, project: string, start?: Promise<Snapsh
     }
     for (const path of parts(untracked.stdout)) modes.set(path, '100644')
     const previous = await start
-    const headPaths = previous ? await headChanges($, project, previous.head, head) : []
+    const changes = previous ? await headChanges($, project, previous.head, head) : undefined
+    const headPaths = changes?.paths ?? []
     // A commit or revert can leave changed files clean at the end of the turn.
     for (const path of [...previous?.saved.keys() ?? [], ...headPaths]) if (!modes.has(path)) modes.set(path, undefined)
     const saved = new Map<string, Version>()
@@ -119,7 +132,7 @@ async function gitSnapshot($: CaptureIO, project: string, start?: Promise<Snapsh
         budget = Math.max(0, budget - size)
       }
     }
-    return { root: project, head, saved, headPaths }
+    return { root: project, head, saved, headPaths, headDeleted: changes?.deleted ?? new Set() }
   } catch {
     return null
   }
@@ -158,6 +171,64 @@ function isHunk(value: unknown): value is Hunk {
   const hunk = value as Hunk
   return [hunk.oldStart, hunk.oldLines, hunk.newStart, hunk.newLines].every(Number.isSafeInteger) &&
     Array.isArray(hunk.lines) && hunk.lines.every((line) => typeof line === 'string')
+}
+
+const JS_SOURCE = /\.[cm]?[jt]sx?$/i
+const EXPORTS = /^export[ \t]+(?:(?:declare|abstract|async)[ \t]+)*(?:(?:interface\b[^\n{]*|type\b[^\n{]*=[ \t]*)\{(?:[^\n]*\}|[\s\S]*?^\})|type\b[^\n]+|(?:default[ \t]+)?(?:function|class)\b[^\n{]*|(?:const|let|var)\b[^\n=;]+|(?:\{|\*|default\b)[^\n]*)/gm
+
+function exportedSurfaceChanged(before: string, after: string): boolean {
+  const declarations = (text: string) => [...text.matchAll(EXPORTS)]
+    .map(([line]) => line.replace(/\s+/g, ' ').trim()).sort()
+  return declarations(before).join('\n') !== declarations(after).join('\n')
+}
+
+function exportedHunkChanged(hunks: Hunk[]): boolean {
+  return hunks.some(({ lines }) => {
+    const side = (omit: string) => lines.filter((line) => /^[ +\-]/.test(line) && !line.startsWith(omit))
+      .map((line) => line.slice(1)).join('\n')
+    return exportedSurfaceChanged(side('+'), side('-'))
+  })
+}
+
+export function toolChoiceEdits(turn: EditCapture): CapturedChoiceEdit[] {
+  return turn.tools.flatMap((edit) => {
+    const path = relativePath(edit.path, turn.cwd, turn.cwd)
+    return path ? [{ path, position: edit.position }] : []
+  })
+}
+
+/** Use the capture already in flight. No diff, filesystem read, or Git command is needed for ranking. */
+export async function capturedChoiceEdits(turn: TurnEdits): Promise<CapturedChoiceEdit[]> {
+  const [before, after] = await Promise.all([turn.before, turn.after])
+  const root = before?.root ?? turn.cwd
+  const observed = await Promise.all(turn.tools.flatMap((edit) => {
+    const path = relativePath(edit.path, turn.cwd, root)
+    if (!path) return []
+    return [edit.after.then((next): CapturedChoiceEdit[] => {
+      const old = edit.before?.text ?? (edit.before === null ? '' : undefined)
+      const content = next?.text
+      if (old !== undefined && content !== undefined && normalizeLineEndings(old) === normalizeLineEndings(content)) return []
+      return [{
+        path, position: edit.position, deleted: edit.before !== null && next === null,
+        publicInterface: JS_SOURCE.test(path) && (old !== undefined && content !== undefined
+          ? exportedSurfaceChanged(old, content) : exportedHunkChanged(edit.hunks)),
+      }]
+    })]
+  }))
+  if (!before || !after) return observed.flat()
+  const paths = new Set([...after.saved.keys(), ...after.headPaths])
+  const boundary = [...paths].flatMap((path): CapturedChoiceEdit[] => {
+    const old = before.saved.get(path)
+    const next = after.saved.get(path)
+    const deleted = old !== null && (next === null || (next === undefined && after.headDeleted.has(path)))
+    if (next === null && !deleted) return []
+    if (old && next && old.mode === next.mode && (old.text !== undefined && next.text !== undefined
+      ? normalizeLineEndings(old.text) === normalizeLineEndings(next.text) : old.stamp !== undefined && old.stamp === next.stamp)) return []
+    const publicInterface = JS_SOURCE.test(path) && old?.text !== undefined && next?.text !== undefined &&
+      exportedSurfaceChanged(old.text, next.text)
+    return [{ path, deleted, publicInterface }]
+  })
+  return [...observed.flat(), ...boundary]
 }
 
 async function blobVersion($: CaptureIO, root: string, head: string | null, path: string): Promise<Version> {

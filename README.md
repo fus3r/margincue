@@ -44,6 +44,8 @@ While Claude works:
 - **Its choices become switches.** Claude marks the choices it makes for you as it goes. Switch one and the change reaches it at its next step, without stopping it.
 - **A receipt.** After the turn, what you set and what Claude chose. Switch one and the follow-up prompt is written for you.
 
+Receipts rank the agent's choices high, mid, or low by consequence. In the Claude Code terminal, `/margincue choices` reviews choices from the session by tier, with switches and diffs when captured.
+
 It adapts to you and to the project. The first run asks what you work on and your level in each field. A data challenge or a research repository brings in the matching expert decisions (statistics and machine learning, system design), at the depth you asked for.
 
 The `§` line shows a matching chapter's Choice note at your level. In Claude Code, press `ctrl+x tab` then `b` to expand or collapse it (`z` drops it), and use `/margincue chapters on|off` to switch it.

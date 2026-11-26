@@ -1,6 +1,6 @@
 // `claude plugin test mods/claude-code`: the mod's hooks against the engine's
 // own test kit. Every hook the test registers with `on` stands for the engine.
-import type { ModelCompleteInput, ModelCompleteResult, On, PromptChangeInput, PromptChangeResult, PromptEditInput, PromptEditResult } from 'claude-code'
+import type { ModelCompleteInput, ModelCompleteResult, On, PromptChangeInput, PromptChangeResult, PromptEditInput, PromptEditResult, RenderNode } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { MountSelectTarget, TestBody } from 'claude-code/testing'
 import { ASSETS } from '../hooks/assets'
@@ -1145,6 +1145,105 @@ test('the receipt opens the focused choice’s diff only when asked', async ($, 
   expect(JSON.parse(calls[0]!)).toMatchObject({ choice: 'orientation horizontal',
     hunks: [{ path: 'report.jsonl', changes: '+report format = jsonl' }] })
   expect(toasts).toContain('No related edits found for this choice.')
+  await pane.unmount()
+  await receipt.unmount()
+})
+
+function textFrame(node: RenderNode): string {
+  if (typeof node === 'string') return node
+  const children = ('children' in node ? node.children ?? [] : []).map(textFrame)
+  if (node.type === 'Button') return `[${children.join('') || node.props.label}]`
+  if (node.type !== 'Box') return children.join('')
+  return node.props?.flexDirection === 'row' ? children.join(' '.repeat(Number(node.props.columnGap ?? 0)))
+    : children.join('\n'.repeat(1 + Number(node.props?.rowGap ?? 0)))
+}
+
+test('the terminal receipt folds low choices and session choices can switch an older turn', async ($, on) => {
+  const { clock, box, calls, panes } = world(on, '[]')
+  mock.session(on)
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('ui.place', (_, e) => ({ value: { isPlaced: true, requestId: e.id } }))
+  on('tool.run', { tool: 'Write' }, () => ({ result: { type: 'update', filePath: '/project/tsconfig.json',
+    content: '{"compilerOptions":{}}\n', originalFile: '{}\n', structuredPatch: [], userModified: false } }))
+  await $.session.start({ cwd: '/project', surface: 'terminal', isInteractive: true })
+  const command = (args: string) => $.command.run({ ...cli, command: 'margincue', args })
+  expect((await command('choices')).text).toBe('No agent choices to review.')
+  const layout = '⟦layout: compact | roomy⟧'
+  const first = `${layout}. In tsconfig.json use ⟦build settings: compiler default | strict settings⟧.`
+  const answers = [
+    `${first} ⟦delivery: email customers | draft an email⟧. ⟦heading: Results | Report⟧. ⟦color: blue | gray⟧.`,
+    '⟦rollout: run a schema migration | add a compatibility layer⟧.',
+    `${layout}. ⟦order: newest first | oldest first⟧.`,
+  ]
+  for (const [i, answer] of answers.entries()) {
+    const turnId = `audit-${i}`
+    await $.turn.start({ text: DRAFT, turnId })
+    if (i === 0) {
+      await $.session.append({ door: 'response', uuid: 'build-settings', origin: { kind: 'model', model: 'current' },
+        message: { type: 'assistant', content: [{ type: 'text', text: first }] } })
+      await $.tool.run({ tool: 'Write', tool_use_id: 'build-config', file_path: '/project/tsconfig.json', content: '{"compilerOptions":{}}\n' })
+    }
+    await $.turn.complete({ turnId, reason: 'answer', answer, durationMs: 1000, isAborted: false })
+    await clock.settle()
+  }
+  const receipt = await $.ui.mount({ plugin: 'margincue', component: 'Placed', requestId: 'receipt-1', surface: 'terminal',
+    props: { id: 'receipt-1', plugin: 'margincue' } })
+  expect(textFrame(await receipt.drawn())).toBe([
+    '   MarginCue   you set 0 · the agent chose 5',
+    '               1 high · 1 mid · 3 low',
+    '         high  delivery  email customers   [diff]  [→ draft an email]',
+    '          mid  build settings  compiler default   [diff]  [→ strict settings]',
+    '               [Show 3 low choices]',
+    '               [Review choices] · e opens related edits',
+    '               [Session choices]',
+  ].join('\n'))
+  expect(await receipt.find({ key: 'agent-0-1' })).toBeUndefined()
+  await receipt.press({ key: 'receipt-low' })
+  expect(await receipt.find({ key: 'agent-0-1' })).toBeDefined()
+  await receipt.press({ key: 'agent-0-1' })
+  expect(box.text).toBe('Revisit turn 1. Change layout: roomy instead of compact. Keep everything else as it is.')
+  await receipt.press({ key: 'receipt-low' })
+  expect(await receipt.find({ key: 'agent-0-1' })).toBeUndefined()
+
+  await receipt.press({ key: 'receipt-session' })
+  expect(panes.at(-1)).toMatchObject({ id: 'margincue-choices', focus: true })
+  const paneCount = panes.length
+  expect((await command('choices')).text).toBe('')
+  expect(panes).toHaveLength(paneCount + 1)
+  expect(panes.at(-1)).toMatchObject({ id: 'margincue-choices', focus: true })
+  const pane = await $.ui.mount({ plugin: 'margincue', component: 'Pane', requestId: 'margincue-choices', surface: 'terminal',
+    props: { title: 'MarginCue session choices', isFocused: true, bodyColumns: 80, placement: 'inline', scroll: { offset: 0, bodyRows: 18 }, view: {} } })
+  expect(textFrame(await pane.drawn())).toBe([
+    'HIGH · 2',
+    'Turn 2 · rollout: run a schema migration',
+    '[→ add a compatibility layer]',
+    'Turn 1 · delivery: email customers',
+    '[→ draft an email]  [diff]',
+    '',
+    'MID · 1',
+    'Turn 1 · build settings: compiler default',
+    '[→ strict settings]  [diff]',
+    '',
+    'LOW · 5',
+    'Turn 3 · layout: compact',
+    '[→ roomy]',
+    'Turn 3 · order: newest first',
+    '[→ oldest first]',
+    'Turn 1 · layout: compact',
+    '[→ roomy]  [diff]',
+    'Turn 1 · heading: Results',
+    '[→ Report]  [diff]',
+    'Turn 1 · color: blue',
+    '[→ gray]  [diff]',
+  ].join('\n'))
+  box.text = 'My next draft'
+  await pane.press({ key: 'switch-1-0-1' })
+  expect(box.text).toBe('My next draft')
+  box.text = ''
+  await pane.press({ key: 'switch-1-0-1' })
+  expect(box.text).toBe('Revisit turn 1. Change layout: roomy instead of compact. Keep everything else as it is.')
+  expect(calls).toHaveLength(0)
   await pane.unmount()
   await receipt.unmount()
 })

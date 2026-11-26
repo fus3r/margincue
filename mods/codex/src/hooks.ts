@@ -2,6 +2,7 @@
 // the choices it makes for the person, as in Claude Code. When the turn stops: the receipt.
 
 import { parseBlanks } from '../../claude-code/core/card'
+import { choiceTier, rankedChoices, tierCounts } from '../../claude-code/core/choice-tier'
 import { FILE_REFERENCES_HEADING } from '../../claude-code/core/decisions'
 import { startsSomethingNew } from '../../claude-code/core/kickoff'
 import { ASSETS } from '../../claude-code/hooks/assets'
@@ -139,22 +140,22 @@ export function stopHook(input: StopInput): object | null {
   for (const message of messages) for (const blank of parseBlanks(message)) chosen.set(blank.label, blank.choice)
   // A choice the person switched while the agent worked shows the value they asked for.
   const amended = input.transcript_path ? turnAmendments(turnMessages(input.transcript_path, input.turn_id, 'UserMessage')) : new Map<string, string>()
-  let switched = 0
-  for (const label of chosen.keys()) {
+  const choices = [...chosen].map(([label, original]) => {
     const value = amended.get(label.toLowerCase())
-    if (value === undefined) continue
-    chosen.set(label, `${value} (switched)`)
-    switched++
-  }
+    return { label, value: value ?? original, switched: value !== undefined }
+  })
   const yours = mine?.decisions.length ?? 0
   if (!chosen.size && !yours) return null
-  return { systemMessage: receiptLine(yours, [...chosen].map(([label, choice]) => `${label}: ${choice}`), source, switched) }
+  return { systemMessage: receiptLine(yours, choices, source) }
 }
 
-export function receiptLine(yours: number, agent: string[], source: Source = 'cli', switched = 0): string {
+export function receiptLine(yours: number, agent: { label: string; value: string; switched?: boolean }[], source: Source = 'cli'): string {
+  const switched = agent.filter((choice) => choice.switched).length
   const parts = [`MarginCue · you set ${yours} · the agent chose ${agent.length}${switched ? ` · you switched ${switched}` : ''}`]
   if (agent.length) {
-    parts.push(agent.join(' · '))
+    const choices = rankedChoices(agent.map((choice) => ({ ...choice, tier: choiceTier(`${choice.label}: {}`, choice.value) })))
+    parts.push(tierCounts(choices), choices.map(({ tier, label, value, switched }) =>
+      `[${tier}] ${label}: ${value}${switched ? ' (switched)' : ''}`).join(' · '))
     // Under margincue-relay the agent's choices are already listed under Codex's prompt.
     if (source === 'cli' || source === 'unknown') {
       parts.push(process.env['MARGINCUE_CARD'] === 'prompt' ? 'alt+↓ under the prompt to switch one' : 'ctrl+g to switch one')

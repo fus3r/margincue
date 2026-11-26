@@ -23,6 +23,7 @@ import { joinList, sameSelection } from '../core/card'
 import { splitDecisions } from '../core/decisions'
 import { closesFrame, tidySketch } from '../core/frame'
 import type { MargincueCard, MargincueReceipt, MargincueRow } from '../types'
+import { rankedChoices, tierCounts } from '../core/choice-tier'
 import { CARD_KEEP_KEY, CARD_READ_KEY, CHAPTER_DROP_KEY, CHAPTER_KEY, CHAPTER_NEXT_KEY, CHORD_NEXT, CHORD_SWAP, DARK, RECEIPT_DIFF_KEY, cells, segmentsWidth, text, truncate, wrapLines } from './segments'
 import type { Color, Palette, Segment, Style } from './segments'
 
@@ -583,7 +584,8 @@ function hiddenButtons(card: MargincueCard, chords: boolean): Line {
 // ---- the receipt, under the answer ---------------------------------------------------
 
 /** What travelled with the prompt and what the agent chose; one press on another option writes the follow-up. */
-export function layoutReceipt(receipt: MargincueReceipt, columns: number, P: Palette = DARK, edits = false): Line[] {
+export function layoutReceipt(receipt: MargincueReceipt, columns: number, P: Palette = DARK, edits = false,
+  showLow = false, sessionChoices = false): Line[] {
   const width = cells(TAG)
   const content = MARK + width + GAP.length
   const room = Math.max(20, columns - content)
@@ -598,20 +600,30 @@ export function layoutReceipt(receipt: MargincueReceipt, columns: number, P: Pal
       ? [text(' '.repeat(content + 2)), text(part)]
       : [...lead('you'), text('✓ ', { color: 'success' }), text(part), ...(edits ? [text(GAP), diff(i)] : [])]))
   }
-  receipt.agent.forEach((item, i) => {
+  const choices = rankedChoices(receipt.agent.map((item, i) => ({ ...item, i })))
+  if (choices.length) out.push([text(' '.repeat(content)), text(tierCounts(choices), { dim: true })])
+  const lows = choices.filter((item) => item.tier === 'low').length
+  const foldLow = choices.length > 4 && lows > 0
+  for (const item of choices) {
+    if (foldLow && !showLow && item.tier === 'low') continue
+    const { i, tier } = item
     const value = item.was ? P.yours : P.agent
+    const label = truncate(item.label, Math.floor(room / 2))
     const groups: Line[] = [
-      [text(`${item.label} `, { dim: true }), text(' ', value), text(item.value, value), text(' ', value)],
+      [text(`${label} `, { dim: true }), text(' ', value), text(truncate(item.value, room - cells(label) - 3), value), text(' ', value)],
       ...(edits ? [[diff(receipt.yours.length + i)]] : []),
-      ...(item.was ? [[text(`was ${item.was}`, { dim: true, italic: true })]] : []),
+      ...(item.was ? [[text(truncate(`was ${item.was}`, room), { dim: true, italic: true })]] : []),
       ...item.options.flatMap((option, j): Line[] => option === item.value ? [] : [[{
-        kind: 'button', key: `agent-${i}-${j}`, label: `→ ${option}`, face: `→ ${option}`, dim: true,
+        kind: 'button', key: `agent-${i}-${j}`, label: `→ ${option}`, face: truncate(`→ ${option}`, room), dim: true,
         action: { type: 'receiptPick', receipt: receipt.id, item: i, option: j },
       }]]),
     ]
     flow(groups, room, 3, 2, (n) => [text(`+${n}`, { dim: true })]).lines
-      .forEach((line, k) => out.push(k ? [text(' '.repeat(content)), ...line] : [...lead('agent'), ...line]))
-  })
+      .forEach((line, k) => out.push(k ? [text(' '.repeat(content)), ...line] : [...lead(tier), ...line]))
+  }
+  if (foldLow) out.push([text(' '.repeat(content)), { kind: 'button', key: 'receipt-low',
+    label: showLow ? 'Hide low choices' : `Show ${lows} low choice${lows === 1 ? '' : 's'}`,
+    dim: true, action: { type: 'receiptLow', receipt: receipt.id } }])
   if (edits) {
     const review: Segment = { kind: 'button', key: 'receipt-review', label: 'Review choices', dim: true,
       action: { type: 'receiptReview', receipt: receipt.id } }
@@ -621,6 +633,8 @@ export function layoutReceipt(receipt: MargincueReceipt, columns: number, P: Pal
       out.push([indent, review], [indent, text(truncate(hint, room), { dim: true })])
     } else out.push([indent, review, text(` · ${hint}`, { dim: true })])
   }
+  if (sessionChoices && choices.length) out.push([text(' '.repeat(content)), { kind: 'button', key: 'receipt-session',
+    label: 'Session choices', dim: true, action: { type: 'sessionChoices' } }])
   return out
 }
 

@@ -236,7 +236,7 @@ test('the prompt as sent lists what MarginCue attached, and nothing when it atta
 
 test('the receipt fits its width and says what was switched', () => {
   const receipt = { id: 1, yours: ['Write the report to a markdown file.'],
-    agent: [{ label: 'run log', value: 'one SQLite database', was: 'one JSONL file per run', options: ['one JSONL file per run', 'one SQLite database', 'a CSV per run'] }] }
+    agent: [{ label: 'run log', value: 'one SQLite database', was: 'one JSONL file per run', tier: 'low' as const, options: ['one JSONL file per run', 'one SQLite database', 'a CSV per run'] }] }
   for (const columns of [50, 80, 160]) {
     const lines = layoutReceipt(receipt, columns)
     for (const line of lines) assert.ok(segmentsWidth(line) <= Math.max(columns, 40), plain(line))
@@ -245,6 +245,21 @@ test('the receipt fits its width and says what was switched', () => {
   assert.match(lines[0]!, /you set 1 · the agent chose 1/)
   assert.ok(lines.some((l) => l.includes('was one JSONL file per run')))
   assert.ok(buttons(layoutReceipt(receipt, 160)).some((b) => b.key === 'agent-0-2'))
+})
+
+test('receipt counts every choice, keeps agent ranks stable, and folds only low choices', () => {
+  const agent = (['low', 'mid', 'high', 'low', 'high'] as const).map((tier, i) =>
+    ({ label: `choice ${i}`, value: 'chosen', options: ['chosen', 'alternate'], tier }))
+  const receipt = { id: 7, yours: ['Keep the layout.'], agent }
+  const folded = layoutReceipt(receipt, 70, undefined, true)
+  const opened = layoutReceipt(receipt, 70, undefined, true, true)
+  const shown = (lines: typeof folded) => buttons(lines).filter((button) => button.action.type === 'receiptPick').map((button) => button.key)
+  assert.deepEqual(shown(folded), ['agent-2-1', 'agent-4-1', 'agent-1-1'])
+  assert.deepEqual(shown(opened), ['agent-2-1', 'agent-4-1', 'agent-1-1', 'agent-0-1', 'agent-3-1'])
+  assert.equal(buttons(folded).find((button) => button.key === 'receipt-low')?.label, 'Show 2 low choices')
+  assert.equal(buttons(opened).find((button) => button.key === 'receipt-low')?.label, 'Hide low choices')
+  assert.match(folded.map(plain).join('\n'), /✓ Keep the layout\.[^\n]*\n\s*2 high · 1 mid · 2 low/)
+  assert.ok(!buttons(layoutReceipt({ ...receipt, agent: agent.slice(0, 4) }, 70)).some((button) => button.key === 'receipt-low'))
 })
 
 test('an option the model cut short is left out rather than sent cut', () => {

@@ -15,13 +15,15 @@ import type { MargincueBand, MargincueExpert, MargincueReceipt, MargincueRow } f
 import { BLANK_CLOSE, BLANK_OPEN, parseBlanks, renderBlanks } from '../core/card'
 import type { ParsedBlank } from '../core/card'
 import { nameKey } from '../core/grounding'
+import { CHOICE_TIERS } from '../core/choice-tier'
 import { ASSETS } from './assets'
 import { DARK, currentOption, layoutBandRows, paletteFor, scopeLabel, thinkingLabel } from './band'
 import type { Action, Palette, Segment } from './band'
 import { layoutReceipt, layoutSent, splitSent } from './card-view'
 import { CARD_KEEP_KEY, CARD_READ_KEY, RECEIPT_DIFF_KEY } from './segments'
 import { openChoiceEdits } from './edit-opener'
-import { finishEdits, recordToolEdit, startEdits } from './turn-edits'
+import { rankReceiptEdits } from './receipt-impact'
+import { capturedChoiceEdits, finishEdits, recordToolEdit, startEdits, toolChoiceEdits } from './turn-edits'
 import type { EditCapture, TurnEdits } from './turn-edits'
 import { EventLog, loggedArm, trialCounts } from './event-log'
 import type { Arm, LogIO } from './event-log'
@@ -64,7 +66,9 @@ const REINDEX_MS = 45000
 const POLL_MS = 1200
 const REVIEW_PANE = 'margincue-review'
 const RECEIPT_PANE = 'margincue-receipt'
-type Receipt = MargincueReceipt & { edits?: TurnEdits }
+const CHOICES_PANE = 'margincue-choices'
+const RECEIPT_LIMIT = 20
+type Receipt = MargincueReceipt & { turn: number; edits?: TurnEdits; hasCapturedEdits?: boolean; showLow?: boolean }
 
 const band = atom({ plugin: 'margincue', key: 'band' } as const, null)
 const expert = atom({ plugin: 'margincue', key: 'expert' } as const, null)
@@ -106,10 +110,11 @@ const host = {
   /** During a turn: the focused agent choice's options, which a bare digit in the empty composer picks. */
   bandChoices: [] as { row: string; option: number }[],
   receipts: new Map<number, Receipt>(),
+  turnNumber: 0,
   editTurn: null as EditCapture | null,
   receiptChoice: null as { receipt: number; choice: number } | null,
   openingDiffs: new Set<string>(),
-  placed: new Set<number>(),
+  lastReceipt: 0,
   blankSeen: new Set<string>(),
   /** Choices marked in replies from before the running turn: drawn again later, they are not this turn's. */
   blankOld: new Set<string>(),
@@ -940,6 +945,14 @@ function act($: $, action: Action): void | Promise<void> {
   else if (action.type === 'chapter') run($, action)
   else if (action.type === 'sketch') run($, { type: 'sketch', now: t, action: action.action })
   else if (action.type === 'receiptPick') return followUp($, action.receipt, action.item, action.option)
+  else if (action.type === 'receiptLow') {
+    const receipt = host.receipts.get(action.receipt)
+    if (receipt) {
+      receipt.showLow = !receipt.showLow
+      $.ui.invalidate('ui.render')
+    }
+  }
+  else if (action.type === 'sessionChoices') return reviewSessionChoices($)
   else if (action.type === 'receiptReview') return reviewReceipt($, action.receipt)
   else if (action.type === 'receiptDiff') void openReceiptDiff($, action.receipt, action.choice)
   else if (action.type === 'pick' || action.type === 'cycle') {
@@ -986,12 +999,15 @@ async function fillComposer($: $, text: string, replaces: string | null): Promis
 }
 
 /** A choice switched on a receipt in the transcript: the follow-up prompt that asks for it. */
-async function followUp($: $, receiptId: number, item: number, option: number): Promise<void> {
-  const choice = host.receipts.get(receiptId)?.agent[item]
+async function followUp($: $, receiptId: number, item: number, option: number, nameTurn = false): Promise<void> {
+  const receipt = host.receipts.get(receiptId)
+  if (!receipt) return
+  const choice = receipt.agent[item]
   const value = choice?.options[option]
   if (!choice || value === undefined || value === choice.value) return
   log($, 'receipt-pick', { receipt: receiptId, item, option })
-  await fillComposer($, `Change ${choice.label}: ${value} instead of ${choice.value}. Keep everything else as it is.`, host.lastFill)
+  const prefix = nameTurn || receipt.turn < host.turnNumber ? `Revisit turn ${receipt.turn}. ` : ''
+  await fillComposer($, `${prefix}Change ${choice.label}: ${value} instead of ${choice.value}. Keep everything else as it is.`, host.lastFill)
 }
 
 const receiptChoices = (receipt: Receipt) => [
@@ -1009,6 +1025,12 @@ async function reviewReceipt($: $, id: number): Promise<void> {
   const opened = await $.ui.open({ id: RECEIPT_PANE, title: 'MarginCue receipt', focus: true, closeOnEscape: true,
     rows: Math.min(18, receipt.yours.length + receipt.agent.length + 1) }).catch(() => null)
   if (!opened?.isPlaced) void $.ui.toast('The receipt could not be focused.')
+}
+
+async function reviewSessionChoices($: $): Promise<void> {
+  const opened = await $.ui.open({ id: CHOICES_PANE, title: 'MarginCue session choices', focus: true, closeOnEscape: true,
+    rows: 18 }).catch(() => null)
+  if (!opened?.isPlaced) void $.ui.toast('The session choices could not be focused.')
 }
 
 async function openReceiptDiff($: $, id: number, index: number): Promise<void> {
@@ -1071,15 +1093,15 @@ async function reindex($: $, force: boolean): Promise<void> {
 const blankKey = (blank: Pick<ParsedBlank, 'label' | 'choice' | 'alternatives'>) =>
   `${blank.label}|${blank.choice}|${blank.alternatives.join('|')}`
 
-function noteEditMarks(source: string, blanks: ParsedBlank[]): void {
+function noteEditMarks(source: string, blanks: ParsedBlank[], currentTurn = false): void {
   const turn = host.editTurn
   if (!turn) return
   const position = turn.position + 1
   for (const blank of blanks) {
     const name = nameKey(blank.label)
-    if (host.blankOld.has(blankKey(blank)) || turn.marks.get(name)?.choice === blank.choice) continue
-    const before = source.slice(Math.max(0, blank.start - 160), blank.start).split(/[\n⟧]/).at(-1) ?? ''
-    const after = source.slice(blank.end, blank.end + 160).split(/[\n⟦]/)[0] ?? ''
+    if ((!currentTurn && host.blankOld.has(blankKey(blank))) || turn.marks.get(name)?.choice === blank.choice) continue
+    const before = source.slice(Math.max(0, blank.start - 160), blank.start).split(/[\n⟧]|[.!?](?=\s|$)/).at(-1) ?? ''
+    const after = source.slice(blank.end, blank.end + 160).split(/[\n⟦]|[.!?](?=\s|$)/)[0] ?? ''
     turn.marks.set(name, { position, words: `${before} ${after}`, choice: blank.choice })
     turn.position = position
   }
@@ -1093,15 +1115,16 @@ function noteEditMarks(source: string, blanks: ParsedBlank[]): void {
 async function markTurnStart($: $, turn: string): Promise<void> {
   const found = await $.session.messages({ last: 400 }).catch(() => null)
   if (!found || 'deny' in found || host.activeTurn !== turn) return
+  host.blankOld.clear()
   for (const entry of found) {
     if (entry.role === 'assistant') for (const blank of parseBlanks(entry.text)) host.blankOld.add(blankKey(blank))
   }
 }
 
 /** A choice the agent marked in a reply of the running turn, once per wording. */
-function noteBlank($: $, blank: Pick<ParsedBlank, 'label' | 'choice' | 'alternatives'>): void {
+function noteBlank($: $, blank: Pick<ParsedBlank, 'label' | 'choice' | 'alternatives'>, currentTurn = false): void {
   const seen = blankKey(blank)
-  if (host.blankSeen.has(seen) || host.blankOld.has(seen)) return
+  if (host.blankSeen.has(seen) || (!currentTurn && host.blankOld.has(seen))) return
   host.blankSeen.add(seen)
   run($, { type: 'blank', now: now(), label: blank.label, choice: blank.choice, alternatives: blank.alternatives })
 }
@@ -1123,11 +1146,32 @@ function hideOpenBlank(text: string): string {
 const choicesMade = (n: number) => `${n} choice${n === 1 ? '' : 's'} made for you`
 
 async function placeReceipt($: $, turn: EditCapture | null): Promise<void> {
-  const receipt = host.view?.receipt
-  if (!receipt || host.placed.has(receipt.id)) return
-  host.placed.add(receipt.id)
-  host.receipts.set(receipt.id, turn ? { ...receipt, edits: finishEdits($, turn) } : receipt)
-  if (host.receipts.size > 20) host.receipts.delete(host.receipts.keys().next().value!)
+  const view = host.view?.receipt
+  if (!view || view.id <= host.lastReceipt) return
+  host.lastReceipt = view.id
+  const receipt: Receipt = { ...view, turn: host.turnNumber }
+  if (turn) {
+    const edits = finishEdits($, turn)
+    receipt.edits = edits
+    if (view.agent.length) {
+      const observed = toolChoiceEdits(turn)
+      receipt.hasCapturedEdits = observed.length > 0
+      receipt.agent = rankReceiptEdits(view.agent, observed, turn.marks)
+      void capturedChoiceEdits(edits).then((captured) => {
+        if (host.receipts.get(view.id) !== receipt) return
+        const ranked = rankReceiptEdits(view.agent, captured, turn.marks)
+        const hasCapturedEdits = captured.length > 0
+        if (hasCapturedEdits !== receipt.hasCapturedEdits || ranked.some((choice, i) => choice.tier !== receipt.agent[i]?.tier)) {
+          receipt.agent = ranked
+          receipt.hasCapturedEdits = hasCapturedEdits
+          $.ui.invalidate('ui.render')
+        }
+      }).catch(() => {})
+    }
+  }
+  host.receipts.set(receipt.id, receipt)
+  if (host.receipts.size > RECEIPT_LIMIT) host.receipts.delete(host.receipts.keys().next().value!)
+  $.ui.invalidate('ui.render')
   await $.ui.place({ id: `receipt-${receipt.id}` }).catch(() => {})
 }
 
@@ -1208,7 +1252,7 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
   host.activeTurn = null
   host.editTurn = null
   host.receipts.clear()
-  host.placed.clear()
+  host.lastReceipt = 0
   host.receiptChoice = null
   host.interactive = interactive
   host.arm = null
@@ -1223,6 +1267,7 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
     personalAssets($, ASSETS),
     $.session.turns().catch(() => 0),
   ])
+  host.turnNumber = turns
   host.assets = loaded.assets
   void $.config.list().then((rows) => { host.palette = paletteFor(rows.find((row) => row.key === 'theme')?.value) }).catch(() => {})
   host.settings = {
@@ -1270,7 +1315,7 @@ async function start($: $, cwd: string, interactive: boolean): Promise<void> {
   await $.command.register({
     name: 'margincue',
     description: 'MarginCue card, sketch, blanks, decisions, expert review and session status',
-    argumentHint: '[setup [reset]|state|mode|language en|auto|card on|off|chapters on|off|read auto|key|sketch on|off|refs on|off|blanks on|off|send all|picked|open|ab on|off|status|review [profile]|edits|profile|status]',
+    argumentHint: '[setup [reset]|state|mode|language en|auto|card on|off|chapters on|off|read auto|key|sketch on|off|refs on|off|blanks on|off|send all|picked|open|ab on|off|status|review [profile]|edits|choices|profile|status]',
     immediate: true,
   })
   await reopen($)
@@ -1481,6 +1526,11 @@ ${slot.source}` : 'Use /margincue why <slot>.')
         await reviewReceipt($, receipt.id)
         return done('')
       }
+      case 'choices':
+        if (!enabled() || !host.terminal) return done('Session choices are available in the terminal with MarginCue on.')
+        if (![...host.receipts.values()].some((receipt) => receipt.agent.length)) return done('No agent choices to review.')
+        await reviewSessionChoices($)
+        return done('')
       case 'log':
         if (!arg || arg === 'off') {
           await host.eventLog.stop(logIO($))
@@ -1589,7 +1639,10 @@ export const register: Register = (on) => {
       host.activeTurn = null
       host.editTurn = null
       host.receipts.clear()
-      host.placed.clear()
+      host.lastReceipt = 0
+      host.turnNumber = 0
+      host.blankSeen.clear()
+      host.blankOld.clear()
       host.receiptChoice = null
       host.lastDraft = ''
       host.scopes.clear()
@@ -1679,6 +1732,8 @@ export const register: Register = (on) => {
 
   on('turn.start', ($, e, next) => {
     if (e.agentId === undefined) {
+      host.turnNumber++
+      host.blankSeen.clear()
       host.activeTurn = e.turnId
       if (host.turn?.text === e.text) host.turn.id = e.turnId
       host.editTurn = host.terminal && enabled() && host.settings.sheet && host.arm !== 'control' ? startEdits($, host.root) : null
@@ -1700,9 +1755,11 @@ export const register: Register = (on) => {
   })
 
   on('session.append', { door: 'response' }, ($, e, next) => {
-    if (host.editTurn && e.agentId === undefined && e.message.type === 'assistant') {
+    if (host.activeTurn !== null && e.agentId === undefined && e.message.type === 'assistant') {
       for (const block of e.message.content) if (block.type === 'text' && typeof block.text === 'string') {
-        noteEditMarks(block.text, parseBlanks(block.text))
+        const blanks = parseBlanks(block.text)
+        noteEditMarks(block.text, blanks, true)
+        for (const blank of blanks) noteBlank($, blank, true)
       }
     }
     return next(e)
@@ -1713,8 +1770,9 @@ export const register: Register = (on) => {
     if (e.agentId === undefined && host.activeTurn === e.turnId) {
       const answer = result?.text ?? ''
       const blanks = parseBlanks(answer)
-      noteEditMarks(answer, blanks)
-      for (const blank of blanks) noteBlank($, blank)
+      noteEditMarks(answer, blanks, true)
+      for (const blank of blanks) noteBlank($, blank, true)
+      for (const seen of host.blankSeen) host.blankOld.add(seen)
       const edits = host.editTurn
       host.editTurn = null
       host.activeTurn = null
@@ -1855,7 +1913,40 @@ export const register: Register = (on) => {
     const receipt = e.props.plugin === 'margincue' && id ? host.receipts.get(Number(id)) : undefined
     if (!receipt) return next(e)
     return drawRows($, $.ui.resolve(e), layoutReceipt(receipt, e.viewport?.columns ?? 100, host.palette,
-      e.surface === 'terminal' && enabled() && !!receipt.edits))
+      e.surface === 'terminal' && enabled() && !!receipt.edits, receipt.showLow, e.surface === 'terminal' && enabled()))
+  })
+
+  on('ui.render', { component: 'Pane', requestId: CHOICES_PANE, surface: 'terminal' }, ($, e, next) => {
+    if (!enabled()) return next(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const choices = [...host.receipts.values()].reverse().flatMap((receipt) =>
+      receipt.agent.map((choice, item) => ({ receipt, choice, item })))
+    return (
+      <Box flexDirection="column" rowGap={1}>
+        {CHOICE_TIERS.map((tier) => {
+          const group = choices.filter(({ choice }) => choice.tier === tier)
+          if (!group.length) return null
+          return (
+            <Box key={tier} flexDirection="column">
+              <Text dimColor>{`${tier.toUpperCase()} · ${group.length}`}</Text>
+              {group.map(({ receipt, choice, item }) => (
+                <Box key={`choice-${receipt.id}-${item}`} flexDirection="column">
+                  <Text>{`Turn ${receipt.turn} · ${choice.label}: ${choice.value}${choice.was ? ` (was ${choice.was})` : ''}`}</Text>
+                  <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+                    {choice.options.map((value, option) => value === choice.value ? null : (
+                      <Button key={`switch-${receipt.id}-${item}-${option}`} plain dimColor
+                        label={`→ ${value}`} onPress={() => followUp($, receipt.id, item, option, true)} />
+                    ))}
+                    {receipt.hasCapturedEdits && <Button key={`diff-${receipt.id}-${item}`} plain dimColor label="diff"
+                      onPress={() => { void openReceiptDiff($, receipt.id, receipt.yours.length + item) }} />}
+                  </Box>
+                </Box>
+              ))}
+            </Box>
+          )
+        })}
+      </Box>
+    )
   })
 
   // Transcript rows have no keyboard focus ring. The receipt's pane gives each choice one.

@@ -86,7 +86,7 @@ export type MargincueCard = {
 export type MargincueReceipt = {
   id: number
   yours: string[]
-  agent: { label: string; value: string; was?: string; options: string[] }[]
+  agent: { label: string; value: string; was?: string; options: string[]; tier: 'high' | 'mid' | 'low' }[]
 }
 
 export type MargincueBand = {

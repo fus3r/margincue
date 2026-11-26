@@ -5,6 +5,7 @@
 import type { Depth, Language, Mode, ProfileBundle, Scope } from './bundle'
 import type { CardKind, RowType } from './card'
 import type { ChapterView, ProfileChapter } from './chapters'
+import type { ChoiceTier } from './choice-tier'
 import type { Mention, Vocabulary } from './grounding'
 import type { DecisionView, StateChange, StateCue, StateLoad } from './state'
 
@@ -209,7 +210,7 @@ export type CardView = {
 export type ReceiptView = {
   id: number
   yours: string[]
-  agent: { label: string; value: string; was?: string; options: string[] }[]
+  agent: { label: string; value: string; was?: string; options: string[]; tier: ChoiceTier }[]
 }
 
 export type ExpertItem = StateCue & {

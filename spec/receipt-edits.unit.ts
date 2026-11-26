@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import type { EditedFile, Hunk } from '../mods/claude-code/hooks/turn-edits.ts'
 import './ts-resolve.ts'
 
-const { editedFiles, finishEdits, recordToolEdit, startEdits } = await import('../mods/claude-code/hooks/turn-edits')
+const { capturedChoiceEdits, editedFiles, finishEdits, recordToolEdit, startEdits } = await import('../mods/claude-code/hooks/turn-edits')
 const { editorSides, readHunks, relatedPatch } = await import('../mods/claude-code/hooks/edit-patch')
 const { relateEdits } = await import('../mods/claude-code/hooks/edit-relation')
 const { openRelatedFiles } = await import('../mods/claude-code/hooks/edit-opener')
@@ -79,6 +79,9 @@ test('Git capture keeps pre-existing changes out and includes new, deleted and p
   await turn.after
   put(join(cwd, 'src', 'export.ts'), 'later turn\n')
 
+  const impact = await capturedChoiceEdits(turn)
+  assert.deepEqual(impact.filter(({ deleted }) => deleted).map(({ path }) => path), ['delete me.txt'])
+  assert.ok(!impact.some(({ path }) => path === 'owner.txt'))
   const edits = await editedFiles(io, turn)
   assert.deepEqual(Object.fromEntries(edits.map(({ path, before, after }) => [path, [before?.text ?? null, after?.text ?? null]])), {
     'src/export.ts': ['format = owner-working\n', 'format = jsonl\n'],
@@ -94,6 +97,17 @@ test('Git capture keeps pre-existing changes out and includes new, deleted and p
   assert.match(patch, /--- \/dev\/null\n\+\+\+ "b\/new file\.txt"/)
   assert.deepEqual(readFileSync(join(cwd, '.git', 'index')), index)
   assert.equal(await git('show-ref'), refs)
+})
+
+test('captured native edits distinguish an exported interface change from an implementation edit', async (t) => {
+  const cwd = temp(t)
+  const turn = startEdits(io, cwd)
+  for (const [path, originalFile, content] of [
+    ['api.ts', 'export interface Result {\n  value: string\n}\n', 'export interface Result {\n  value: number\n}\n'],
+    ['parser.ts', 'export function parse(s: string) { return s }', 'export function parse(s: string) { return s.trim() }'],
+  ]) recordToolEdit(io, turn, path, ++turn.position, { originalFile, content })
+  assert.deepEqual((await capturedChoiceEdits(finishEdits(io, turn))).map(({ path, publicInterface }) => [path, publicInterface]),
+    [['api.ts', true], ['parser.ts', false]])
 })
 
 test('outside Git, successful tool results keep both sides without attributing other files', async (t) => {
@@ -207,7 +221,7 @@ test('an oversized reading falls back to files without sending code', async () =
 
 test('terminal receipts link user choices and marked choices at narrow and wide widths', () => {
   const receipt = { id: 1, yours: ['Keep the format in src/export.ts.'],
-    agent: [{ label: 'export format', value: 'JSONL', options: ['JSONL', 'CSV'] }] }
+    agent: [{ label: 'export format', value: 'JSONL', options: ['JSONL', 'CSV'], tier: 'mid' as const }] }
   for (const columns of [38, 100]) {
     const rows = layoutReceipt(receipt, columns, undefined, true)
     assert.ok(rows.every((row) => segmentsWidth(row) <= columns))

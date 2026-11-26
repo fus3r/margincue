@@ -351,6 +351,14 @@ test('the general card request starts with the draft and contains no chapter not
   const text = 'Design an A/B test for the feature. Hold out a test set for the classifier.'
   const [req] = requests(core.handle({ type: 'draft', text, now: 100, origin: 'paste' }))
   assert.equal(req?.kind, 'card')
+  const general = createCore(ASSETS)
+  general.handle(config())
+  const [generalReq] = requests(general.handle({ type: 'draft', text, now: 100, origin: 'paste' }))
+  // The default and indexed requests from e512752, including the full system and prompt.
+  assert.equal(createHash('sha256').update(JSON.stringify(generalReq)).digest('hex'),
+    '559f254c36cd48b28b79a88025b421dabf22ed3fc9d96bd3fc991ac89f764929')
+  assert.equal(createHash('sha256').update(JSON.stringify(req)).digest('hex'),
+    '8ea6c2c31ef513d59b0ea6469e53fa7ae6dd3140fdfa9a087a96b5bd3446e25b')
   assert.ok(req!.prompt.startsWith(`Draft:\n<<<\n${text}\n>>>`))
   assert.doesNotMatch([req!.prompt, ...req!.system].join('\n'),
     /Profile chapters|\[ml-research\] Resampling|\[product\] Experiments|Rows from the same person|Concurrent random assignment/)
@@ -988,10 +996,26 @@ test('during a turn, switching a marked choice sends one amendment after the las
   const sent = core.handle({ type: 'timer', now: 1900 }).filter((e) => e.type === 'amend')
   assert.deepEqual(sent.map((e) => 'text' in e && e.text), ['Amendment to my last prompt: for stuck after, use 60 s instead of 45 s.'])
   const after = lastView(core.handle({ type: 'endAmendment', now: 3000 }))!
-  assert.deepEqual(after.receipt, { id: 1, yours: [], agent: [{ label: 'stuck after', value: '60 s', was: '45 s', options: ['45 s', '30 s', '60 s'] }] })
+  assert.deepEqual(after.receipt, { id: 1, yours: [], agent: [{ label: 'stuck after', value: '60 s', was: '45 s', tier: 'low', options: ['45 s', '30 s', '60 s'] }] })
   assert.equal(after.card?.stage, 'after')
   const fill = core.handle({ type: 'cardSet', now: 3100, row: after.card!.rows[0]!.id, option: 1 }).find((e) => e.type === 'fill')
   assert.deepEqual(fill, { type: 'fill', text: 'Change stuck after: 30 s instead of 60 s. Keep everything else as it is.', replaces: null })
+})
+
+test('the receipt keeps every marked choice, including a switch dismissed during the turn', () => {
+  const core = createCore(ASSETS)
+  core.handle(config())
+  core.handle({ type: 'turnStart', now: 10 })
+  for (let i = 0; i < 9; i++) {
+    core.handle({ type: 'blank', now: 11 + i, label: `setting ${i}`, choice: 'on', alternatives: ['off'] })
+  }
+  const row = core.currentView().card!.rows[0]!.id
+  core.handle({ type: 'cardDismiss', now: 20, row })
+  core.handle({ type: 'endAmendment', now: 21 })
+  const view = core.currentView()
+  assert.equal(view.receipt?.agent.length, 9)
+  assert.equal(view.receipt?.agent.find((item) => item.label === 'setting 0')?.value, 'on')
+  assert.equal(view.card?.rows.length, 8)
 })
 
 test('expert words bring a profile catalog into the reading, and its decisions keep the catalog wording', () => {

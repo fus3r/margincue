@@ -174,10 +174,10 @@ test('the prompt hook notes the turn and asks the agent to mark its choices; the
   assert.match(out.hookSpecificOutput.additionalContext, /Amendment to my last prompt/)
   const record = JSON.parse(readFileSync(PATHS.turn, 'utf8'))
   assert.deepEqual([record.turn, record.endedAt, record.decisions.length, record.source], ['t-3', null, 2, 'cli'])
-  const stopped = stopHook({ turn_id: 't-3', transcript_path: transcript, last_assistant_message: `Done; CSV is ${OPEN}CSV built: streamed | in the browser${CLOSE}.` }) as { systemMessage: string }
+  const stopped = stopHook({ turn_id: 't-3', transcript_path: transcript,
+    last_assistant_message: `CSV is ${OPEN}CSV built: streamed | in the browser${CLOSE}; ${OPEN}delivery: email customers | draft an email${CLOSE}.` }) as { systemMessage: string }
   // Labels are kept in lower case, as on the Claude Code card.
-  assert.equal(stopped.systemMessage, receiptLine(2, ['week starts: Monday', 'csv built: streamed']))
-  assert.match(stopped.systemMessage, /you set 2 · the agent chose 2/)
+  assert.match(stopped.systemMessage, /you set 2 · the agent chose 3 — 1 high · 0 mid · 2 low — \[high\] delivery: email customers · \[low\] week starts: Monday · \[low\] csv built: streamed/)
   assert.notEqual(JSON.parse(readFileSync(PATHS.turn, 'utf8')).endedAt, null)
 })
 
@@ -193,19 +193,19 @@ test('a message sent into the running turn keeps its decisions, and the receipt 
   const record = JSON.parse(readFileSync(PATHS.turn, 'utf8'))
   assert.deepEqual([record.decisions.length, record.startedAt, record.endedAt], [2, started, null])
   const stopped = stopHook({ session_id: 's', turn_id: 't-20', transcript_path: transcript }) as { systemMessage: string }
-  assert.equal(stopped.systemMessage, receiptLine(2, ['older invitations: event label only (switched)', 'week starts: Monday'], 'cli', 1))
-  assert.match(stopped.systemMessage, /^MarginCue · you set 2 · the agent chose 2 · you switched 1 — older invitations: event label only \(switched\) · /)
+  assert.match(stopped.systemMessage, /^MarginCue · you set 2 · the agent chose 2 · you switched 1 — 0 high · 0 mid · 2 low — \[low\] older invitations: event label only \(switched\) · /)
   // A new turn starts afresh.
   promptHook({ session_id: 's', turn_id: 't-21', transcript_path: transcript, cwd: '/project', prompt: 'Now add a chart.' })
   assert.equal(JSON.parse(readFileSync(PATHS.turn, 'utf8')).decisions.length, 0)
   // Under margincue-relay the receipt points to the card under the prompt.
   process.env['MARGINCUE_CARD'] = 'prompt'
+  const choices = [{ label: 'week starts', value: 'Monday' }]
   try {
-    assert.match(receiptLine(1, ['week starts: Monday']), /— alt\+↓ under the prompt to switch one$/)
+    assert.match(receiptLine(1, choices), /— alt\+↓ under the prompt to switch one$/)
   } finally {
     delete process.env['MARGINCUE_CARD']
   }
-  assert.match(receiptLine(1, ['week starts: Monday']), /— ctrl\+g to switch one$/)
+  assert.match(receiptLine(1, choices), /— ctrl\+g to switch one$/)
 })
 
 test('MarginCue\'s own readings run through Codex too, and its hooks leave them alone', () => {
@@ -297,7 +297,7 @@ test('the desktop hook gates new tasks on the widget and skips its follow-ups; t
   const stopped = stopHook({
     ...input, turn_id: 't-11', last_assistant_message: `I used ${OPEN}table layout: compact | full width${CLOSE}.`,
   }) as { systemMessage: string }
-  assert.equal(stopped.systemMessage, 'MarginCue · you set 1 · the agent chose 1 — table layout: compact')
+  assert.equal(stopped.systemMessage, 'MarginCue · you set 1 · the agent chose 1 — 0 high · 0 mid · 1 low — [low] table layout: compact')
 })
 
 test('Codex settings default to open and preserve a stored all', () => {
@@ -329,7 +329,7 @@ test('the IDE skips its default automatic text card in key mode', () => {
     assert.doesNotMatch(output, /margincue_card|Open choices|Decisions:/)
     assert.match(output, /Choices you make for the user/)
     const receipt = stopHook({ ...input, turn_id: 'ide-2', last_assistant_message: `I used ${OPEN}layout: compact | full width${CLOSE}.` })
-    assert.deepEqual(receipt, { systemMessage: 'MarginCue · you set 0 · the agent chose 1 — layout: compact' })
+    assert.deepEqual(receipt, { systemMessage: 'MarginCue · you set 0 · the agent chose 1 — 0 high · 0 mid · 1 low — [low] layout: compact' })
   } finally {
     saveSettings({})
   }

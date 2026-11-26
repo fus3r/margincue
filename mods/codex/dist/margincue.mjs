@@ -1559,6 +1559,42 @@ function isHardToUndo(statement, option) {
   }));
 }
 
+// ../claude-code/core/choice-tier.ts
+var CHOICE_TIERS = ["high", "mid", "low"];
+var DEPENDENCIES = /^(?:(?:package(?:-lock)?|npm-shrinkwrap|composer)\.json|pnpm-lock\.yaml|(?:yarn|uv|poetry|composer|pipfile|gemfile|cargo|mix)\.lock|bun\.lockb?|(?:cargo|pyproject)\.toml|pipfile|gemfile|go\.(?:mod|sum)|requirements(?:-[\w-]+)?\.txt|pom\.xml|build\.gradle(?:\.kts)?|mix\.exs|package\.resolved)$/;
+var SCHEMA = /(?:^|\/)(?:migrations?|alembic\/versions)\/|(?:^|[/._-])schemas?(?:\.\w+)?\.(?:json|ya?ml|sql|prisma|graphql|gql)$|\.(?:prisma|proto)$/;
+var POLICY = /(?:^|\/)(?:auth|authentication|authorization|permissions?|rbac)\/|(?:^|\/)(?:(?:auth|authentication|authorization|permissions?|rbac|iam)(?:[.-](?:config|policy|rules?))?\.[\w.]+|codeowners|firestore\.rules|storage\.rules|\.htaccess)$/;
+var INTERFACE = /^(?:openapi|swagger)(?:[-.]v?\d+)?\.(?:json|ya?ml)$|\.d\.[cm]?ts$/;
+var SHARED_CONFIG = /(?:^|\/)(?:\.github\/workflows|\.circleci|\.config)\/|(?:^|\/)(?:\.gitignore|\.gitattributes|\.editorconfig|\.env(?:\.example)?|dockerfile|(?:docker-)?compose\.ya?ml|(?:tsconfig|jsconfig)(?:\.[\w-]+)?\.json|(?:eslint|prettier|vite|webpack|next|babel|jest|vitest)\.config\.[\w.]+|pnpm-workspace\.yaml)$/;
+var DATA_FORMAT = /^(?:serialization|deserialization|wire-format)\.[\w.]+$|\.(?:csv|tsv|jsonl|ndjson|parquet|avro)$/;
+var SUPPORT = /(?:^|\/)(?:__tests__|tests?|specs?|fixtures?|examples?|docs)\/|\.(?:test|spec)\.[\w.]+$/;
+function choiceTier(statement, value, edits = []) {
+  if (isHardToUndo(statement, value)) return "high";
+  const paths = /* @__PURE__ */ new Set();
+  const modules = /* @__PURE__ */ new Set();
+  let shared = false;
+  for (const edit of edits) {
+    if (edit.deleted || edit.publicInterface) return "high";
+    const path = edit.path.replace(/\\/g, "/").toLowerCase();
+    paths.add(path);
+    if (SUPPORT.test(path)) continue;
+    const slash2 = path.lastIndexOf("/");
+    const name = path.slice(slash2 + 1);
+    if (DEPENDENCIES.test(name) || SCHEMA.test(path) || POLICY.test(path) || INTERFACE.test(name)) return "high";
+    if (SHARED_CONFIG.test(path) || DATA_FORMAT.test(name)) shared = true;
+    if (slash2 !== -1) modules.add(path.slice(0, slash2));
+  }
+  return shared || paths.size >= 3 || modules.size >= 2 ? "mid" : "low";
+}
+function rankedChoices(choices) {
+  return CHOICE_TIERS.flatMap((tier) => choices.filter((choice) => choice.tier === tier));
+}
+function tierCounts(choices) {
+  const counts = { high: 0, mid: 0, low: 0 };
+  for (const { tier } of choices) counts[tier]++;
+  return CHOICE_TIERS.map((tier) => `${counts[tier]} ${tier}`).join(" \xB7 ");
+}
+
 // ../claude-code/core/grounding.ts
 var STOP = /* @__PURE__ */ new Set(["of", "the", "a", "an", "and", "to", "in", "on", "for", "de", "la", "le", "du", "des", "et"]);
 var WHERE_RANK = { symbol: 0, name: 1, path: 2 };
@@ -3835,6 +3871,7 @@ ${lines.join("\n")}` : "";
     const row = card?.rows.find((entry) => entry.id === rowId);
     if (!card || !row) return;
     card.dismissed.add(row.key);
+    if (card.stage === "turn" && row.origin === "agent") (card.dismissedAgent ??= []).push(row);
     card.rows = card.rows.filter((entry) => entry !== row);
     this.fixCardFocus();
     this.metric("card-dismissed", { card: card.id, row: row.key, origin: row.origin, stage: card.stage });
@@ -4050,7 +4087,7 @@ ${tidySketch(sketch.lines).join("\n")}
       if (normalize(row.options[0] ?? "") === normalize(choice)) return;
       Object.assign(row, { options: options2, defaults: [0], picked: null, sent: void 0 });
     } else {
-      if (card.rows.length >= 8 || card.dismissed.has(key)) return;
+      if (card.dismissed.has(key)) return;
       card.rows.push({
         id: this.newId(),
         key,
@@ -4088,16 +4125,24 @@ ${tidySketch(sketch.lines).join("\n")}
       return;
     }
     const agent = card.rows.filter((row) => row.origin === "agent");
-    if (card.sent.length || agent.length) {
+    const recorded = [...agent, ...card.dismissedAgent ?? []];
+    if (card.sent.length || recorded.length) {
       this.receipt = {
         id: this.nextReceipt++,
         yours: card.sent,
-        agent: agent.map((row) => {
+        agent: recorded.map((row) => {
           const now3 = (row.sent ?? row.defaults)[0] ?? 0;
-          return { label: row.label, value: row.options[now3], ...now3 !== 0 && { was: row.options[0] }, options: [...row.options] };
+          const value = row.options[now3];
+          return {
+            label: row.statement.replace(/: \{\}$/, ""),
+            value,
+            tier: choiceTier(row.statement, value),
+            ...now3 !== 0 && { was: row.options[0] },
+            options: [...row.options]
+          };
         })
       };
-      this.metric("receipt", { id: this.receipt.id, yours: card.sent.length, agent: agent.length, changed: agent.filter((row) => row.sent).length });
+      this.metric("receipt", { id: this.receipt.id, yours: card.sent.length, agent: recorded.length, changed: recorded.filter((row) => row.sent).length });
     }
     if (drafting) return;
     this.card = null;
@@ -11782,7 +11827,7 @@ import { spawn as spawn2 } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.28";
+var VERSION = "0.4.29";
 var MIN_CODEX = "0.171";
 function tooOld(output2) {
   const match = /codex-cli (\d+)\.(\d+)\.(\d+)/.exec(output2);
@@ -12939,21 +12984,20 @@ function stopHook(input) {
   const chosen = /* @__PURE__ */ new Map();
   for (const message of messages) for (const blank of parseBlanks(message)) chosen.set(blank.label, blank.choice);
   const amended = input.transcript_path ? turnAmendments(turnMessages(input.transcript_path, input.turn_id, "UserMessage")) : /* @__PURE__ */ new Map();
-  let switched = 0;
-  for (const label of chosen.keys()) {
+  const choices = [...chosen].map(([label, original]) => {
     const value = amended.get(label.toLowerCase());
-    if (value === void 0) continue;
-    chosen.set(label, `${value} (switched)`);
-    switched++;
-  }
+    return { label, value: value ?? original, switched: value !== void 0 };
+  });
   const yours = mine?.decisions.length ?? 0;
   if (!chosen.size && !yours) return null;
-  return { systemMessage: receiptLine(yours, [...chosen].map(([label, choice]) => `${label}: ${choice}`), source, switched) };
+  return { systemMessage: receiptLine(yours, choices, source) };
 }
-function receiptLine(yours, agent, source = "cli", switched = 0) {
+function receiptLine(yours, agent, source = "cli") {
+  const switched = agent.filter((choice) => choice.switched).length;
   const parts = [`MarginCue \xB7 you set ${yours} \xB7 the agent chose ${agent.length}${switched ? ` \xB7 you switched ${switched}` : ""}`];
   if (agent.length) {
-    parts.push(agent.join(" \xB7 "));
+    const choices = rankedChoices(agent.map((choice) => ({ ...choice, tier: choiceTier(`${choice.label}: {}`, choice.value) })));
+    parts.push(tierCounts(choices), choices.map(({ tier, label, value, switched: switched2 }) => `[${tier}] ${label}: ${value}${switched2 ? " (switched)" : ""}`).join(" \xB7 "));
     if (source === "cli" || source === "unknown") {
       parts.push(process.env["MARGINCUE_CARD"] === "prompt" ? "alt+\u2193 under the prompt to switch one" : "ctrl+g to switch one");
     }

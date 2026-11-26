@@ -13,10 +13,14 @@ const changed = (hunk: Hunk): string[] => hunk.lines.filter((line) => line.start
 const escaped = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const hasPath = (text: string, path: string) => new RegExp(`(?:^|[^\\w.-])${escaped(path)}(?=$|[^\\w./-]|\\.(?:\\s|$))`, 'i').test(text)
 
-function namedFiles(files: readonly EditedFile[], words: string): Set<EditedFile> {
-  const names = files.map((file) => file.path.split('/').at(-1)!)
-  return new Set(files.filter((file, index) => hasPath(words, file.path) ||
-    (names.indexOf(names[index]!) === names.lastIndexOf(names[index]!) && hasPath(words, names[index]!))))
+export function namedPaths(files: readonly string[], words: string): Set<string> {
+  const names = files.map((path) => path.split('/').at(-1)!)
+  const counts = new Map<string, number>()
+  for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1)
+  const lower = words.toLowerCase()
+  const mentioned = (path: string) => lower.includes(path.toLowerCase()) && hasPath(words, path)
+  return new Set(files.filter((path, index) => mentioned(path) ||
+    (counts.get(names[index]!) === 1 && mentioned(names[index]!))))
 }
 
 function nearbyEdits(file: EditedFile, choice: ReceiptChoice) {
@@ -30,7 +34,8 @@ export async function relateEdits(files: readonly EditedFile[], choice: ReceiptC
   if (!files.length) return []
   const statement = [choice.label, choice.value].filter(Boolean).join(' ')
   const context = `${statement} ${choice.mark?.words ?? ''}`
-  const named = namedFiles(files, context)
+  const paths = namedPaths(files.map((file) => file.path), context)
+  const named = new Set(files.filter((file) => paths.has(file.path)))
   const terms = tokens(statement.replace(/\S+\.[a-z0-9]{1,8}(?=[\s`),.;]|$)/gi, ' '))
   const values = tokens(choice.value ?? '')
   const symbols = [...context.matchAll(/`([\w$-]+)`/g)].map((match) => match[1]!.toLowerCase())

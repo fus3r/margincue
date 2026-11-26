@@ -15,6 +15,7 @@ import { buildPrompt, buildSystem, isTerminated, lastSentenceStart } from './req
 import { buildSketchPrompt, canSketch, CARD_MAX_TOKENS, CARD_OPTION_TARGET, cycleSelection, deriveCardKind, insertsPinnedArtifact, listsSteps, openChoiceLine, openChoicesBlock, parseCard, parseSketch, rowValue, sameSelection, SKETCH_MAX_TOKENS, STEP_ORDER_KEY, toggleSelection } from './card'
 import type { CardKind, ParsedCard, ParsedRow, ParsedSketch, RowType } from './card'
 import { isHardToUndo } from './hard-to-undo'
+import { choiceTier } from './choice-tier'
 import { ground, indexVocabulary, nameKey, relatedFolders } from './grounding'
 import type { GroundIndex, Mention } from './grounding'
 import { detectLenses } from './project'
@@ -118,6 +119,7 @@ type Card = {
   rows: CardRow[]
   focus: string | null
   dismissed: Set<string>
+  dismissedAgent?: CardRow[]
   req: number | null
   reqText: string
   reqKey: string
@@ -1565,6 +1567,7 @@ export class Core {
     const row = card?.rows.find((entry) => entry.id === rowId)
     if (!card || !row) return
     card.dismissed.add(row.key)
+    if (card.stage === 'turn' && row.origin === 'agent') (card.dismissedAgent ??= []).push(row)
     card.rows = card.rows.filter((entry) => entry !== row)
     this.fixCardFocus()
     this.metric('card-dismissed', { card: card.id, row: row.key, origin: row.origin, stage: card.stage })
@@ -1783,7 +1786,7 @@ export class Core {
       // The agent restated the choice with another value: its newer word stands.
       Object.assign(row, { options, defaults: [0], picked: null, sent: undefined })
     } else {
-      if (card.rows.length >= 8 || card.dismissed.has(key)) return
+      if (card.dismissed.has(key)) return
       card.rows.push({
         id: this.newId(), key, label: cutLabel(label), type: 'one', statement: `${label}: {}`,
         options, defaults: [0], origin: 'agent', picked: null,
@@ -1816,15 +1819,18 @@ export class Core {
       return
     }
     const agent = card.rows.filter((row) => row.origin === 'agent')
-    if (card.sent.length || agent.length) {
+    const recorded = [...agent, ...card.dismissedAgent ?? []]
+    if (card.sent.length || recorded.length) {
       this.receipt = {
         id: this.nextReceipt++, yours: card.sent,
-        agent: agent.map((row) => {
+        agent: recorded.map((row) => {
           const now = (row.sent ?? row.defaults)[0] ?? 0
-          return { label: row.label, value: row.options[now]!, ...(now !== 0 && { was: row.options[0]! }), options: [...row.options] }
+          const value = row.options[now]!
+          return { label: row.statement.replace(/: \{\}$/, ''), value, tier: choiceTier(row.statement, value),
+            ...(now !== 0 && { was: row.options[0]! }), options: [...row.options] }
         }),
       }
-      this.metric('receipt', { id: this.receipt.id, yours: card.sent.length, agent: agent.length, changed: agent.filter((row) => row.sent).length })
+      this.metric('receipt', { id: this.receipt.id, yours: card.sent.length, agent: recorded.length, changed: recorded.filter((row) => row.sent).length })
     }
     // Someone already writing their next message keeps their draft's card; the receipt holds the switches.
     if (drafting) return
