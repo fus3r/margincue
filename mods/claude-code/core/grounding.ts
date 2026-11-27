@@ -137,6 +137,17 @@ const QUOTED = /(?<![\p{L}\p{N}])(['"‘“`])([^'"‘’“”`\n]{2,40})(['"�
 const PROPER = /(?<![\p{L}\p{N}_'’-])(?:\p{Lu}[\p{Ll}\p{N}'’]+|\p{Lu}{2,}\p{Ll}*)(?:\s(?:(?:of|the|de|la|du)\s)?\p{Lu}[\p{Ll}\p{N}'’]+)*(?![\p{L}\p{N}_-])/gu
 const WORD = /(?<![\p{L}\p{N}_'’-])\p{Ll}{5,}(?![\p{L}\p{N}_-])/gu
 
+/**
+ * Claude Code sends a paste it folded in the box ("[Pasted text #1 +5 lines]") inside tags of its own,
+ * `<pasted_content id="f24e">…</pasted_content id="f24e">`, which the agent receives as they are. The tags are the
+ * host's markup, not the person's words: no name, path or folder is read from them. They are blanked in place, so
+ * every offset into the draft still holds.
+ */
+const HOST_TAG = /<\/?pasted_content\b[^<>\n]*>/g
+export function blankHostTags(text: string): string {
+  return text.includes('pasted_content') ? text.replace(HOST_TAG, (tag) => ' '.repeat(tag.length)) : text
+}
+
 function sentenceStart(text: string, at: number): boolean {
   const before = text.slice(0, at).replace(/[\s"'“‘(\[*_-]+$/u, '')
   return before === '' || /[.!?:;\n]$/.test(before)
@@ -330,7 +341,8 @@ const NAMED_HERE = /\b(?:named|called|new|create|creating|add|adding|introduce|i
 const RENAMED_TO = /\b(?:rename|renamed|renaming|change|changed|changing|move|moved|moving|turn|turned|convert|converted)\b[^.!?\n]{0,60}?\b(?:to|into|as)\s+(?:(?:a|an|the)\s+)?[`'"\u2018\u201C]?$/i
 const introduced = (before: string) => NAMED_HERE.test(before) || RENAMED_TO.test(before)
 
-export function ground(text: string, index: GroundIndex | null): Mention[] {
+export function ground(draft: string, index: GroundIndex | null): Mention[] {
+  const text = blankHostTags(draft)
   if (!index || !text.trim()) return []
   const out: Mention[] = []
   const seen = new Set<string>()
@@ -433,7 +445,7 @@ export function relatedFolders(text: string, index: GroundIndex, most = 4): { di
   // The project's own name is in half its folder names and says nothing about which one the draft means.
   const own = new Set(index.vocab.project ? [nameKey(index.vocab.project), ...nameTokens(index.vocab.project)] : [])
   const stems = new Set<string>()
-  for (const word of text.toLowerCase().match(/[a-z]{4,}/g) ?? []) {
+  for (const word of blankHostTags(text).toLowerCase().match(/[a-z]{4,}/g) ?? []) {
     if (FOLDER_STOP.has(word) || own.has(word)) continue
     const s = stem(word)
     if (s.length >= 3 && !FOLDER_STOP.has(s) && !own.has(s)) stems.add(s)

@@ -245,6 +245,40 @@ test("the project's own name and words matching many folders do not point to a f
     ['mods/claude-code/hooks'])
 })
 
+test("Claude Code's tags around a folded paste are neither a name, a folder nor a choice, and still reach the agent", () => {
+  // A real case (2026-11-27): a paste alone, read at Enter in a repo whose code quotes HTTP status texts.
+  const repo = grounding.indexVocabulary(grounding.buildVocabulary({
+    files: ['src/http/status.ts', 'src/http/headers.ts', 'src/content/posts.ts', 'src/content/pages.ts'],
+    declarations: 'src/http/status.ts:1:export function statusText\n',
+    names: "src/http/status.ts:3:'Unprocessable Content'\nsrc/http/status.ts:4:'Content Too Large'\nsrc/http/headers.ts:2:'Content-Security-Policy'\n",
+  }))
+  const pasted = "Side note: maybe this isn't the case right now, but our architectural decisions must not rely too much on my analytics data.\n" +
+    'I was wondering if the code is ready to actually log data from other users (my friends), or if it is best to wait.\n'
+  const text = `\n\n<pasted_content id="f24e">\n${pasted}</pasted_content id="f24e">`
+  // Blanked in place: what the draft says is read at the same offsets, and the tags add nothing.
+  assert.equal(grounding.blankHostTags(text).length, text.length)
+  assert.equal(grounding.blankHostTags(text).trim(), pasted.trim())
+  assert.deepEqual(grounding.ground(text, repo), grounding.ground(grounding.blankHostTags(text), repo))
+  assert.equal(grounding.ground(text, repo).some((m) => /pasted|content/i.test(m.phrase)), false)
+  assert.deepEqual(grounding.relatedFolders(text, repo), [])
+  // The person's own words about the tag still count: only the host's markup is blanked.
+  assert.deepEqual(grounding.ground('Strip the pasted_content tags before reading.', repo).map((m) => [m.phrase, m.status]),
+    [['pasted_content', 'missing']])
+
+  const core = createCore(ASSETS)
+  core.handle(config())
+  core.handle({ type: 'vocabulary', vocab: repo.vocab })
+  const [request] = requests(core.handle({ type: 'draft', now: 100, text, origin: 'paste', afterEnter: true, transient: true }))
+  assert.equal(request?.kind, 'card')
+  assert.doesNotMatch(request!.prompt, /Not found in the code|Folders that may already/)
+  assert.deepEqual(core.currentView().card!.rows, [])
+  core.handle({ type: 'reply', now: 200, req: request!.req, text: 'read | You ask whether logging from other users is ready.\nkind | question', done: true })
+  const sent = core.handle({ type: 'submit', now: 300, text, plan: false, amendable: false })
+    .find((effect): effect is Extract<Effect, { type: 'submit' }> => effect.type === 'submit')!
+  // The agent gets the paste as Claude Code wrapped it, with no question about the wrapper.
+  assert.equal(sent.text, text)
+})
+
 const project = await import('../mods/claude-code/core/project')
 const vocabOf = (name: string, files: string[], libs: Record<string, number> = {}) =>
   ({ ...grounding.buildVocabulary({ files, declarations: '', names: '' }), project: name, libs })

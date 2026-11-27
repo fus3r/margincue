@@ -1831,6 +1831,10 @@ var PASCAL = /(?<![\w$])[A-Z][a-z0-9]+[A-Z][\w$]*(?![\w$])/g;
 var QUOTED = /(?<![\p{L}\p{N}])(['"‘“`])([^'"‘’“”`\n]{2,40})(['"’”`])(?![\p{L}\p{N}])/gu;
 var PROPER = new RegExp("(?<![\\p{L}\\p{N}_'\u2019-])(?:\\p{Lu}[\\p{Ll}\\p{N}'\u2019]+|\\p{Lu}{2,}\\p{Ll}*)(?:\\s(?:(?:of|the|de|la|du)\\s)?\\p{Lu}[\\p{Ll}\\p{N}'\u2019]+)*(?![\\p{L}\\p{N}_-])", "gu");
 var WORD = new RegExp("(?<![\\p{L}\\p{N}_'\u2019-])\\p{Ll}{5,}(?![\\p{L}\\p{N}_-])", "gu");
+var HOST_TAG = /<\/?pasted_content\b[^<>\n]*>/g;
+function blankHostTags(text2) {
+  return text2.includes("pasted_content") ? text2.replace(HOST_TAG, (tag) => " ".repeat(tag.length)) : text2;
+}
 function sentenceStart(text2, at) {
   const before2 = text2.slice(0, at).replace(/[\s"'“‘(\[*_-]+$/u, "");
   return before2 === "" || /[.!?:;\n]$/.test(before2);
@@ -2068,7 +2072,8 @@ function settle(mention, files, elsewhere, text2) {
 var NAMED_HERE = /\b(?:named|called|new|create|creating|add|adding|introduce|introducing)\s+(?:(?:a|an|the)\s+)?(?:new\s+)?[`'"\u2018\u201C]?$/i;
 var RENAMED_TO = /\b(?:rename|renamed|renaming|change|changed|changing|move|moved|moving|turn|turned|convert|converted)\b[^.!?\n]{0,60}?\b(?:to|into|as)\s+(?:(?:a|an|the)\s+)?[`'"\u2018\u201C]?$/i;
 var introduced = (before2) => NAMED_HERE.test(before2) || RENAMED_TO.test(before2);
-function ground(text2, index) {
+function ground(draft, index) {
+  const text2 = blankHostTags(draft);
   if (!index || !text2.trim()) return [];
   const out = [];
   const seen = /* @__PURE__ */ new Set();
@@ -2148,7 +2153,7 @@ function folders(index) {
 function relatedFolders(text2, index, most = 4) {
   const own = new Set(index.vocab.project ? [nameKey(index.vocab.project), ...nameTokens(index.vocab.project)] : []);
   const stems = /* @__PURE__ */ new Set();
-  for (const word of text2.toLowerCase().match(/[a-z]{4,}/g) ?? []) {
+  for (const word of blankHostTags(text2).toLowerCase().match(/[a-z]{4,}/g) ?? []) {
     if (FOLDER_STOP.has(word) || own.has(word)) continue;
     const s = stem(word);
     if (s.length >= 3 && !FOLDER_STOP.has(s) && !own.has(s)) stems.add(s);
@@ -11978,7 +11983,7 @@ import { spawn as spawn2 } from "node:child_process";
 import { createInterface } from "node:readline";
 
 // src/version.ts
-var VERSION = "0.4.32";
+var VERSION = "0.4.33";
 var MIN_CODEX = "0.171";
 function tooOld(output2) {
   const match = /codex-cli (\d+)\.(\d+)\.(\d+)/.exec(output2);
